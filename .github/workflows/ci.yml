@@ -17,24 +17,18 @@ concurrency:
 
 jobs:
   bazel:
-    name: bazel ${{ matrix.bazel }}
+    name: bazel
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        bazel: ["9.2.0"]
-    env:
-      # Takes precedence over .bazelversion, so the matrix can cover more than
-      # the pinned version without editing the checkout.
-      USE_BAZEL_VERSION: ${{ matrix.bazel }}
     steps:
       - uses: actions/checkout@v7
 
+      # No version is pinned here: bazelisk reads .bazelversion, so the
+      # checkout is the single source of the Bazel version and CI cannot drift
+      # from a local build.
       - uses: bazel-contrib/setup-bazel@0.19.0
         with:
           bazelisk-cache: true
-          # Keyed by Bazel version so two majors never share an output cache.
-          disk-cache: ${{ github.workflow }}-${{ matrix.bazel }}
+          disk-cache: ${{ github.workflow }}
           repository-cache: true
           # Pull requests RESTORE caches but never SAVE them, so only reviewed
           # code populates a cache a later trusted build consumes. Gated on the
@@ -62,14 +56,13 @@ jobs:
   # The single check branch protection requires, and the only reason this job
   # exists.
   #
-  # A required status check is matched by CHECK RUN name, which for a matrix is
-  # the generated one -- "bazel 9.2.0" and its siblings -- not the workflow's
-  # name. Requiring those directly works until the matrix changes: bump a
-  # version and the required check can never report again, so every pull request
-  # is blocked by something that will never turn green. Requiring one aggregate
-  # instead leaves the matrix free to change.
+  # A required status check is matched by CHECK RUN name, so requiring the jobs
+  # themselves ties branch protection to their names: rename or split one, or
+  # add a matrix, and the required check can never report again -- which blocks
+  # every pull request on something that will never turn green, rather than
+  # failing it. Requiring one aggregate leaves the jobs free to change.
   #
-  # if: always() so it runs even when a leg fails -- a skipped job reports
+  # if: always() so it runs even when a job fails -- a skipped job reports
   # nothing, and a required check that never reports blocks the pull request
   # instead of failing it.
   ci:
