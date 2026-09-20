@@ -9,6 +9,7 @@ module github.com/bpalermo/sortie
 go 1.27.1
 
 require (
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.1 // bazel-only: referenced from BUILD/.bzl, no Go import
 	github.com/envoyproxy/go-control-plane/envoy v1.39.0
 	github.com/spf13/cobra v1.10.1
 	golang.org/x/sync v0.22.0
@@ -19,7 +20,6 @@ require (
 )
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.1 // bazel-only: referenced from BUILD/.bzl, no Go import
 	buf.build/go/protovalidate v1.4.0
 	buf.build/go/protoyaml v0.7.0
 	cel.dev/cel-go v0.32.0 // indirect

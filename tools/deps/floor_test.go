@@ -9,10 +9,13 @@ package deps_test
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -48,9 +51,8 @@ func (v version) less(o version) bool {
 }
 
 var (
-	goSDKRe   = regexp.MustCompile(`go_sdk\.download\(\s*version\s*=\s*"(\d+)\.(\d+)(?:\.(\d+))?"`)
-	xToolsRe  = regexp.MustCompile(`golang\.org/x/tools\s+v(\d+)\.(\d+)\.(\d+)`)
-	genprotoR = regexp.MustCompile(`(?m)^\s*google\.golang\.org/genproto/googleapis/rpc\s+\S+(.*)$`)
+	goSDKRe  = regexp.MustCompile(`go_sdk\.download\(\s*version\s*=\s*"(\d+)\.(\d+)(?:\.(\d+))?"`)
+	xToolsRe = regexp.MustCompile(`golang\.org/x/tools\s+v(\d+)\.(\d+)\.(\d+)`)
 )
 
 func TestNogoXToolsFloor(t *testing.T) {
@@ -75,27 +77,128 @@ func TestNogoXToolsFloor(t *testing.T) {
 	}
 }
 
-// TestGenprotoStaysDirect guards a requirement that looks unused and is not.
-//
-// bazel/nighthawk_api.BUILD names @org_golang_google_genproto_googleapis_rpc so
-// that google/rpc/status.proto's Go code is the same package grpc-go links.
-// `bazel mod tidy` rewrites use_repo from go.mod's DIRECT requirements and never
-// reads BUILD files, so demoting this to indirect drops the use_repo entry and
-// breaks the build.
-func TestGenprotoStaysDirect(t *testing.T) {
-	goMod := readRepoFile(t, "go.mod")
+// bazelOnlyRe matches a go.mod requirement annotated as needed by the build
+// rather than by any Go source. The annotation is the convention that tells a
+// reader why a requirement nothing imports is not dead weight.
+var bazelOnlyRe = regexp.MustCompile(`(?m)^\s*(\S+)\s+(\S+)\s*//\s*bazel-only:.*$`)
 
-	m := genprotoR.FindStringSubmatch(goMod)
-	if m == nil {
-		t.Fatal("google.golang.org/genproto/googleapis/rpc is missing from go.mod; " +
-			"bazel/nighthawk_api.BUILD needs it for google/rpc/status.proto's Go code")
+var indirectRe = regexp.MustCompile(`//\s*indirect`)
+
+// TestBazelOnlyRequirementsStayDirect guards the requirements that look unused
+// and are not.
+//
+// A module named only by a BUILD or .bzl file has no Go import to justify it,
+// so it reads as removable. It is not: `bazel mod tidy` rewrites use_repo from
+// go.mod's DIRECT requirements and never reads BUILD files, so demoting one to
+// indirect silently drops its use_repo entry and breaks the build somewhere
+// that says nothing about go.mod.
+//
+// This checks every annotated requirement rather than a list of known ones, so
+// the next one added is covered without anybody remembering to extend a test.
+func TestBazelOnlyRequirementsStayDirect(t *testing.T) {
+	matches := bazelOnlyRe.FindAllStringSubmatch(readRepoFile(t, "go.mod"), -1)
+	if len(matches) == 0 {
+		t.Skip("no requirements are annotated // bazel-only:")
 	}
-	if trailer := m[1]; regexp.MustCompile(`//\s*indirect`).MatchString(trailer) {
-		t.Fatal("google.golang.org/genproto/googleapis/rpc must stay a DIRECT requirement.\n" +
-			"No Go source imports it, so it looks removable, but bazel/nighthawk_api.BUILD " +
-			"names it and `bazel mod tidy` only exports use_repo entries for direct " +
-			"requirements. Keep it direct with its // bazel-only: annotation.")
+
+	for _, m := range matches {
+		module, line := m[1], m[0]
+		t.Run(module, func(t *testing.T) {
+			if indirectRe.MatchString(line) {
+				t.Fatalf("%s is annotated // bazel-only: but marked // indirect.\n"+
+					"A bazel-only requirement must stay DIRECT: no Go source imports it, "+
+					"so it looks removable, but a BUILD or .bzl file names it and "+
+					"`bazel mod tidy` only exports use_repo entries for direct requirements.",
+					module)
+			}
+		})
 	}
+}
+
+// TestBazelOnlyRequirementsAreReferenced is the other half: an annotation that
+// has outlived the BUILD file that needed it turns into a direct requirement
+// nothing uses, which is the thing the annotation exists to rule out.
+//
+// Only annotated modules are checked. The converse -- every direct requirement
+// with no Go import must be annotated -- would be stronger, and is deliberately
+// not done here: it would fail the build on a heuristic about what counts as a
+// reference.
+func TestBazelOnlyRequirementsAreReferenced(t *testing.T) {
+	matches := bazelOnlyRe.FindAllStringSubmatch(readRepoFile(t, "go.mod"), -1)
+	if len(matches) == 0 {
+		t.Skip("no requirements are annotated // bazel-only:")
+	}
+	starlark := readStarlarkFiles(t)
+
+	for _, m := range matches {
+		module := m[1]
+		t.Run(module, func(t *testing.T) {
+			repo := gazelleRepoName(module)
+			for _, content := range starlark {
+				if strings.Contains(content, repo) {
+					return
+				}
+			}
+			t.Fatalf("%s is annotated // bazel-only: but no hand-written Bazel file "+
+				"mentions %q.\n"+
+				"Either the reference was removed, in which case move the requirement to "+
+				"the indirect block, or it moved to a generated BUILD file, in which case "+
+				"the annotation is wrong.", module, repo)
+		})
+	}
+}
+
+// gazelleRepoName reproduces the repository name gazelle derives from a module
+// path: the host reversed, then the remaining path elements, with everything
+// that is not alphanumeric replaced by an underscore.
+//
+//	google.golang.org/genproto/googleapis/rpc -> org_golang_google_genproto_googleapis_rpc
+func gazelleRepoName(module string) string {
+	parts := strings.Split(module, "/")
+	host := strings.Split(parts[0], ".")
+	slices.Reverse(host)
+
+	segments := append(host, parts[1:]...)
+	name := strings.Join(segments, "_")
+	return nonAlphanumeric.ReplaceAllString(strings.ToLower(name), "_")
+}
+
+var nonAlphanumeric = regexp.MustCompile(`[^a-z0-9]`)
+
+// readStarlarkFiles returns the contents of the hand-written BUILD and .bzl
+// files, which are the only ones that name an external repository directly:
+// the rest are generated by Gazelle, which resolves repositories itself.
+//
+// MODULE.bazel is deliberately excluded. Its use_repo list is derived from the
+// very requirement being checked, so a match there would be circular and the
+// check would pass even after the last real reference was deleted.
+func readStarlarkFiles(t *testing.T) []string {
+	t.Helper()
+	var out []string
+	for _, root := range repoRoots() {
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil //nolint:nilerr // an unreadable tree is simply not searched
+			}
+			name := d.Name()
+			if name == "MODULE.bazel" {
+				return nil
+			}
+			if !strings.HasSuffix(name, ".bzl") &&
+				!strings.HasSuffix(name, ".BUILD") && name != "BUILD.bazel" {
+				return nil
+			}
+			if raw, err := os.ReadFile(path); err == nil {
+				out = append(out, string(raw))
+			}
+			return nil
+		})
+		if len(out) > 0 {
+			return out
+		}
+	}
+	t.Fatal("found no Bazel files to search")
+	return nil
 }
 
 // readRepoFile finds a file at the repository root. Under `bazel test` the
@@ -103,9 +206,9 @@ func TestGenprotoStaysDirect(t *testing.T) {
 // directory. Both are handled so the test is not tied to one runner.
 func readRepoFile(t *testing.T, name string) string {
 	t.Helper()
-	candidates := []string{name, filepath.Join("..", "..", name)}
-	if dir := os.Getenv("BUILD_WORKSPACE_DIRECTORY"); dir != "" {
-		candidates = append(candidates, filepath.Join(dir, name))
+	var candidates []string
+	for _, root := range repoRoots() {
+		candidates = append(candidates, filepath.Join(root, name))
 	}
 	for _, path := range candidates {
 		if raw, err := os.ReadFile(path); err == nil {
@@ -114,6 +217,17 @@ func readRepoFile(t *testing.T, name string) string {
 	}
 	t.Fatalf("could not find %s; looked in %v", name, candidates)
 	return ""
+}
+
+// repoRoots lists where the repository root may be. Under `bazel test` the
+// working directory is the runfiles tree; under `go test` it is the package
+// directory. Both are handled so the test is not tied to one runner.
+func repoRoots() []string {
+	roots := []string{".", filepath.Join("..", "..")}
+	if dir := os.Getenv("BUILD_WORKSPACE_DIRECTORY"); dir != "" {
+		roots = append(roots, dir)
+	}
+	return roots
 }
 
 func matchVersion(t *testing.T, re *regexp.Regexp, haystack, what string) version {

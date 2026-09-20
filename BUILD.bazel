@@ -48,6 +48,9 @@ filegroup(
         "//tools/nogo:starlark_srcs",
     ],
     tags = ["starlark"],
+    # //tools/deps reads these to check that every bazel-only requirement is
+    # still named by a hand-written Bazel file.
+    visibility = ["//tools/deps:__pkg__"],
 )
 
 buildifier_test(
