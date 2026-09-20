@@ -1,0 +1,12 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "report",
+    srcs = ["report.go"],
+    importpath = "github.com/bpalermo/sortie/internal/report",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/compile",
+        "//internal/run",
+    ],
+)

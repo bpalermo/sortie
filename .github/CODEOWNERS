@@ -1,0 +1,19 @@
+# Ownership for review routing: pull requests touching these paths automatically
+# request review from the owner.
+#
+# NOTE on the ruleset: `require_code_owner_review` must stay OFF while there is a
+# single owner. GitHub does not count a code owner's approval of their own pull
+# request, so with one owner who authors everything the requirement can never be
+# satisfied and every PR deadlocks. Turn it on when there is a second maintainer.
+
+* @bpalermo
+
+# The vendored protos and the generated code derived from them are the one place
+# where a careless edit is invisible: gen/ is machine-written, so a hand edit
+# survives review and then vanishes at the next sync.
+/third_party/ @bpalermo
+/gen/         @bpalermo
+/hack/        @bpalermo
+
+# CI is the only thing gating merges.
+/.github/workflows/ @bpalermo

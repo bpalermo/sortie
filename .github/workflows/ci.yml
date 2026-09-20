@@ -1,0 +1,115 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# GHAS requires an explicit least-privilege grant; the default token permissions
+# are otherwise write-heavy for every job in the workflow.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bazel:
+    name: bazel ${{ matrix.bazel }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bazel: ["8.5.0"]
+    env:
+      # Takes precedence over .bazelversion, so the matrix can cover more than
+      # the pinned version without editing the checkout.
+      USE_BAZEL_VERSION: ${{ matrix.bazel }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          # Keyed by Bazel version so two majors never share an output cache.
+          disk-cache: ${{ github.workflow }}-${{ matrix.bazel }}
+          repository-cache: true
+          # Pull requests RESTORE caches but never SAVE them, so only reviewed
+          # code populates a cache a later trusted build consumes. Gated on the
+          # ref rather than the event, because workflow_dispatch can target any
+          # branch and would otherwise write branch-scoped caches that evict
+          # main's from the shared repo quota.
+          cache-save: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: bazel test //...
+        run: bazel test //... --test_output=errors
+
+      # Gazelle generates the BUILD files, so a hand-edited or stale one is a
+      # real failure mode: the Bazel build keeps working against the old graph
+      # until someone regenerates and the diff appears in an unrelated PR.
+      - name: BUILD files are up to date
+        run: |
+          bazel run //:gazelle
+          if ! git diff --exit-code -- 'BUILD.bazel' '**/BUILD.bazel'; then
+            echo "::error::BUILD files are stale; run 'bazel run //:gazelle'" >&2
+            exit 1
+          fi
+
+  go:
+    name: go vet and gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Bazel builds and tests the code but never checks its formatting, and
+      # rules_go does not run vet's full suite.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l . )"
+          if [ -n "${unformatted}" ]; then
+            echo "::error::gofmt needed on:" >&2
+            echo "${unformatted}" >&2
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+  # The single check branch protection requires, and the only reason this job
+  # exists.
+  #
+  # A required status check is matched by CHECK RUN name, which for a matrix is
+  # the generated one -- "bazel 8.5.0" and its siblings -- not the workflow's
+  # name. Requiring those directly works until the matrix changes: bump a
+  # version and the required check can never report again, so every pull request
+  # is blocked by something that will never turn green. Requiring one aggregate
+  # instead leaves the matrix free to change.
+  #
+  # if: always() so it runs even when a leg fails -- a skipped job reports
+  # nothing, and a required check that never reports blocks the pull request
+  # instead of failing it.
+  ci:
+    name: ci
+    needs: [bazel, go]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      # Reads the results rather than naming the jobs, so adding a job to
+      # `needs` above is enough to have it gate merges.
+      - name: every job this depends on must have succeeded
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "results: ${results}"
+          for result in ${results}; do
+            if [ "${result}" != "success" ]; then
+              echo "::error::a required job reported '${result}'" >&2
+              exit 1
+            fi
+          done

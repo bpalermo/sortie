@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "nh",
+    srcs = [
+        "client.go",
+        "distributor.go",
+    ],
+    importpath = "github.com/bpalermo/sortie/internal/nh",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//gen/api/client",
+        "//gen/api/distributor",
+        "@com_github_envoyproxy_go_control_plane_envoy//config/core/v3:core",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//credentials/insecure",
+    ],
+)

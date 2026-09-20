@@ -1,0 +1,23 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    # Nighthawk's protos carry no go_package; inject one so they land under gen/.
+    - file_option: go_package_prefix
+      value: github.com/bpalermo/sortie/gen
+  disable:
+    # Dependencies already declare the go_package that matches their published
+    # Go modules (go-control-plane, protoc-gen-validate, genproto). Keep those.
+    - file_option: go_package
+      module: buf.build/envoyproxy/envoy
+    - file_option: go_package
+      module: buf.build/envoyproxy/protoc-gen-validate
+    - file_option: go_package
+      module: buf.build/googleapis/googleapis
+plugins:
+  - remote: buf.build/protocolbuffers/go
+    out: gen
+    opt: paths=source_relative
+  - remote: buf.build/grpc/go
+    out: gen
+    opt: paths=source_relative

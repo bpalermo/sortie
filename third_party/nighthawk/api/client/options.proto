@@ -1,0 +1,350 @@
+syntax = "proto3";
+
+package nighthawk.client;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+import "envoy/config/core/v3/address.proto";
+import "envoy/config/core/v3/base.proto";
+import "envoy/config/core/v3/protocol.proto";
+import "envoy/config/metrics/v3/stats.proto";
+import "envoy/extensions/transport_sockets/tls/v3/cert.proto";
+import "envoy/config/core/v3/extension.proto";
+import "validate/validate.proto";
+
+// Allows for static configuration of requests that should be send by the load generator.
+message RequestOptions {
+  envoy.config.core.v3.RequestMethod request_method = 1;
+  repeated envoy.config.core.v3.HeaderValueOption request_headers = 2;
+  // Our StreamDecoder depends on bounding the size here, so if this changes, an amendment
+  // to that is needed as well.
+  google.protobuf.UInt32Value request_body_size = 3 [(validate.rules).uint32 = {lte: 4194304}];
+  // Optional body of the HTTP request.
+  // If this is provided, Nighthawk sets the "Content-Type" header to "application/json"
+  // and issues the request with the body provided here.
+  // If this isn't provided, Nighthawk sends its built-in request body (the character 'a'
+  // repeated n times to the specified request size).
+  string json_body = 4;
+  // Optional raw request body, sent verbatim (binary safe). Populated by --request-body-file.
+  // Nighthawk does not set a Content-Type for this body; supply one with request_headers.
+  // Mutually exclusive with request_body_size and json_body.
+  bytes request_body = 5;
+}
+
+// Used for providing multiple request options, especially for RequestSourcePlugins.
+message RequestOptionsList {
+  // Each option is used for a separate request to be sent by the requestSource.
+  repeated RequestOptions options = 1;
+}
+
+// Configures a remote gRPC source that will deliver to-be-replayed request data to Nighthawks
+// workers.
+message RequestSource {
+  string uri = 19; // [(validate.rules).string.uri = true];
+}
+
+// We wrap all values so we can have a unified way of option handling with respect to
+// defaults, merging, etc. As there's no stock concept for enumerations, we manually
+// define custom wrappers for them. These used to be strings, which did provide the
+// wrapped type.
+message AddressFamily {
+  enum AddressFamilyOptions {
+    AUTO = 0;
+    V4 = 1;
+    V6 = 2;
+  }
+  AddressFamilyOptions value = 1;
+}
+
+message Verbosity {
+  enum VerbosityOptions {
+    DEFAULT = 0;
+    INFO = 1;
+    TRACE = 2;
+    DEBUG = 3;
+    WARN = 4;
+    ERROR = 5;
+    CRITICAL = 6;
+  }
+  VerbosityOptions value = 1;
+}
+
+message OutputFormat {
+  enum OutputFormatOptions {
+    DEFAULT = 0;
+    JSON = 1;
+    HUMAN = 2;
+    YAML = 3;
+    DOTTED = 4;
+    FORTIO = 5;
+    EXPERIMENTAL_FORTIO_PEDANTIC = 6;
+    CSV = 7;
+    PROMETHEUS = 8;
+  }
+  OutputFormatOptions value = 1;
+}
+
+message SequencerIdleStrategy {
+  enum SequencerIdleStrategyOptions {
+    DEFAULT = 0;
+    SPIN = 1;
+    POLL = 2;
+    SLEEP = 3;
+  }
+  SequencerIdleStrategyOptions value = 1;
+}
+
+message MultiTarget {
+  message Endpoint {
+    google.protobuf.StringValue address = 1;
+    google.protobuf.UInt32Value port = 2 [(validate.rules).uint32 = {gte: 1, lte: 65535}];
+  }
+  // Whether to use HTTPS in requests to all backends; otherwise HTTP.
+  google.protobuf.BoolValue use_https = 1;
+  // One or more address-port pairs to receive traffic distributed with round robin.
+  repeated Endpoint endpoints = 2;
+  // The absolute HTTP request path (the part of the URL after host:port, e.g. /x/y/z).
+  // A single path is requested from all backends. Ignored when using a RequestSource.
+  google.protobuf.StringValue path = 3;
+}
+
+message H1ConnectionReuseStrategy {
+  enum H1ConnectionReuseStrategyOptions {
+    DEFAULT = 0;
+    MRU = 1;
+    LRU = 2;
+  }
+  H1ConnectionReuseStrategyOptions value = 1;
+}
+
+message Protocol {
+  enum ProtocolOptions {
+    // Encapsulate requests in HTTP/1.
+    // This is the default option.
+    HTTP1 = 0;
+    // Encapsulate requests in HTTP/2.
+    HTTP2 = 1;
+    // Encapsulate requests in HTTP/3 Quic.
+    //
+    // Note that certificate verification for HTTP/3 Quic connections currently
+    // cannot be skipped, make sure to include a host or an authority header
+    // that will pass the SAN/SNI verification.
+    // See https://github.com/envoyproxy/nighthawk/issues/727.
+    HTTP3 = 2;
+  }
+
+  // The protocol to encapsulate requests in.
+  ProtocolOptions value = 1;
+}
+
+// TODO(oschaaf): Ultimately this will be a load test specification. The fact that it
+// can arrive via CLI is just a concrete detail. Change this to reflect that.
+// Next unused number is 121.
+message CommandLineOptions {
+  // The target requests-per-second rate. Default: 5.
+  google.protobuf.UInt32Value requests_per_second = 1
+      [(validate.rules).uint32 = {gte: 1, lte: 1000000}];
+  // The maximum allowed number of concurrent connections per event loop. HTTP/1 only. Default: 100.
+  google.protobuf.UInt32Value connections = 2 [(validate.rules).uint32 = {gte: 1, lte: 1000000}];
+  oneof oneof_duration_options {
+    // The number of seconds that the test should run. Default: 5.
+    google.protobuf.Duration duration = 3 [(validate.rules).duration.gte.nanos = 0];
+    // Request infinite execution. Note that the default failure predicates will still be added..
+    google.protobuf.BoolValue no_duration = 33;
+  }
+  // Connection connect timeout period in seconds. Default: 30.
+  google.protobuf.Duration timeout = 4 [(validate.rules).duration.gte.seconds = 0];
+
+  // The protocol to use when encapsulating requests.
+  // Defaults to HTTP/1 if no value is selected.
+  oneof oneof_protocol {
+    // Use HTTP/2 protocol.
+    // This option is deprecated, set the protocol option instead.
+    google.protobuf.BoolValue h2 = 5 [deprecated = true];
+
+    // The protocol to use when encapsulating requests.
+    Protocol protocol = 107;
+  }
+
+  // Options for routing requests via a proxy. if set, requests
+  // are encapsulated and forwarded to a terminating proxy running at
+  // tunnel_uri.
+  // When the oneof_protocol field is set to H1 or H2, an HTTP CONNECT
+  // tunnel is established with the proxy
+  // When the oneof_protocol field is set to H3, a CONNECT-UDP
+  // upgrade is used instead
+  message TunnelOptions {
+    // URI to the proxy.
+    string tunnel_uri = 1;
+    // the top level protocol.
+    Protocol tunnel_protocol = 2;
+    // TLS context for the proxy.
+    // TLS configuration is required for HTTP/3 tunnels.
+    envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext tunnel_tls_context = 3;
+  }
+
+  TunnelOptions tunnel_options = 114;
+
+  // Allows user to set specific HTTP3 protocol options.
+  // Only valid when protocol is set to HTTP3.
+  // Is exclusive with any other command line option that would modify the
+  // http3 protocol options, e.g. max_concurrent_streams.
+  envoy.config.core.v3.Http3ProtocolOptions http3_protocol_options = 111;
+
+  // The number of concurrent event loops that should be used. Specify 'auto' to let
+  // Nighthawk leverage all vCPUs that have affinity to the Nighthawk process. Note that
+  // increasing this results in an effective load multiplier combined with the configured
+  // --rps and --connections values. Default: 1.
+  // When tunneling is enabled using tunnel_options, the tunnel has the same
+  // concurrency.
+  google.protobuf.StringValue concurrency =
+      6; // [(validate.rules).string = {pattern: "^([0-9]*|auto)$"}];
+  // Verbosity of the output. Possible values: [trace, debug, info, warn,
+  // error, critical]. The default level is 'info'.
+  Verbosity verbosity = 7;
+  // Output format. Possible values: {"json", "human", "yaml", "dotted",
+  // "fortio", "csv", "prometheus"}. The default output format is 'human'.
+  // NOTE: not relevant to gRPC service
+  OutputFormat output_format = 8;
+  // Use proactive connection prefetching (HTTP/1 only).
+  google.protobuf.BoolValue prefetch_connections = 9;
+  // Release requests in bursts of the specified size (default: 0).
+  google.protobuf.UInt32Value burst_size = 10 [(validate.rules).uint32 = {lte: 1000000}];
+
+  // Network address family preference. Possible values: [auto, v4, v6]. The default output format
+  // is 'AUTO'.
+  AddressFamily address_family = 11;
+  // Either requests will be statically configured, or delivered through a remote gRPC service.
+  oneof oneof_request_options {
+    // Static configuration to use on every outgoing request
+    RequestOptions request_options = 12;
+    // Remote gRPC source that will deliver to-be-replayed traffic. Each worker will separately
+    // connect to this source.
+    RequestSource request_source = 26;
+    // A plugin config that is to be parsed by a RequestSourcePluginConfigFactory and used to create
+    // an in memory request source.
+    envoy.config.core.v3.TypedExtensionConfig request_source_plugin_config = 37;
+  }
+  // DEPRECATED, use --transport-socket instead. Tls context configuration in json or compact yaml.
+  // Mutually exclusive with --transport-socket.
+  envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext tls_context = 13 [deprecated = true];
+  // Max pending requests (default: 0, no client side queuing. Specifying any other value will allow
+  // client-side queuing of requests).
+  google.protobuf.UInt32Value max_pending_requests = 14;
+  // The maximum allowed number of concurrently active requests.
+  // HTTP/2 and HTTP/3 only, does not apply to HTTP/1. (default: 100).
+  google.protobuf.UInt32Value max_active_requests = 15 [(validate.rules).uint32 = {gte: 1}];
+  // Max requests per connection (default: 4294937295).
+  google.protobuf.UInt32Value max_requests_per_connection = 16 [(validate.rules).uint32 = {gte: 1}];
+  // Choose between using a busy spin/yield loop or have the thread poll or sleep while waiting for
+  // the next scheduled request (default: SPIN).
+  SequencerIdleStrategy sequencer_idle_strategy = 17;
+  // Either a single URI is configured, or the same traffic can be spread across a static
+  // set of backends.
+  oneof oneof_uri {
+    // URI to benchmark. http:// and https:// are supported, but in case of https no certificates
+    // are validated. For benchmarking a single endpoint.
+    google.protobuf.StringValue uri = 18; // [(validate.rules).string.uri = true];
+    // Defines multiple URIs to benchmark
+    MultiTarget multi_target = 29;
+  }
+  // Trace uri. Example: zipkin://localhost:9411/api/v2/spans. Default is empty.
+  google.protobuf.StringValue trace = 19; // [(validate.rules).string.uri = true];
+  // Choose picking the most recently used, or least-recently-used connections for re-use.(default:
+  // mru). WARNING: this option is experimental and may be removed or changed in the future!
+  H1ConnectionReuseStrategy experimental_h1_connection_reuse_strategy = 23;
+  // Termination predicate. Allows specifying a counter name plus threshold value for terminating
+  // execution.
+  map<string, uint64> termination_predicates = 20;
+  // Allows specifying a counter name plus threshold value for failing execution. Defaults to not
+  // tolerating error status codes and connection errors.
+  map<string, uint64> failure_predicates = 24;
+  // Disables the default failure predicates, indicating that Nighthawk should continue sending load
+  // after observing error status codes and connection errors.
+  google.protobuf.BoolValue no_default_failure_predicates = 113;
+  // Enable open loop mode. When enabled, the benchmark client will not provide backpressure when
+  // resource limits are hit.
+  google.protobuf.BoolValue open_loop = 21;
+  // Add uniformly distributed absolute request-release timing jitter. For example, to add 10 us of
+  // jitter, specify .00001s. Default is empty / no uniform jitter.
+  google.protobuf.Duration jitter_uniform = 25 [(validate.rules).duration.gte.nanos = 0];
+  // Nighthawk service uri for running CLI in remote host mode. Example: grpc://localhost:8843/.
+  // Default is empty.
+  // NOTE: not relevant to gRPC service
+  google.protobuf.StringValue nighthawk_service = 31; // [(validate.rules).string.uri = true];
+  // DO NOT USE: This options is deprecated, if this behavior is desired, set
+  // max_concurrent_streams to one instead.
+  google.protobuf.BoolValue experimental_h2_use_multiple_connections = 30 [deprecated = true];
+
+  // The maximum concurrent streams allowed on one HTTP/2 or HTTP/3 connection.
+  //
+  // Does not apply to HTTP/1.
+  // See https://httpwg.org/specs/rfc7540.html#rfc.section.5.1.2 for more
+  // details.
+  //
+  // This limits how many streams Nighthawk will initiate concurrently on a
+  // single connection. If the limit is reached, Nighthawk may queue requests or
+  // use additional connections depending on the other configuration values.
+  // E.g. setting this to 1 makes Nighthawk use a new connection for each
+  // request. (default: 2147483647).
+  google.protobuf.UInt32Value max_concurrent_streams = 108
+      [(validate.rules).uint32 = {lte: 2147483647 gte: 1}];
+
+  // Label. Allows specifying multiple labels which will be persisted in structured output formats.
+  repeated string labels = 28;
+
+  // Optional configuration used to bind newly established upstream connections.
+  // Allows selecting the source address, port and socket options used when sending
+  // requests.
+  envoy.config.core.v3.BindConfig upstream_bind_config = 109;
+  // TransportSocket configuration to use in every request.
+  envoy.config.core.v3.TransportSocket transport_socket = 27;
+
+  // Perform a simple single warmup request (per worker) before starting
+  // execution. Note that this will be reflected in the counters that
+  // Nighthawk writes to the output. Default is false.
+  google.protobuf.BoolValue simple_warmup = 32;
+  // Optional set of stat sinks where Nighthawk metrics will be flushed to.
+  repeated envoy.config.metrics.v3.StatsSink stats_sinks = 34;
+
+  oneof oneof_stats_flush_interval {
+    // Time interval (number of seconds) between periodical flushes to
+    // configured stats sinks. If not specified the default is 5 seconds.
+    // stats_flush_interval must be at least 1s and at most 300s.
+    google.protobuf.UInt32Value stats_flush_interval = 35
+        [(validate.rules).uint32 = {gte: 1, lte: 300}];
+
+    // Time interval in Duration between periodical flushes to configured stats
+    // sinks.
+    google.protobuf.Duration stats_flush_interval_duration = 110
+        [(validate.rules).duration = {gte {seconds: 0 nanos: 0}}];
+  }
+
+  // Set an optional header name that will be returned in responses, whose values will be tracked in
+  // a latency histogram if set. Can be used in tandem with the test server's response option
+  // "emit_previous_request_delta_in_response_header" to record elapsed time between request
+  // arrivals.
+  google.protobuf.StringValue latency_response_header_name = 36;
+  // Provide an execution starting date and time. Optional, any value specified must be in the
+  // future.
+  google.protobuf.Timestamp scheduled_start = 105;
+
+  reserved 38; // deprecated
+  // Provide a unique execution id. Will be reflected in the output when set.
+  // This is intended for future use in horizontally scaled scenarios in mind.
+  // When populating this field, it is recommended to use unique identifiers for forward
+  // compatibility purposes. In the future, this field may be auto-populated when left unset and
+  // circumstances mandate so (distributed load test execution).
+  google.protobuf.StringValue execution_id = 106;
+
+  // Optional set of plugin configs to be parsed by a UserDefinedOutputPlugin and used to parse
+  // responses to provide additional output to each Result.
+  // Nighthawk will abort an execution attempt if a user_defined_plugin_config is provided but the
+  // associated plugin factory is not registered through Envoy's plugin system.
+  repeated envoy.config.core.v3.TypedExtensionConfig user_defined_plugin_configs = 112;
+
+  // A plugin config that is to be parsed by a RateLimiterPluginConfigFactory
+  // and used to create a custom rate limiter.
+  envoy.config.core.v3.TypedExtensionConfig rate_limiter_plugin_config = 120;
+}

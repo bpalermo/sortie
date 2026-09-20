@@ -1,0 +1,5 @@
+load("@gazelle//:def.bzl", "gazelle")
+
+# gazelle:prefix github.com/bpalermo/sortie
+# gazelle:exclude third_party
+gazelle(name = "gazelle")

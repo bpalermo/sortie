@@ -1,0 +1,15 @@
+version: v2
+modules:
+  - path: third_party/nighthawk
+deps:
+  - buf.build/envoyproxy/envoy
+  - buf.build/envoyproxy/protoc-gen-validate
+  - buf.build/googleapis/googleapis
+lint:
+  use:
+    - STANDARD
+  ignore:
+    - third_party
+breaking:
+  ignore:
+    - third_party

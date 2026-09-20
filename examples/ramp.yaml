@@ -1,0 +1,66 @@
+# Three shapes of load, run in file order.
+#
+# Scenarios always run sequentially: Nighthawk accepts one execution per service
+# instance at a time, and two scenarios sharing a target would distort each
+# other's latency measurements even on separate pools.
+version: v1
+
+pools:
+  - name: local
+    services:
+      - "127.0.0.1:8443"
+
+  # A distributor fans one request out to several instances itself. It forwards
+  # the request unchanged, so every target runs the same rate; sortie's rate
+  # division does not apply on this path. Marked experimental upstream (#369).
+  - name: fleet
+    distributor: "127.0.0.1:8442"
+    targets:
+      - "10.0.0.11:8443"
+      - "10.0.0.12:8443"
+
+defaults:
+  pool: local
+  target: http://127.0.0.1:8080/
+  protocol: http2
+
+thresholds:
+  - "counter:benchmark.http_5xx == 0"
+
+scenarios:
+  # Ramp linearly from zero to 500 rps over the first 30s, then hold 500 rps
+  # for the remaining 90s. This is Nighthawk's linear ramping rate limiter.
+  - name: ramp
+    executor:
+      type: ramping-rate
+      rate: 500
+      ramp_time: 30s
+      duration: 120s
+    thresholds:
+      - "latency_2xx.p99 < 500ms"
+
+  # Step through fixed rates. Each stage is a separate Nighthawk execution --
+  # connections are re-established at every boundary and each stage is reported
+  # and judged on its own -- because Nighthawk cannot change the rate of a run
+  # already in flight.
+  - name: steps
+    executor:
+      type: staircase
+      stages:
+        - {rate: 100, duration: 30s}
+        - {rate: 250, duration: 30s}
+        - {rate: 500, duration: 30s}
+    thresholds:
+      - "latency_2xx.p95 < 250ms"
+      - "counter:benchmark.pool_overflow < 100"
+
+  # Open loop: the rate limiter never compensates for a client that cannot keep
+  # pace, so saturation shows up as pool overflow rather than as latency.
+  - name: saturate
+    executor:
+      type: constant-rate
+      rate: 2000
+      duration: 60s
+      open_loop: true
+    thresholds:
+      - "rate:benchmark.http_2xx >= 1900"

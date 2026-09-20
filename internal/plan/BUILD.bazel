@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "plan",
+    srcs = [
+        "defaults.go",
+        "duration.go",
+        "plan.go",
+        "reader.go",
+        "validate.go",
+    ],
+    importpath = "github.com/bpalermo/sortie/internal/plan",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/threshold",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+        "@org_golang_google_protobuf//types/known/durationpb",
+    ],
+)
+
+go_test(
+    name = "plan_test",
+    size = "small",
+    srcs = ["plan_test.go"],
+    embed = [":plan"],
+)
