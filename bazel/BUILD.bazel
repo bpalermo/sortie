@@ -1,0 +1,17 @@
+# Marks bazel/ as a package so the Nighthawk BUILD template is addressable as
+# a label from MODULE.bazel.
+
+exports_files(["nighthawk_api.BUILD"])
+
+filegroup(
+    name = "starlark_srcs",
+    srcs = glob(
+        [
+            "*.bzl",
+            "*.bazel",
+            "*.BUILD",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//:__pkg__"],
+)

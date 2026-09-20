@@ -5,13 +5,7 @@ go_library(
     srcs = ["main.go"],
     importpath = "github.com/bpalermo/sortie/cmd/sortie",
     visibility = ["//visibility:private"],
-    deps = [
-        "//internal/compile",
-        "//internal/plan",
-        "//internal/report",
-        "//internal/run",
-        "@org_golang_google_protobuf//encoding/protojson",
-    ],
+    deps = ["//internal/cli"],
 )
 
 go_binary(

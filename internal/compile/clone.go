@@ -3,7 +3,7 @@ package compile
 import (
 	"google.golang.org/protobuf/proto"
 
-	client "github.com/bpalermo/sortie/gen/api/client"
+	client "github.com/envoyproxy/nighthawk/api/client"
 )
 
 func cloneOptions(o *client.CommandLineOptions) *client.CommandLineOptions {

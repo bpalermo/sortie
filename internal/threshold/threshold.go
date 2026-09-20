@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	client "github.com/bpalermo/sortie/gen/api/client"
+	client "github.com/envoyproxy/nighthawk/api/client"
 	"github.com/bpalermo/sortie/internal/metric"
 )
 

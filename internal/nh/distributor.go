@@ -10,8 +10,8 @@ import (
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	"google.golang.org/grpc"
 
-	client "github.com/bpalermo/sortie/gen/api/client"
-	distributor "github.com/bpalermo/sortie/gen/api/distributor"
+	client "github.com/envoyproxy/nighthawk/api/client"
+	distributor "github.com/envoyproxy/nighthawk/api/distributor"
 )
 
 // Distribute sends one execution request to a nighthawk_distributor, which

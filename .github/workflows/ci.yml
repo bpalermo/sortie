@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        bazel: ["8.5.0"]
+        bazel: ["9.2.0"]
     env:
       # Takes precedence over .bazelversion, so the matrix can cover more than
       # the pinned version without editing the checkout.
@@ -43,6 +43,8 @@ jobs:
           # main's from the shared repo quota.
           cache-save: ${{ github.ref == 'refs/heads/main' }}
 
+      # Lint runs as ordinary test targets (tags = ["lint"]), so this covers
+      # both. There is no separate go vet or gofmt step.
       - name: bazel test //...
         run: bazel test //... --test_output=errors
 
@@ -57,36 +59,11 @@ jobs:
             exit 1
           fi
 
-  go:
-    name: go vet and gofmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      # Bazel builds and tests the code but never checks its formatting, and
-      # rules_go does not run vet's full suite.
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: gofmt
-        run: |
-          unformatted="$(gofmt -l . )"
-          if [ -n "${unformatted}" ]; then
-            echo "::error::gofmt needed on:" >&2
-            echo "${unformatted}" >&2
-            exit 1
-          fi
-
-      - name: go vet
-        run: go vet ./...
-
   # The single check branch protection requires, and the only reason this job
   # exists.
   #
   # A required status check is matched by CHECK RUN name, which for a matrix is
-  # the generated one -- "bazel 8.5.0" and its siblings -- not the workflow's
+  # the generated one -- "bazel 9.2.0" and its siblings -- not the workflow's
   # name. Requiring those directly works until the matrix changes: bump a
   # version and the required check can never report again, so every pull request
   # is blocked by something that will never turn green. Requiring one aggregate
@@ -97,7 +74,7 @@ jobs:
   # instead of failing it.
   ci:
     name: ci
-    needs: [bazel, go]
+    needs: [bazel]
     if: always()
     runs-on: ubuntu-latest
     steps:

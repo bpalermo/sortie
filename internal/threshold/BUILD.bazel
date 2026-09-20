@@ -6,8 +6,8 @@ go_library(
     importpath = "github.com/bpalermo/sortie/internal/threshold",
     visibility = ["//:__subpackages__"],
     deps = [
-        "//gen/api/client",
         "//internal/metric",
+        "@nighthawk_api//:client_go_proto",
     ],
 )
 
@@ -17,8 +17,8 @@ go_test(
     srcs = ["threshold_test.go"],
     embed = [":threshold"],
     deps = [
-        "//gen/api/client",
         "//internal/metric",
+        "@nighthawk_api//:client_go_proto",
         "@org_golang_google_protobuf//types/known/durationpb",
     ],
 )

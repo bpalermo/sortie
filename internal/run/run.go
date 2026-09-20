@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	client "github.com/bpalermo/sortie/gen/api/client"
+	client "github.com/envoyproxy/nighthawk/api/client"
 	"github.com/bpalermo/sortie/internal/compile"
 	"github.com/bpalermo/sortie/internal/nh"
 	"github.com/bpalermo/sortie/internal/plan"

@@ -11,7 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	client "github.com/bpalermo/sortie/gen/api/client"
+	client "github.com/envoyproxy/nighthawk/api/client"
 )
 
 // Dial opens a plaintext connection to a Nighthawk service.

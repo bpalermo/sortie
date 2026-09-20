@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "cli",
+    srcs = [
+        "compile.go",
+        "root.go",
+        "run.go",
+        "validate.go",
+    ],
+    importpath = "github.com/bpalermo/sortie/internal/cli",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/compile",
+        "//internal/plan",
+        "//internal/report",
+        "//internal/run",
+        "@com_github_spf13_cobra//:cobra",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)

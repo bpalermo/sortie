@@ -58,7 +58,15 @@ bazel build //cmd/sortie
 bazel test //...
 ```
 
-`go build ./cmd/sortie` works too; the Bazel build is the supported one.
+Bazel is the only supported build. Nighthawk's protos are generated from a
+pinned archive into packages under `github.com/envoyproxy/nighthawk/api/...`,
+which no Go module publishes, so plain `go build` cannot resolve them. `go.mod`
+exists for Gazelle and editor tooling and lists the third-party modules only;
+maintain the module graph with `bazel mod tidy`, not `go mod tidy`, which cannot
+resolve those imports either.
+
+`bazel run //:gazelle` regenerates BUILD files after adding or renaming a Go
+file. CI fails if it leaves a diff.
 
 ## Commands
 
@@ -182,7 +190,29 @@ to hold. For a single-backend pool this is exactly the obvious behaviour.
 
 ## Protos
 
-The Nighthawk protos under `third_party/nighthawk/` are vendored and pinned in
-`third_party/nighthawk/NIGHTHAWK_COMMIT`. `buf generate` regenerates `gen/`;
-envoy, googleapis and protoc-gen-validate types resolve to their published Go
-modules rather than being regenerated.
+Nighthawk's API protos are fetched at a commit pinned in `bazel/nighthawk.bzl`
+and compiled by Bazel. Nothing is vendored and no generated code is checked in,
+so the bindings cannot go stale against the `.proto` files they came from.
+`hack/bump-nighthawk.sh <ref>` moves the pin.
+
+Envoy's types come from the `envoy_api` module rather than from the
+`go-control-plane` Go module, because that is where the generated Nighthawk
+bindings get theirs. Two targets carrying the same Go import path would put a
+second copy of every Envoy message in the binary and panic at init on duplicate
+registration. The same applies to `google/rpc/status.proto`, whose Go code is
+taken from the genproto module gRPC-Go already links.
+
+## Linting
+
+`aspect_rules_lint` runs buildifier over the hand-written Starlark as an
+ordinary test target, so `bazel test //...` covers it.
+
+Go is analysed by rules_go's `nogo` (`//tools/nogo`), which runs as part of
+compilation, so a vet finding fails the build rather than a separate job.
+`aspect_rules_lint` ships no Go linter, which is why the two are split.
+
+`nogo` on a Go 1.27 SDK needs `golang.org/x/tools` >= v0.48.0, and `go_deps`
+resolves one `x/tools` across every module by MVS, so this repository's `go.mod`
+is what the analyzers are built against. `//tools/deps:deps_test` fails if that
+floor is breached, because the symptom otherwise is an export-data error that
+never mentions `x/tools`.

@@ -6,12 +6,12 @@ go_library(
     importpath = "github.com/bpalermo/sortie/internal/run",
     visibility = ["//:__subpackages__"],
     deps = [
-        "//gen/api/client",
         "//internal/compile",
         "//internal/nh",
         "//internal/plan",
         "//internal/result",
         "//internal/threshold",
+        "@nighthawk_api//:client_go_proto",
         "@org_golang_x_sync//errgroup",
     ],
 )

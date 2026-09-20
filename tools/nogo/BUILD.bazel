@@ -1,0 +1,24 @@
+# nogo lives here so the root MODULE.bazel's go_sdk.nogo() has a stable
+# target to point at, independent of where any particular Go package sits.
+
+load("@rules_go//go:def.bzl", "TOOLS_NOGO", "nogo")
+
+nogo(
+    name = "nogo",
+    config = "nogo.json",
+    visibility = ["//visibility:public"],
+    deps = TOOLS_NOGO,
+)
+
+filegroup(
+    name = "starlark_srcs",
+    srcs = glob(
+        [
+            "*.bzl",
+            "*.bazel",
+            "*.BUILD",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//:__pkg__"],
+)

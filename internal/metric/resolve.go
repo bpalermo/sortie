@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	client "github.com/bpalermo/sortie/gen/api/client"
+	client "github.com/envoyproxy/nighthawk/api/client"
 )
 
 // Value is a resolved metric. Duration-valued metrics carry nanoseconds in Num

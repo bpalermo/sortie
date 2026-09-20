@@ -13,10 +13,21 @@ all of the load and is never modified from here.
 ## Build and test
 
 ```bash
-bazel test //...            # the supported path
+bazel test //...            # builds, tests and lints
 bazel run //:gazelle        # after adding, removing or renaming any .go file
-go test ./...               # works, but Bazel is what CI runs
+bazel mod tidy              # after changing go.mod or a bazel_dep
 ```
+
+Bazel is the only build. `go build` and `go mod tidy` cannot resolve the
+Nighthawk proto packages, which exist only as Bazel targets — do not reach for
+them, and do not "fix" go.mod by running `go mod tidy`. It is hand-maintained
+and lists third-party modules only.
+
+One trap worth knowing: `bazel mod tidy` rewrites `use_repo` from go.mod's
+**direct** requirements and never looks at BUILD files. `google.golang.org/genproto/googleapis/rpc`
+is a direct requirement even though no Go source imports it, because
+`bazel/nighthawk_api.BUILD` names it. Demote it to `// indirect` and the next
+tidy drops it and the build breaks.
 
 CI requires that `bazel run //:gazelle` leaves no diff, so regenerate BUILD
 files rather than hand-editing them.
@@ -58,11 +69,34 @@ README's Limitations section; keep the two in sync.
 
 ## Protos
 
-`third_party/nighthawk/` is vendored and pinned by
-`third_party/nighthawk/NIGHTHAWK_COMMIT`; `gen/` is generated from it by `buf`.
-Both are machine-written. Change them with `hack/sync-protos.sh`, never by hand.
-Envoy, googleapis and protoc-gen-validate types deliberately resolve to their
-published Go modules instead of being regenerated.
+Nighthawk's API protos are fetched at the commit pinned in `bazel/nighthawk.bzl`
+and compiled by Bazel; `bazel/nighthawk_api.BUILD` declares the targets. Nothing
+is vendored and no generated code is checked in. Move the pin with
+`hack/bump-nighthawk.sh <ref>`, never by hand-editing the sha256.
+
+Every Go dependency in `bazel/nighthawk_api.BUILD` must be the same target the
+rest of the build already links for that import path. Envoy types come from
+`envoy_api`, validate from the target `envoy_api` itself uses, and
+`google/rpc/status.proto`'s Go code from the genproto module gRPC-Go links.
+Picking a different target for the same import path fails the link with
+"multiple copies of package", which is the error to expect if you change one.
+
+## Linting
+
+buildifier runs over the hand-written Starlark via `aspect_rules_lint`, as a
+test target tagged `lint`. Go is covered by rules_go's `nogo` (`//tools/nogo`),
+which runs during compilation. rules_lint ships no Go linter, which is why the
+two are split. Do not add `go vet` or `gofmt` steps to CI.
+
+Two traps here, both guarded by `//tools/deps:deps_test`:
+
+- `nogo` on a Go 1.27 SDK needs `golang.org/x/tools` >= v0.48.0. It is an
+  `// indirect` requirement that nothing imports, existing only to raise the MVS
+  floor the analyzers are built against. Delete it and every Go compile fails
+  with an export-data version error that never mentions `x/tools`.
+- buildifier runs with `--mode=check`. Its own default is `fix`, and the srcs it
+  lints are symlinks into the real checkout, so the default would have a test
+  silently rewrite source files.
 
 ## Verifying a change
 

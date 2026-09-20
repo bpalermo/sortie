@@ -9,10 +9,10 @@ go_library(
     importpath = "github.com/bpalermo/sortie/internal/compile",
     visibility = ["//:__subpackages__"],
     deps = [
-        "//gen/api/client",
-        "//gen/api/rate_limiter",
         "//internal/plan",
-        "@com_github_envoyproxy_go_control_plane_envoy//config/core/v3:core",
+        "@envoy_api//envoy/config/core/v3:pkg_go_proto",
+        "@nighthawk_api//:client_go_proto",
+        "@nighthawk_api//:rate_limiter_go_proto",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//types/known/anypb",
         "@org_golang_google_protobuf//types/known/durationpb",
@@ -26,8 +26,8 @@ go_test(
     srcs = ["compile_test.go"],
     embed = [":compile"],
     deps = [
-        "//gen/api/client",
-        "//gen/api/rate_limiter",
         "//internal/plan",
+        "@nighthawk_api//:client_go_proto",
+        "@nighthawk_api//:rate_limiter_go_proto",
     ],
 )

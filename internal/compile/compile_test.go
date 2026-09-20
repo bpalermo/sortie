@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	client "github.com/bpalermo/sortie/gen/api/client"
-	ratelimiter "github.com/bpalermo/sortie/gen/api/rate_limiter"
+	client "github.com/envoyproxy/nighthawk/api/client"
+	ratelimiter "github.com/envoyproxy/nighthawk/api/rate_limiter"
 	"github.com/bpalermo/sortie/internal/plan"
 )
 
