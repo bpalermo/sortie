@@ -3,13 +3,13 @@
 #
 # Usage: bazel/bump-nighthawk.sh <ref>
 #
-# Rewrites NIGHTHAWK_COMMIT and NIGHTHAWK_SHA256 in bazel/nighthawk.bzl. The
+# Rewrites NIGHTHAWK_COMMIT and NIGHTHAWK_SHA256 in bazel/nighthawk/nighthawk.bzl. The
 # protos are not vendored and the Go bindings are not checked in, so this is the
 # only place a Nighthawk version is recorded.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-readonly PIN=bazel/nighthawk.bzl
+readonly PIN=bazel/nighthawk/nighthawk.bzl
 
 if [ $# -ne 1 ]; then
   echo "usage: $0 <nighthawk-ref>" >&2

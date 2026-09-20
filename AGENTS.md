@@ -38,7 +38,7 @@ Bazel-only proto packages. Follow it with `bazel mod tidy` and `bazel run
 One trap worth knowing: `bazel mod tidy` rewrites `use_repo` from go.mod's
 **direct** requirements and never looks at BUILD files. `google.golang.org/genproto/googleapis/rpc`
 is a direct requirement even though no Go source imports it, because
-`bazel/nighthawk_api.BUILD` names it. Demote it to `// indirect` and the next
+`bazel/nighthawk/nighthawk_api.BUILD` names it. Demote it to `// indirect` and the next
 tidy drops it and the build breaks.
 
 CI requires that `bazel run //:gazelle` leaves no diff, so regenerate BUILD
@@ -81,12 +81,12 @@ README's Limitations section; keep the two in sync.
 
 ## Protos
 
-Nighthawk's API protos are fetched at the commit pinned in `bazel/nighthawk.bzl`
-and compiled by Bazel; `bazel/nighthawk_api.BUILD` declares the targets. Nothing
+Nighthawk's API protos are fetched at the commit pinned in `bazel/nighthawk/nighthawk.bzl`
+and compiled by Bazel; `bazel/nighthawk/nighthawk_api.BUILD` declares the targets. Nothing
 is vendored and no generated code is checked in. Move the pin with
 `bazel/bump-nighthawk.sh <ref>`, never by hand-editing the sha256.
 
-Every Go dependency in `bazel/nighthawk_api.BUILD` must be the same target the
+Every Go dependency in `bazel/nighthawk/nighthawk_api.BUILD` must be the same target the
 rest of the build already links for that import path. Envoy types come from
 `envoy_api`, validate from the target `envoy_api` itself uses, and
 `google/rpc/status.proto`'s Go code from the genproto module gRPC-Go links.

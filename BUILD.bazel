@@ -34,6 +34,7 @@ filegroup(
         "BUILD.bazel",
         "MODULE.bazel",
         "//bazel:starlark_srcs",
+        "//bazel/nighthawk:starlark_srcs",
         "//tools/lint:starlark_srcs",
         "//tools/nogo:starlark_srcs",
     ],

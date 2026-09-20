@@ -7,7 +7,7 @@ dependencies through this module's repo mapping. A repo created by
 file fails to resolve.
 
 Only the protos are taken. Nighthawk builds them with Envoy's api_proto_package
-macro, which needs its whole C++ tree; bazel/nighthawk_api.BUILD declares them
+macro, which needs its whole C++ tree; bazel/nighthawk/nighthawk_api.BUILD declares them
 directly instead.
 """
 
@@ -21,7 +21,7 @@ NIGHTHAWK_SHA256 = "2e600ea2113a3e29a0f4a76564f11ad0796d4c7f744c917f44082dc132e0
 def _nighthawk_api_impl(_ctx):
     http_archive(
         name = "nighthawk_api",
-        build_file = "@sortie//bazel:nighthawk_api.BUILD",
+        build_file = "@sortie//bazel/nighthawk:nighthawk_api.BUILD",
         # Nighthawk ships BUILD files beside its protos, which would make every
         # api/ directory a subpackage and put the .proto files out of reach of
         # the root BUILD file written above. Only the protos are wanted, so the

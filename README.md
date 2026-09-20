@@ -195,7 +195,7 @@ to hold. For a single-backend pool this is exactly the obvious behaviour.
 
 ## Protos
 
-Nighthawk's API protos are fetched at a commit pinned in `bazel/nighthawk.bzl`
+Nighthawk's API protos are fetched at a commit pinned in `bazel/nighthawk/nighthawk.bzl`
 and compiled by Bazel. Nothing is vendored and no generated code is checked in,
 so the bindings cannot go stale against the `.proto` files they came from.
 `bazel/bump-nighthawk.sh <ref>` moves the pin.
