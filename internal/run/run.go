@@ -9,12 +9,12 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	client "github.com/envoyproxy/nighthawk/api/client"
 	"github.com/bpalermo/sortie/internal/compile"
 	"github.com/bpalermo/sortie/internal/nh"
 	"github.com/bpalermo/sortie/internal/plan"
 	"github.com/bpalermo/sortie/internal/result"
 	"github.com/bpalermo/sortie/internal/threshold"
+	client "github.com/envoyproxy/nighthawk/api/client"
 )
 
 // ExecutionReport is the verdict for one Nighthawk execution.
@@ -140,25 +140,27 @@ func (r *Runner) dispatch(
 	e compile.Execution,
 	pool plan.Pool,
 ) ([]string, []*client.Output, error) {
+	addrs, perBackend, err := compile.ForPool(e, pool)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	if pool.Distributor != "" {
 		conn, err := nh.Dial(ctx, pool.Distributor)
 		if err != nil {
 			return nil, nil, err
 		}
 		defer conn.Close()
-		return nh.Distribute(ctx, conn, e.Options, pool.Targets)
+		// ForPool returns exactly one options for this path: the distributor
+		// forwards it unchanged to every target.
+		return nh.Distribute(ctx, conn, perBackend[0], pool.Targets)
 	}
 
-	perBackend, err := compile.Divide(e, len(pool.Services))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	outputs := make([]*client.Output, len(pool.Services))
+	outputs := make([]*client.Output, len(addrs))
 	var mu sync.Mutex
 	group, gctx := errgroup.WithContext(ctx)
 
-	for i, addr := range pool.Services {
+	for i, addr := range addrs {
 		group.Go(func() error {
 			conn, err := nh.Dial(gctx, addr)
 			if err != nil {
@@ -178,5 +180,5 @@ func (r *Runner) dispatch(
 	if err := group.Wait(); err != nil {
 		return nil, nil, err
 	}
-	return pool.Services, outputs, nil
+	return addrs, outputs, nil
 }

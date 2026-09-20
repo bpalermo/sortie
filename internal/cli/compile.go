@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -35,16 +36,18 @@ generating any.`,
 				}
 				pool := p.PoolFor(s)
 				for _, e := range executions {
-					n := len(pool.Services)
-					if pool.Distributor != "" {
-						n = 1
-					}
-					perBackend, err := compile.Divide(e, n)
+					addrs, perBackend, err := compile.ForPool(e, pool)
 					if err != nil {
 						return &usageError{err}
 					}
 					for i, opts := range perBackend {
-						fmt.Fprintf(w, "# %s -> backend %d/%d\n", e.Label, i+1, len(perBackend))
+						if pool.Distributor != "" {
+							fmt.Fprintf(w, "# %s -> distributor %s, forwarded unchanged to %s\n",
+								e.Label, pool.Distributor, strings.Join(addrs, ", "))
+						} else {
+							fmt.Fprintf(w, "# %s -> %s (backend %d/%d)\n",
+								e.Label, addrs[i], i+1, len(perBackend))
+						}
 						raw, err := marshal.Marshal(opts)
 						if err != nil {
 							return err

@@ -97,9 +97,12 @@ pools:
     targets: ["10.0.0.11:8443", "10.0.0.12:8443"]
 ```
 
-The distributor forwards one `ExecutionRequest` unchanged, so every target runs
-the same rate and sortie's rate division does not apply on that path. It is also
-marked experimental upstream (envoyproxy/nighthawk#369).
+The distributor forwards one `ExecutionRequest` unchanged to every target, so
+sortie sends it the per-target share rather than the aggregate. `rate` therefore
+means the same thing on both paths — what the target receives — but on this one
+it must divide exactly by `targets x concurrency`, because a single request
+leaves nowhere to put a remainder. The distributor is also marked experimental
+upstream (envoyproxy/nighthawk#369).
 
 ## Executors
 

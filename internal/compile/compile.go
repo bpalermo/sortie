@@ -13,9 +13,9 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
+	"github.com/bpalermo/sortie/internal/plan"
 	client "github.com/envoyproxy/nighthawk/api/client"
 	ratelimiter "github.com/envoyproxy/nighthawk/api/rate_limiter"
-	"github.com/bpalermo/sortie/internal/plan"
 )
 
 // LinearRampingRateLimiterPlugin is the name Nighthawk registers its linear
@@ -88,6 +88,62 @@ func Expand(s plan.Scenario) ([]Execution, error) {
 		return out, nil
 	}
 	return nil, fmt.Errorf("scenario %q: unknown executor type %q", s.Name, s.Executor.Type)
+}
+
+// ForPool returns the backends an execution is dispatched to and the
+// CommandLineOptions each of them receives, exactly as the runner sends them.
+//
+// This is the single source of truth for both dispatch shapes, so that
+// `compile` prints what `run` would send and `validate` refuses what `run`
+// would refuse. Computing the options separately in each command is how the
+// two drifted apart before.
+func ForPool(e Execution, pool plan.Pool) ([]string, []*client.CommandLineOptions, error) {
+	if pool.Distributor != "" {
+		opts, err := uniformShare(e, len(pool.Targets))
+		if err != nil {
+			return nil, nil, err
+		}
+		// The distributor forwards one ExecutionRequest unchanged to every
+		// target, so a single options object carries the per-target share and
+		// the caller must not divide it again.
+		return pool.Targets, []*client.CommandLineOptions{opts}, nil
+	}
+	perBackend, err := Divide(e, len(pool.Services))
+	if err != nil {
+		return nil, nil, err
+	}
+	return pool.Services, perBackend, nil
+}
+
+// uniformShare computes the one CommandLineOptions sent when every backend must
+// receive identical options, as on the distributor path.
+//
+// Divide can spread a remainder across backends because it emits a different
+// options object for each; here there is only one, so the rate has to divide
+// exactly by targets x workers. The alternative would be for a plan's rate to
+// mean something different on the distributor path than on the direct one,
+// which is worse than refusing the plan.
+func uniformShare(e Execution, targets int) (*client.CommandLineOptions, error) {
+	if targets <= 0 {
+		return nil, fmt.Errorf("execution %q: pool has no targets", e.Label)
+	}
+	workers, err := workersPerBackend(e.Scenario)
+	if err != nil {
+		return nil, fmt.Errorf("execution %q: %w", e.Label, err)
+	}
+
+	divisor := uint32(targets) * uint32(workers)
+	if e.Rate%divisor != 0 {
+		return nil, fmt.Errorf(
+			"execution %q: rate %d is not divisible by %d targets x %d workers; "+
+				"a distributor sends every target the same options, so the rate must be "+
+				"a multiple of %d",
+			e.Label, e.Rate, targets, workers, divisor)
+	}
+
+	clone := cloneOptions(e.Options)
+	clone.RequestsPerSecond = wrapperspb.UInt32(e.Rate / divisor)
+	return clone, nil
 }
 
 // Divide splits an execution's aggregate rate across the backends of a pool,

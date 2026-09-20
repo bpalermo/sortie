@@ -11,8 +11,10 @@ pools:
       - "127.0.0.1:8443"
 
   # A distributor fans one request out to several instances itself. It forwards
-  # the request unchanged, so every target runs the same rate; sortie's rate
-  # division does not apply on this path. Marked experimental upstream (#369).
+  # one request unchanged to every target, so sortie sends it the per-target
+  # share rather than the aggregate: rate still means what the target receives,
+  # but it has to divide exactly by targets x concurrency, since there is only
+  # one request to put a remainder in. Marked experimental upstream (#369).
   - name: fleet
     distributor: "127.0.0.1:8442"
     targets:

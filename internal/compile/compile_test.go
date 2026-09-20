@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bpalermo/sortie/internal/plan"
 	client "github.com/envoyproxy/nighthawk/api/client"
 	ratelimiter "github.com/envoyproxy/nighthawk/api/rate_limiter"
-	"github.com/bpalermo/sortie/internal/plan"
 )
 
 func dur(d time.Duration) plan.Duration { return plan.Duration(d) }
@@ -228,5 +228,71 @@ func TestProtocolAndMethod(t *testing.T) {
 	}
 	if string(ro.GetRequestBody()) != `{"a":1}` {
 		t.Errorf("body = %q", ro.GetRequestBody())
+	}
+}
+
+// A distributor forwards one ExecutionRequest unchanged to every target, so the
+// single options it receives must already carry the per-target share. Dividing
+// again at dispatch, or not dividing at all, both make a plan's rate mean
+// something different on this path than on the direct one.
+func TestForPoolDistributorSharesRateAcrossTargets(t *testing.T) {
+	s := scenario(plan.Executor{Type: plan.ConstantRate, Rate: 600, Duration: dur(time.Second)})
+	s.Concurrency = "2"
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := plan.Pool{
+		Name:        "fleet",
+		Distributor: "d:1",
+		Targets:     []string{"a:1", "b:1", "c:1"},
+	}
+
+	addrs, perBackend, err := ForPool(execs[0], pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(perBackend) != 1 {
+		t.Fatalf("got %d options, want 1: the distributor receives a single request", len(perBackend))
+	}
+	if got := len(addrs); got != 3 {
+		t.Fatalf("got %d addrs, want the 3 targets", got)
+	}
+	// 600 aggregate over 3 targets x 2 workers.
+	if got := perBackend[0].GetRequestsPerSecond().GetValue(); got != 100 {
+		t.Errorf("--rps = %d, want 100 so 3 targets x 2 workers emit 600 rps", got)
+	}
+}
+
+// Only one options object goes to the distributor, so there is nowhere to put a
+// remainder. Refusing beats emitting a rate the plan did not ask for.
+func TestForPoolDistributorRejectsIndivisibleRate(t *testing.T) {
+	s := scenario(plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second)})
+	execs, _ := Expand(s)
+	pool := plan.Pool{Name: "fleet", Distributor: "d:1", Targets: []string{"a:1", "b:1", "c:1"}}
+
+	if _, _, err := ForPool(execs[0], pool); err == nil {
+		t.Fatal("100 rps over 3 targets is not expressible in one options and must be refused")
+	}
+}
+
+func TestForPoolDirectPoolDividesPerBackend(t *testing.T) {
+	s := scenario(plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second)})
+	execs, _ := Expand(s)
+	pool := plan.Pool{Name: "local", Services: []string{"a:1", "b:1", "c:1"}}
+
+	addrs, perBackend, err := ForPool(execs[0], pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(perBackend) != 3 || len(addrs) != 3 {
+		t.Fatalf("got %d options for %d addrs, want 3 and 3", len(perBackend), len(addrs))
+	}
+	total := uint32(0)
+	for _, o := range perBackend {
+		total += o.GetRequestsPerSecond().GetValue()
+	}
+	if total != 100 {
+		t.Errorf("rates sum to %d, want 100", total)
 	}
 }
