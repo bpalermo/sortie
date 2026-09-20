@@ -36,10 +36,23 @@ Bazel-only proto packages. Follow it with `bazel mod tidy` and `bazel run
 //:gazelle`.
 
 One trap worth knowing: `bazel mod tidy` rewrites `use_repo` from go.mod's
-**direct** requirements and never looks at BUILD files. `google.golang.org/genproto/googleapis/rpc`
-is a direct requirement even though no Go source imports it, because
-`bazel/nighthawk/nighthawk_api.BUILD` names it. Demote it to `// indirect` and the next
-tidy drops it and the build breaks.
+**direct** requirements and never looks at BUILD files. A module named only by a
+BUILD or `.bzl` file therefore has to stay a direct requirement even though no
+Go source imports it, and it carries a `// bazel-only:` comment saying so.
+Demote one to `// indirect` and the next tidy drops its `use_repo` entry and the
+build breaks somewhere that says nothing about go.mod.
+
+`//tools/deps:deps_test` enforces this for every annotated requirement, in both
+directions: annotated means direct, and annotated means some hand-written Bazel
+file still names it. Adding a bazel-only dependency needs only the annotation;
+the test picks it up without being extended.
+
+There are two today, and both are structural rather than oversights. Neither can
+come from a BCR module instead: `envoy_api` and `xds` already link the go_deps
+`google/rpc/status`, and `gazelle_override` cannot reach a bazel_dep's
+checked-in BUILD files; the BCR `protovalidate` module ships no Go targets at
+all, only the protos. The rule is to use whatever target the rest of the build
+already links for a given Go import path.
 
 CI requires that `bazel run //:gazelle` leaves no diff, so regenerate BUILD
 files rather than hand-editing them.
