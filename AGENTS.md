@@ -84,7 +84,7 @@ README's Limitations section; keep the two in sync.
 Nighthawk's API protos are fetched at the commit pinned in `bazel/nighthawk.bzl`
 and compiled by Bazel; `bazel/nighthawk_api.BUILD` declares the targets. Nothing
 is vendored and no generated code is checked in. Move the pin with
-`hack/bump-nighthawk.sh <ref>`, never by hand-editing the sha256.
+`bazel/bump-nighthawk.sh <ref>`, never by hand-editing the sha256.
 
 Every Go dependency in `bazel/nighthawk_api.BUILD` must be the same target the
 rest of the build already links for that import path. Envoy types come from

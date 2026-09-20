@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Repin the Nighthawk archive that the API protos are generated from.
 #
-# Usage: hack/bump-nighthawk.sh <ref>
+# Usage: bazel/bump-nighthawk.sh <ref>
 #
 # Rewrites NIGHTHAWK_COMMIT and NIGHTHAWK_SHA256 in bazel/nighthawk.bzl. The
 # protos are not vendored and the Go bindings are not checked in, so this is the

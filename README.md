@@ -198,7 +198,7 @@ to hold. For a single-backend pool this is exactly the obvious behaviour.
 Nighthawk's API protos are fetched at a commit pinned in `bazel/nighthawk.bzl`
 and compiled by Bazel. Nothing is vendored and no generated code is checked in,
 so the bindings cannot go stale against the `.proto` files they came from.
-`hack/bump-nighthawk.sh <ref>` moves the pin.
+`bazel/bump-nighthawk.sh <ref>` moves the pin.
 
 Envoy's types come from the `envoy_api` module rather than from the
 `go-control-plane` Go module, because that is where the generated Nighthawk
