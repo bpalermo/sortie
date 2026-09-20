@@ -1,5 +1,5 @@
 load("@gazelle//:def.bzl", "gazelle")
-load("//tools/lint:linters.bzl", "buildifier_test")
+load("//bazel/lint:linters.bzl", "buildifier_test")
 
 # gazelle:prefix github.com/bpalermo/sortie
 
@@ -34,8 +34,8 @@ filegroup(
         "BUILD.bazel",
         "MODULE.bazel",
         "//bazel:starlark_srcs",
+        "//bazel/lint:starlark_srcs",
         "//bazel/nighthawk:starlark_srcs",
-        "//tools/lint:starlark_srcs",
         "//tools/nogo:starlark_srcs",
     ],
     tags = ["starlark"],

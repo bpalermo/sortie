@@ -26,7 +26,7 @@ load("@aspect_rules_lint//lint:lint_test.bzl", "lint_test")
 # "invalid cross-device link" instead. -mode=check makes buildifier only
 # report; nothing is ever written back.
 buildifier = lint_buildifier_aspect(
-    binary = Label("//tools/lint:buildifier"),
+    binary = Label("//bazel/lint:buildifier"),
     args = ["--mode=check"],
 )
 

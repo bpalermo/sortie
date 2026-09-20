@@ -8,7 +8,7 @@ bazel_dep(name = "gazelle", version = "0.54.0")
 bazel_dep(name = "aspect_rules_lint", version = "2.9.0")
 bazel_dep(name = "buildifier_prebuilt", version = "10.0.1")
 
-# Named directly by the select() in //tools/lint that picks buildifier's
+# Named directly by the select() in //bazel/lint that picks buildifier's
 # platform-appropriate binary.
 bazel_dep(name = "platforms", version = "1.0.0")
 
@@ -24,7 +24,7 @@ bazel_dep(name = "platforms", version = "1.0.0")
 # so it is specific to how aspects (as opposed to rules) create actions.
 # Sidestep the launcher entirely: reach into buildifier_prebuilt's own
 # module extension for the raw downloaded binaries, which are self-contained
-# executables with no runfiles of their own. tools/lint/linters.bzl selects
+# executables with no runfiles of their own. bazel/lint/linters.bzl selects
 # among them by platform, since bypassing the launcher also bypasses the
 # toolchain resolution that would otherwise have picked one.
 buildifier_prebuilt_deps = use_extension(

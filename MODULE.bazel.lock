@@ -455,10 +455,10 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
-    "//bazel:nighthawk.bzl%nighthawk_api": {
+    "//bazel/nighthawk:nighthawk.bzl%nighthawk_api": {
       "general": {
-        "bzlTransitiveDigest": "YzmwiZj3GowO+FcmWom3NV7lHoF+MoJuV5C1k3C0ixQ=",
-        "usagesDigest": "1Kl7hxht+th/xvHw/YUrD6oPl1EXF1E/nm27i+96Pe4=",
+        "bzlTransitiveDigest": "qae2UzUs3/4U/8TYZE2t8A0WNw0VxR3jQpwyJLaJhrc=",
+        "usagesDigest": "ucD+LtOyTqTWKtFzntjs7cpL9D6+R2v5Iwy23JSG5aU=",
         "recordedInputs": [
           "REPO_MAPPING:,bazel_tools bazel_tools"
         ],
@@ -466,7 +466,7 @@
           "nighthawk_api": {
             "repoRuleId": "@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive",
             "attributes": {
-              "build_file": "@@//bazel:nighthawk_api.BUILD",
+              "build_file": "@@//bazel/nighthawk:nighthawk_api.BUILD",
               "patch_cmds": [
                 "find . -mindepth 2 \\( -name BUILD -o -name BUILD.bazel \\) -delete"
               ],
