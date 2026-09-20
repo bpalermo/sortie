@@ -4,12 +4,13 @@ package threshold
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 
-	client "github.com/envoyproxy/nighthawk/api/client"
 	"github.com/bpalermo/sortie/internal/metric"
+	client "github.com/envoyproxy/nighthawk/api/client"
 )
 
 // Op is a comparison operator.
@@ -69,6 +70,12 @@ func Parse(expr string) (Threshold, error) {
 		// Numbers are tried first because time.ParseDuration accepts a bare
 		// "0", and "counter:... == 0" must not be read as a duration.
 		if n, err := strconv.ParseFloat(rhs, 64); err == nil {
+			// ParseFloat accepts NaN and Inf. Neither is a meaningful bound:
+			// every comparison against NaN is false, so "counter:x != NaN"
+			// would hold for any value at all.
+			if math.IsNaN(n) || math.IsInf(n, 0) {
+				return Threshold{}, fmt.Errorf("%q: %s is not a usable threshold value", raw, rhs)
+			}
 			t.Value = n
 			return t, nil
 		}

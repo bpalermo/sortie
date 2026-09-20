@@ -193,12 +193,11 @@ func readStarlarkFiles(t *testing.T) []string {
 			}
 			return nil
 		})
-		if len(out) > 0 {
-			return out
-		}
 	}
-	t.Fatal("found no Bazel files to search")
-	return nil
+	if len(out) == 0 {
+		t.Fatal("found no Bazel files to search")
+	}
+	return out
 }
 
 // readRepoFile finds a file at the repository root. Under `bazel test` the

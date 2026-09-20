@@ -17,10 +17,13 @@ import (
 // Distribute sends one execution request to a nighthawk_distributor, which
 // fans it out to targets and streams back one response per target.
 //
-// The distributor is marked experimental upstream (envoyproxy/nighthawk#369).
-// It forwards a single ExecutionRequest unchanged, so every target runs the
-// same CommandLineOptions and therefore the same requests per second; sortie's
-// own rate division does not apply on this path.
+// The distributor forwards a single ExecutionRequest unchanged, so every target
+// runs the same CommandLineOptions. compile.ForPool has therefore already
+// divided the plan's aggregate rate by targets x concurrency: opts carries the
+// per-target share, and this function must not divide it again.
+//
+// Marked experimental upstream (envoyproxy/nighthawk#369), and no released
+// Nighthawk binary hosts this service.
 func Distribute(
 	ctx context.Context,
 	conn *grpc.ClientConn,
@@ -80,8 +83,13 @@ func Distribute(
 			outputs = append(outputs, er.GetOutput())
 		}
 	}
-	if len(outputs) == 0 {
-		return nil, nil, fmt.Errorf("distributor returned no results")
+	// Anything less than one result per target means the pool that ran is not
+	// the pool the plan described. Evaluating thresholds against the subset
+	// would report a pass for a run that never happened in full.
+	if len(outputs) != len(targets) {
+		return nil, nil, fmt.Errorf(
+			"distributor returned %d results for %d targets (%s); refusing to judge a partial pool",
+			len(outputs), len(targets), strings.Join(names, ", "))
 	}
 	return names, outputs, nil
 }

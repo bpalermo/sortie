@@ -274,6 +274,13 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 		o.Timeout = s.GetTimeout()
 	}
 
+	// The rate limiter is sortie's to choose: it is what makes an executor mean
+	// what it says. A template that carried one would otherwise survive into a
+	// constant-rate or staircase execution and shape the load differently from
+	// the plan, which is the failure mode every other rate decision here exists
+	// to avoid.
+	o.RateLimiterPluginConfig = nil
+
 	if ramp > 0 {
 		cfg, err := anypb.New(&ratelimiter.LinearRampingRateLimiterConfig{
 			RampTime: durationpb.New(ramp),

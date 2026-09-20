@@ -13,7 +13,7 @@
 /BUILD.bazel linguist-generated=false
 /bazel/BUILD.bazel linguist-generated=false
 /bazel/nighthawk/BUILD.bazel linguist-generated=false
-/tools/lint/BUILD.bazel linguist-generated=false
+/bazel/lint/BUILD.bazel linguist-generated=false
 /tools/nogo/BUILD.bazel linguist-generated=false
 
 # Resolved by Bazel from MODULE.bazel; large and mechanical.

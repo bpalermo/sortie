@@ -5,8 +5,8 @@ import (
 
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	client "github.com/envoyproxy/nighthawk/api/client"
 	"github.com/bpalermo/sortie/internal/metric"
+	client "github.com/envoyproxy/nighthawk/api/client"
 )
 
 func TestParse(t *testing.T) {
@@ -148,4 +148,23 @@ func indexOf(haystack, needle string) int {
 		}
 	}
 	return -1
+}
+
+// ParseFloat accepts NaN and Inf, and every comparison against NaN is false --
+// so "counter:x != NaN" would hold for any value at all. Neither is a usable
+// bound, so both are rejected at parse time.
+func TestParseRejectsNonFiniteValues(t *testing.T) {
+	for _, expr := range []string{
+		"counter:x != NaN",
+		"counter:x < NaN",
+		"counter:x < +Inf",
+		"counter:x > -Inf",
+		"counter:x < Infinity",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			if _, err := Parse(expr); err == nil {
+				t.Fatalf("Parse(%q) should reject a non-finite threshold value", expr)
+			}
+		})
+	}
 }

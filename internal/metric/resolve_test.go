@@ -147,3 +147,44 @@ func TestGlobalResultRequiresGlobal(t *testing.T) {
 		t.Fatalf("a single result should stand in for global: %v", err)
 	}
 }
+
+// Reporting a lower bucket as though it were the requested percentile
+// understates the tail exactly where a threshold cares about it, so an
+// unanswerable request is an error rather than a quiet approximation.
+func TestResolvePercentileAboveEveryBucketIsAnError(t *testing.T) {
+	r := sampleResult()
+	// Truncate the distribution so nothing reaches p99.
+	r.Statistics[0].Percentiles = r.Statistics[0].GetPercentiles()[:3] // max 0.9375
+
+	sel, err := ParseSelector("latency_2xx.p99")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Resolve(r, sel); err == nil {
+		t.Fatal("p99 against a distribution topping out at p93.75 must not resolve")
+	}
+}
+
+// A fractional percentile must select the fractional bucket, not the integer
+// one it shares a prefix with.
+func TestParseFractionalPercentile(t *testing.T) {
+	sel, err := ParseSelector("latency_2xx.p99.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel.Stat != "latency_2xx" {
+		t.Errorf("stat = %q, want latency_2xx", sel.Stat)
+	}
+	if sel.Percentile != 99.9 {
+		t.Fatalf("percentile = %v, want 99.9 (p99.9 must not collapse to p99)", sel.Percentile)
+	}
+
+	// And it must resolve to the 0.999 bucket rather than the 0.96875 one.
+	v, err := Resolve(sampleResult(), sel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := time.Duration(int64(v.Num)), 500*time.Millisecond; got != want {
+		t.Errorf("p99.9 = %s, want %s (the 0.9990234375 bucket)", got, want)
+	}
+}

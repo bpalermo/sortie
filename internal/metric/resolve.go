@@ -68,12 +68,21 @@ func resolvePercentile(st *client.Statistic, sel Selector) (Value, error) {
 	})
 
 	target := sel.Percentile / 100.0
-	chosen := sorted[len(sorted)-1]
+	var chosen *client.Percentile
 	for _, p := range sorted {
 		if p.GetPercentile() >= target {
 			chosen = p
 			break
 		}
+	}
+	// Falling back to the highest available bucket would report, say, a p95
+	// value as though it were the p99 the threshold asked for -- understating
+	// the tail exactly where it matters. An unanswerable question is an error.
+	if chosen == nil {
+		highest := sorted[len(sorted)-1].GetPercentile()
+		return Value{}, fmt.Errorf(
+			"%s: statistic %q carries no percentile at or above %.4g; the highest is %.4g",
+			sel.Raw, st.GetId(), target, highest)
 	}
 	v := Value{ActualPercentile: chosen.GetPercentile()}
 	if d := chosen.GetDuration(); d != nil {

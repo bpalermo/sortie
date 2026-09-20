@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
@@ -372,5 +374,47 @@ func TestNighthawkTemplateIsClonedPerExecution(t *testing.T) {
 	}
 	if s.NighthawkTemplate.GetBurstSize().GetValue() != 3 {
 		t.Error("compilation mutated the scenario's template")
+	}
+}
+
+// The rate limiter is what makes an executor mean what it says, so a template
+// carrying one must not survive into a constant-rate or staircase execution.
+func TestNighthawkTemplateRateLimiterIsNotInherited(t *testing.T) {
+	cfg, err := anypb.New(&ratelimiter.LinearRampingRateLimiterConfig{
+		RampTime: durationpb.New(5 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &client.CommandLineOptions{
+		RateLimiterPluginConfig: &corev3.TypedExtensionConfig{
+			Name:        LinearRampingRateLimiterPlugin,
+			TypedConfig: cfg,
+		},
+	}
+
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 10, Duration: dur(time.Minute)})
+	s.NighthawkTemplate = template
+
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execs[0].Options.GetRateLimiterPluginConfig() != nil {
+		t.Fatal("a constant-rate execution must not inherit the template's rate limiter")
+	}
+
+	// A ramping executor still installs its own.
+	ramp := dur(10 * time.Second)
+	s = scenario(&plan.Executor{
+		Type: plan.RampingRate, Rate: 10, Duration: dur(time.Minute), RampTime: ramp,
+	})
+	s.NighthawkTemplate = template
+	execs, err = Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execs[0].Options.GetRateLimiterPluginConfig().GetName() != LinearRampingRateLimiterPlugin {
+		t.Error("a ramping execution must install the ramp limiter")
 	}
 }
