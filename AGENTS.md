@@ -23,6 +23,18 @@ Nighthawk proto packages, which exist only as Bazel targets — do not reach for
 them, and do not "fix" go.mod by running `go mod tidy`. It is hand-maintained
 and lists third-party modules only.
 
+Change a Go dependency through rules_go's own SDK rather than a host toolchain,
+so the version that resolves the module is the version that builds it:
+
+```bash
+bazel run @rules_go//go -- get github.com/some/module@v1.2.3
+bazel run @rules_go//go -- get -tool github.com/some/cmd   # adds a tool directive
+```
+
+This updates go.mod and go.sum without the tidy pass that chokes on the
+Bazel-only proto packages. Follow it with `bazel mod tidy` and `bazel run
+//:gazelle`.
+
 One trap worth knowing: `bazel mod tidy` rewrites `use_repo` from go.mod's
 **direct** requirements and never looks at BUILD files. `google.golang.org/genproto/googleapis/rpc`
 is a direct requirement even though no Go source imports it, because

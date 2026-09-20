@@ -61,9 +61,11 @@ bazel test //...
 Bazel is the only supported build. Nighthawk's protos are generated from a
 pinned archive into packages under `github.com/envoyproxy/nighthawk/api/...`,
 which no Go module publishes, so plain `go build` cannot resolve them. `go.mod`
-exists for Gazelle and editor tooling and lists the third-party modules only;
-maintain the module graph with `bazel mod tidy`, not `go mod tidy`, which cannot
-resolve those imports either.
+exists for Gazelle and editor tooling and lists the third-party modules only.
+
+Change dependencies through rules_go's SDK — `bazel run @rules_go//go -- get
+<module>@<version>` — then `bazel mod tidy`. Not `go mod tidy`, which cannot
+resolve the Bazel-only proto packages.
 
 `bazel run //:gazelle` regenerates BUILD files after adding or renaming a Go
 file. CI fails if it leaves a diff.
