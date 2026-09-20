@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "run",
@@ -13,5 +13,22 @@ go_library(
         "//internal/threshold",
         "@nighthawk_api//:client_go_proto",
         "@org_golang_x_sync//errgroup",
+    ],
+)
+
+go_test(
+    name = "run_test",
+    size = "small",
+    srcs = [
+        "fake_service_test.go",
+        "run_test.go",
+    ],
+    deps = [
+        ":run",
+        "//internal/plan",
+        "@nighthawk_api//:client_go_proto",
+        "@org_golang_google_genproto_googleapis_rpc//status",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_protobuf//types/known/durationpb",
     ],
 )

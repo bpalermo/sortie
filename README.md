@@ -101,8 +101,13 @@ The distributor forwards one `ExecutionRequest` unchanged to every target, so
 sortie sends it the per-target share rather than the aggregate. `rate` therefore
 means the same thing on both paths — what the target receives — but on this one
 it must divide exactly by `targets x concurrency`, because a single request
-leaves nowhere to put a remainder. The distributor is also marked experimental
-upstream (envoyproxy/nighthawk#369).
+leaves nowhere to put a remainder.
+
+**Nighthawk ships no distributor binary.** `NighthawkDistributor` exists in its
+sources as a library and is marked experimental (envoyproxy/nighthawk#369), but
+no released binary hosts it and `nighthawk_service` does not. Using a
+distributor pool means building a host for that service yourself. The direct
+`services:` pool is the path that works out of the box.
 
 ## Executors
 

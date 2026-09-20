@@ -14,7 +14,12 @@ pools:
   # one request unchanged to every target, so sortie sends it the per-target
   # share rather than the aggregate: rate still means what the target receives,
   # but it has to divide exactly by targets x concurrency, since there is only
-  # one request to put a remainder in. Marked experimental upstream (#369).
+  # one request to put a remainder in.
+  #
+  # Note that Nighthawk ships no distributor binary: the service exists in its
+  # sources as a library and is marked experimental (#369), and
+  # nighthawk_service does not host it. This pool is unusable until someone
+  # builds a host for it. No scenario below uses it.
   - name: fleet
     distributor: "127.0.0.1:8442"
     targets:

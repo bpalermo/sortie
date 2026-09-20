@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "report",
@@ -8,5 +8,19 @@ go_library(
     deps = [
         "//internal/compile",
         "//internal/run",
+    ],
+)
+
+go_test(
+    name = "report_test",
+    size = "small",
+    srcs = ["report_test.go"],
+    deps = [
+        ":report",
+        "//internal/result",
+        "//internal/run",
+        "//internal/threshold",
+        "@nighthawk_api//:client_go_proto",
+        "@org_golang_google_protobuf//types/known/durationpb",
     ],
 )
