@@ -29,5 +29,7 @@ go_test(
         "//internal/plan",
         "@nighthawk_api//:client_go_proto",
         "@nighthawk_api//:rate_limiter_go_proto",
+        "@org_golang_google_protobuf//types/known/durationpb",
+        "@org_golang_google_protobuf//types/known/wrapperspb",
     ],
 )

@@ -15,6 +15,15 @@ load("//bazel/lint:linters.bzl", "buildifier_test")
 # envoy message in the binary and panic at init on duplicate registration.
 # gazelle:resolve go github.com/envoyproxy/go-control-plane/envoy/config/core/v3 @envoy_api//envoy/config/core/v3:pkg_go_proto
 
+# The plan schema imports Nighthawk's and protovalidate's protos. Both live in
+# external repositories, but their import paths ("api/client/...", "buf/...")
+# look like directories in this repo, so gazelle resolves them to local
+# packages that do not exist unless told otherwise.
+# gazelle:resolve proto api/client/options.proto @nighthawk_api//:client_proto
+# gazelle:resolve proto go api/client/options.proto @nighthawk_api//:client_go_proto
+# gazelle:resolve proto buf/validate/validate.proto @protovalidate//proto/protovalidate/buf/validate:validate_proto
+# gazelle:resolve proto go buf/validate/validate.proto @build_buf_gen_go_bufbuild_protovalidate_protocolbuffers_go//buf/validate
+
 gazelle(name = "gazelle")
 
 # MODULE.bazel and go.mod default to //visibility:private as source file

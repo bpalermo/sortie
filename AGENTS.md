@@ -79,6 +79,23 @@ README's Limitations section; keep the two in sync.
 - `RequestSource` never sees responses, so there is no session flow and no
   response correlation.
 
+## The plan schema
+
+`api/sortie/plan/v1/plan.proto` is the schema, with constraints declared inline
+via protovalidate; `internal/plan` parses YAML into it with `protoyaml` and adds
+only what the schema cannot express — cross-message rules (a scenario naming a
+declared pool), dispatch-dependent rules, and threshold expression syntax.
+
+Put a new constraint in the proto rather than in Go when it concerns one message.
+Keep `DiscardUnknown` false: a misspelled field failing the run is a property
+there is a test for.
+
+`Scenario.nighthawk_template` is the escape hatch for Nighthawk options the
+schema does not model. Do not add a field mirroring a Nighthawk flag unless
+sortie needs to reason about it — the template already reaches it. The fields
+sortie overwrites are listed in `internal/compile.options`; everything else in a
+template survives compilation.
+
 ## Protos
 
 Nighthawk's API protos are fetched at the commit pinned in `bazel/nighthawk/nighthawk.bzl`

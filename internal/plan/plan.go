@@ -1,140 +1,57 @@
-// Package plan defines sortie's scenario file: the declarative description of
-// what load to generate, where to generate it from, and what must hold for the
-// run to be considered a pass.
+// Package plan loads a sortie plan file.
+//
+// The schema itself lives in api/sortie/plan/v1: field names, types and most
+// constraints are declared in the proto, so a rule sits next to the field it
+// governs rather than in a wall of Go. This package parses YAML into those
+// messages and adds the checks the schema cannot express.
 package plan
 
 import (
 	"fmt"
 	"os"
 
-	"gopkg.in/yaml.v3"
+	"buf.build/go/protovalidate"
+	"buf.build/go/protoyaml"
+
+	"google.golang.org/protobuf/proto"
+
+	planv1 "github.com/bpalermo/sortie/api/sortie/plan/v1"
 )
+
+// yamlValidator adapts protovalidate to protoyaml's Validator interface.
+// protovalidate's Validate takes variadic options, which does not satisfy
+// protoyaml's single-argument signature.
+type yamlValidator struct{ v protovalidate.Validator }
+
+func (a yamlValidator) Validate(m proto.Message) error { return a.v.Validate(m) }
 
 // Version is the only plan schema version understood by this binary.
 const Version = "v1"
 
-// Plan is the root of a sortie scenario file.
-type Plan struct {
-	Version string `yaml:"version"`
-
-	// Pools name the Nighthawk backends that scenarios run on.
-	Pools []Pool `yaml:"pools"`
-
-	// Defaults supplies field values inherited by every scenario that does not
-	// set them itself. Its Name and Thresholds fields are ignored.
-	Defaults *Scenario `yaml:"defaults,omitempty"`
-
-	// Scenarios run in file order.
-	Scenarios []Scenario `yaml:"scenarios"`
-
-	// Thresholds apply to every scenario, in addition to any the scenario
-	// declares itself.
-	Thresholds []string `yaml:"thresholds,omitempty"`
-}
-
-// Pool is a set of Nighthawk backends that a scenario's load is spread over.
-//
-// Exactly one of Services or Distributor must be set. Services addresses a set
-// of nighthawk_service instances directly, which sortie drives concurrently and
-// whose results it merges itself. Distributor addresses a single
-// nighthawk_distributor that fans the request out on sortie's behalf.
-type Pool struct {
-	Name        string   `yaml:"name"`
-	Services    []string `yaml:"services,omitempty"`
-	Distributor string   `yaml:"distributor,omitempty"`
-
-	// Targets is the list of addresses the distributor should fan out to. It is
-	// only meaningful together with Distributor.
-	Targets []string `yaml:"targets,omitempty"`
-}
-
-// Scenario is one unit of load: a target, an executor that shapes the request
-// rate over time, and the client tuning that goes with it.
-type Scenario struct {
-	Name string `yaml:"name"`
-	Pool string `yaml:"pool,omitempty"`
-
-	Target   string   `yaml:"target,omitempty"`
-	Method   string   `yaml:"method,omitempty"`
-	Headers  []string `yaml:"headers,omitempty"`
-	Body     string   `yaml:"body,omitempty"`
-	Protocol string   `yaml:"protocol,omitempty"`
-
-	Executor Executor `yaml:"executor"`
-
-	// Connections is Nighthawk's --connections: the per-worker connection
-	// circuit-breaker cap, not a target concurrency.
-	Connections *uint32 `yaml:"connections,omitempty"`
-
-	// Concurrency is Nighthawk's --concurrency: the number of worker threads,
-	// either a positive integer or "auto".
-	Concurrency string `yaml:"concurrency,omitempty"`
-
-	MaxPendingRequests  *uint32   `yaml:"max_pending_requests,omitempty"`
-	MaxConcurrentStream *uint32   `yaml:"max_concurrent_streams,omitempty"`
-	Timeout             *Duration `yaml:"timeout,omitempty"`
-
-	// Thresholds apply to this scenario only.
-	Thresholds []string `yaml:"thresholds,omitempty"`
-}
-
-// ExecutorType names the supported request-rate shapes.
-type ExecutorType string
-
+// Executor type names, as written in a plan file.
 const (
 	// ConstantRate holds a fixed aggregate request rate for the whole duration.
-	ConstantRate ExecutorType = "constant-rate"
+	ConstantRate = "constant-rate"
 
-	// RampingRate ramps linearly from zero to Rate over RampTime, then holds
-	// Rate for the remainder of Duration. This is Nighthawk's
+	// RampingRate ramps linearly from zero to the rate over ramp_time, then
+	// holds it for the remainder of the duration. This is Nighthawk's
 	// nighthawk.linear-ramping-rate-limiter-plugin.
-	RampingRate ExecutorType = "ramping-rate"
+	RampingRate = "ramping-rate"
 
-	// Staircase steps through Stages, each at a constant rate. Each stage is a
-	// separate Nighthawk execution; see Stage.
-	Staircase ExecutorType = "staircase"
+	// Staircase steps through stages, each at a constant rate. Each stage is a
+	// separate Nighthawk execution.
+	Staircase = "staircase"
 )
 
-// Executor shapes the request rate over time.
-type Executor struct {
-	Type ExecutorType `yaml:"type"`
-
-	// Rate is the aggregate requests per second the target receives, across
-	// every worker thread of every backend in the pool.
-	//
-	// Nighthawk's own --rps is per worker thread, so sortie divides this by
-	// backends x concurrency before sending it. A rate that no integer
-	// per-worker --rps can express is refused rather than rounded, and
-	// concurrency "auto" cannot be combined with a rate at all, because the
-	// worker count is only decided on the backend.
-	Rate uint32 `yaml:"rate,omitempty"`
-
-	Duration Duration `yaml:"duration,omitempty"`
-
-	// RampTime is only used by RampingRate. It must be shorter than Duration.
-	RampTime *Duration `yaml:"ramp_time,omitempty"`
-
-	// Stages is only used by Staircase.
-	Stages []Stage `yaml:"stages,omitempty"`
-
-	// OpenLoop selects Nighthawk's open-loop mode, in which the rate limiter
-	// never compensates for a client that cannot keep pace and pool overflows
-	// are reported instead. Defaults to false, matching Nighthawk's own default.
-	OpenLoop bool `yaml:"open_loop,omitempty"`
-}
-
-// Stage is one step of a Staircase executor.
-//
-// Each stage is dispatched as its own Nighthawk execution, because Nighthawk
-// has no way to change the request rate of a run already in flight (the
-// UpdateRequest RPC in api/client/service.proto is declared but unimplemented).
-// Connections are therefore re-established at every stage boundary and each
-// stage yields its own result, which sortie reports separately and evaluates
-// thresholds against separately.
-type Stage struct {
-	Rate     uint32   `yaml:"rate"`
-	Duration Duration `yaml:"duration"`
-}
+// The plan schema types, aliased so callers do not all have to import the
+// generated package directly.
+type (
+	Plan     = planv1.Plan
+	Pool     = planv1.Pool
+	Scenario = planv1.Scenario
+	Executor = planv1.Executor
+	Stage    = planv1.Stage
+)
 
 // Load reads and validates a plan from path.
 func Load(path string) (*Plan, error) {
@@ -142,21 +59,30 @@ func Load(path string) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Parse(raw)
+	return parse(raw, path)
 }
 
-// Parse decodes and validates a plan. Unknown fields are rejected so that a
-// typo in a scenario file fails the run instead of being silently ignored.
-func Parse(raw []byte) (*Plan, error) {
-	var p Plan
-	dec := yaml.NewDecoder(newReader(raw))
-	dec.KnownFields(true)
-	if err := dec.Decode(&p); err != nil {
+// Parse decodes and validates a plan held in memory.
+func Parse(raw []byte) (*Plan, error) { return parse(raw, "") }
+
+func parse(raw []byte, path string) (*Plan, error) {
+	validator, err := protovalidate.New()
+	if err != nil {
+		return nil, fmt.Errorf("building the plan validator: %w", err)
+	}
+
+	p := &planv1.Plan{}
+	// DiscardUnknown stays false so a misspelled field fails the run instead of
+	// being silently ignored. Passing the validator here rather than calling it
+	// afterwards is what attaches line and column numbers to a violation.
+	opts := protoyaml.UnmarshalOptions{Path: path, Validator: yamlValidator{validator}}
+	if err := opts.Unmarshal(raw, p); err != nil {
 		return nil, fmt.Errorf("parsing plan: %w", err)
 	}
-	if err := p.validate(); err != nil {
+
+	if err := validateBeyondSchema(p); err != nil {
 		return nil, err
 	}
-	p.applyDefaults()
-	return &p, nil
+	applyDefaults(p)
+	return p, nil
 }

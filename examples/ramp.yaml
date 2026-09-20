@@ -66,3 +66,22 @@ scenarios:
       open_loop: true
     thresholds:
       - "rate:benchmark.http_2xx >= 1900"
+
+  # Anything this schema does not model can be set on the Nighthawk options
+  # directly. sortie overlays only the fields it owns -- requests_per_second,
+  # duration, execution_id and the rate limiter plugin -- so everything here
+  # reaches the backend as written.
+  #
+  # This mirrors how Nighthawk's own adaptive load controller takes a
+  # nighthawk_traffic_template, and it means sortie does not have to grow a
+  # field for every Nighthawk flag.
+  - name: passthrough
+    executor:
+      type: constant-rate
+      rate: 100
+      duration: 30s
+    nighthawk_template:
+      max_requests_per_connection: 1000
+      burst_size: 5
+    thresholds:
+      - "latency_2xx.p95 < 250ms"

@@ -66,16 +66,16 @@ type Observer interface {
 func (r *Runner) Run(ctx context.Context) (*Report, error) {
 	report := &Report{Pass: true}
 
-	for _, scenario := range r.Plan.Scenarios {
+	for _, scenario := range r.Plan.GetScenarios() {
 		executions, err := compile.Expand(scenario)
 		if err != nil {
 			return nil, err
 		}
-		thresholds, err := threshold.ParseAll(r.Plan.EffectiveThresholds(scenario))
+		thresholds, err := threshold.ParseAll(plan.EffectiveThresholds(r.Plan, scenario))
 		if err != nil {
-			return nil, fmt.Errorf("scenario %q: %w", scenario.Name, err)
+			return nil, fmt.Errorf("scenario %q: %w", scenario.GetName(), err)
 		}
-		pool := r.Plan.PoolFor(scenario)
+		pool := plan.PoolFor(r.Plan, scenario)
 
 		for _, e := range executions {
 			er := r.runExecution(ctx, e, pool, thresholds)
@@ -97,7 +97,7 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 func (r *Runner) runExecution(
 	ctx context.Context,
 	e compile.Execution,
-	pool plan.Pool,
+	pool *plan.Pool,
 	thresholds []threshold.Threshold,
 ) ExecutionReport {
 	er := ExecutionReport{
@@ -138,7 +138,7 @@ func (r *Runner) runExecution(
 func (r *Runner) dispatch(
 	ctx context.Context,
 	e compile.Execution,
-	pool plan.Pool,
+	pool *plan.Pool,
 ) ([]string, []*client.Output, error) {
 	addrs, perBackend, err := compile.ForPool(e, pool)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -27,7 +28,7 @@ const LinearRampingRateLimiterPlugin = "nighthawk.linear-ramping-rate-limiter-pl
 // executor, which produces one per stage.
 type Execution struct {
 	// Scenario is the scenario this execution came from.
-	Scenario plan.Scenario
+	Scenario *plan.Scenario
 
 	// Label identifies the execution in reports. It is the scenario name, with
 	// a stage suffix when the scenario expands to more than one execution.
@@ -49,40 +50,40 @@ type Execution struct {
 }
 
 // Expand turns a scenario into the executions it runs as.
-func Expand(s plan.Scenario) ([]Execution, error) {
+func Expand(s *plan.Scenario) ([]Execution, error) {
 	switch s.Executor.Type {
 	case plan.ConstantRate:
-		opts, err := options(s, s.Executor.Rate, s.Executor.Duration.Std(), 0, s.Name)
+		opts, err := options(s, s.Executor.Rate, s.Executor.Duration.AsDuration(), 0, s.Name)
 		if err != nil {
 			return nil, err
 		}
 		return []Execution{{
 			Scenario: s, Label: s.Name, Rate: s.Executor.Rate,
-			Duration: s.Executor.Duration.Std(), Options: opts,
+			Duration: s.Executor.Duration.AsDuration(), Options: opts,
 		}}, nil
 
 	case plan.RampingRate:
-		ramp := s.Executor.RampTime.Std()
-		opts, err := options(s, s.Executor.Rate, s.Executor.Duration.Std(), ramp, s.Name)
+		ramp := s.Executor.RampTime.AsDuration()
+		opts, err := options(s, s.Executor.Rate, s.Executor.Duration.AsDuration(), ramp, s.Name)
 		if err != nil {
 			return nil, err
 		}
 		return []Execution{{
 			Scenario: s, Label: s.Name, Rate: s.Executor.Rate,
-			Duration: s.Executor.Duration.Std(), RampTime: ramp, Options: opts,
+			Duration: s.Executor.Duration.AsDuration(), RampTime: ramp, Options: opts,
 		}}, nil
 
 	case plan.Staircase:
 		out := make([]Execution, 0, len(s.Executor.Stages))
 		for i, st := range s.Executor.Stages {
 			label := fmt.Sprintf("%s/stage-%d", s.Name, i+1)
-			opts, err := options(s, st.Rate, st.Duration.Std(), 0, label)
+			opts, err := options(s, st.Rate, st.Duration.AsDuration(), 0, label)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, Execution{
 				Scenario: s, Label: label, Stage: i + 1, Rate: st.Rate,
-				Duration: st.Duration.Std(), Options: opts,
+				Duration: st.Duration.AsDuration(), Options: opts,
 			})
 		}
 		return out, nil
@@ -97,7 +98,7 @@ func Expand(s plan.Scenario) ([]Execution, error) {
 // `compile` prints what `run` would send and `validate` refuses what `run`
 // would refuse. Computing the options separately in each command is how the
 // two drifted apart before.
-func ForPool(e Execution, pool plan.Pool) ([]string, []*client.CommandLineOptions, error) {
+func ForPool(e Execution, pool *plan.Pool) ([]string, []*client.CommandLineOptions, error) {
 	if pool.Distributor != "" {
 		opts, err := uniformShare(e, len(pool.Targets))
 		if err != nil {
@@ -204,7 +205,7 @@ func Divide(e Execution, backends int) ([]*client.CommandLineOptions, error) {
 // Nighthawk defaults to one worker, and "auto" defers the decision to the
 // backend's vCPU affinity, which sortie cannot know in advance and therefore
 // cannot divide by.
-func workersPerBackend(s plan.Scenario) (int, error) {
+func workersPerBackend(s *plan.Scenario) (int, error) {
 	switch s.Concurrency {
 	case "":
 		return 1, nil
@@ -221,43 +222,56 @@ func workersPerBackend(s plan.Scenario) (int, error) {
 	return n, nil
 }
 
-func options(s plan.Scenario, rate uint32, dur, ramp time.Duration, execID string) (*client.CommandLineOptions, error) {
-	o := &client.CommandLineOptions{
-		RequestsPerSecond:    wrapperspb.UInt32(rate),
-		OneofDurationOptions: &client.CommandLineOptions_Duration{Duration: durationpb.New(dur)},
-		OneofUri:             &client.CommandLineOptions_Uri{Uri: wrapperspb.String(s.Target)},
-		ExecutionId:          wrapperspb.String(execID),
-		OpenLoop:             wrapperspb.Bool(s.Executor.OpenLoop),
+func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID string) (*client.CommandLineOptions, error) {
+	// Start from the passthrough template so anything the plan set there is
+	// carried through, then overwrite only what sortie owns. Cloning keeps one
+	// scenario's executions from sharing (and mutating) a single template.
+	o := &client.CommandLineOptions{}
+	if tmpl := s.GetNighthawkTemplate(); tmpl != nil {
+		o = proto.Clone(tmpl).(*client.CommandLineOptions)
 	}
 
-	proto, err := protocol(s.Protocol)
-	if err != nil {
-		return nil, err
-	}
-	o.OneofProtocol = &client.CommandLineOptions_Protocol{
-		Protocol: &client.Protocol{Value: proto},
-	}
+	// sortie owns the load shape and the identity of the execution.
+	o.RequestsPerSecond = wrapperspb.UInt32(rate)
+	o.OneofDurationOptions = &client.CommandLineOptions_Duration{Duration: durationpb.New(dur)}
+	o.ExecutionId = wrapperspb.String(execID)
+	o.OpenLoop = wrapperspb.Bool(s.GetExecutor().GetOpenLoop())
 
-	reqOpts, err := requestOptions(s)
-	if err != nil {
-		return nil, err
+	// The rest is overwritten only when the scenario says something about it,
+	// so a template can supply anything the schema does not model.
+	if s.GetTarget() != "" {
+		o.OneofUri = &client.CommandLineOptions_Uri{Uri: wrapperspb.String(s.GetTarget())}
 	}
-	o.OneofRequestOptions = &client.CommandLineOptions_RequestOptions{RequestOptions: reqOpts}
-
+	if s.GetProtocol() != "" {
+		value, err := protocol(s.GetProtocol())
+		if err != nil {
+			return nil, err
+		}
+		o.OneofProtocol = &client.CommandLineOptions_Protocol{
+			Protocol: &client.Protocol{Value: value},
+		}
+	}
+	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" {
+		reqOpts, err := requestOptions(s)
+		if err != nil {
+			return nil, err
+		}
+		o.OneofRequestOptions = &client.CommandLineOptions_RequestOptions{RequestOptions: reqOpts}
+	}
 	if s.Connections != nil {
-		o.Connections = wrapperspb.UInt32(*s.Connections)
+		o.Connections = wrapperspb.UInt32(s.GetConnections())
 	}
-	if s.Concurrency != "" {
-		o.Concurrency = wrapperspb.String(s.Concurrency)
+	if s.GetConcurrency() != "" {
+		o.Concurrency = wrapperspb.String(s.GetConcurrency())
 	}
 	if s.MaxPendingRequests != nil {
-		o.MaxPendingRequests = wrapperspb.UInt32(*s.MaxPendingRequests)
+		o.MaxPendingRequests = wrapperspb.UInt32(s.GetMaxPendingRequests())
 	}
-	if s.MaxConcurrentStream != nil {
-		o.MaxConcurrentStreams = wrapperspb.UInt32(*s.MaxConcurrentStream)
+	if s.MaxConcurrentStreams != nil {
+		o.MaxConcurrentStreams = wrapperspb.UInt32(s.GetMaxConcurrentStreams())
 	}
-	if s.Timeout != nil {
-		o.Timeout = s.Timeout.Proto()
+	if s.GetTimeout() != nil {
+		o.Timeout = s.GetTimeout()
 	}
 
 	if ramp > 0 {
@@ -265,7 +279,7 @@ func options(s plan.Scenario, rate uint32, dur, ramp time.Duration, execID strin
 			RampTime: durationpb.New(ramp),
 		})
 		if err != nil {
-			return nil, fmt.Errorf("scenario %q: packing ramp config: %w", s.Name, err)
+			return nil, fmt.Errorf("scenario %q: packing ramp config: %w", s.GetName(), err)
 		}
 		o.RateLimiterPluginConfig = &corev3.TypedExtensionConfig{
 			Name:        LinearRampingRateLimiterPlugin,
@@ -287,7 +301,7 @@ func protocol(name string) (client.Protocol_ProtocolOptions, error) {
 	return 0, fmt.Errorf("unknown protocol %q", name)
 }
 
-func requestOptions(s plan.Scenario) (*client.RequestOptions, error) {
+func requestOptions(s *plan.Scenario) (*client.RequestOptions, error) {
 	ro := &client.RequestOptions{}
 
 	method, err := requestMethod(s.Method)

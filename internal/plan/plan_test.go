@@ -29,8 +29,8 @@ func TestParseMinimal(t *testing.T) {
 	if len(p.Scenarios) != 1 {
 		t.Fatalf("got %d scenarios, want 1", len(p.Scenarios))
 	}
-	if p.Scenarios[0].Executor.Duration.Std() != 30*time.Second {
-		t.Errorf("duration = %s", p.Scenarios[0].Executor.Duration)
+	if p.Scenarios[0].Executor.Duration.AsDuration() != 30*time.Second {
+		t.Errorf("duration = %s", p.Scenarios[0].Executor.Duration.AsDuration())
 	}
 }
 
@@ -87,7 +87,7 @@ thresholds:
 		t.Fatal(err)
 	}
 	p.Scenarios[0].Thresholds = []string{"latency_2xx.p95 < 1s"}
-	got := p.EffectiveThresholds(p.Scenarios[0])
+	got := EffectiveThresholds(p, p.Scenarios[0])
 	if len(got) != 2 {
 		t.Fatalf("got %d thresholds, want both the plan's and the scenario's: %v", len(got), got)
 	}
@@ -105,16 +105,16 @@ func TestValidationErrors(t *testing.T) {
 		},
 		"bad target scheme": {
 			src:  strings.Replace(minimal, "http://127.0.0.1:8080/", "ftp://host/", 1),
-			want: "scheme must be http or https",
+			want: "target scheme must be http or https",
 		},
 		"ramp without ramp_time": {
 			src:  strings.Replace(minimal, "type: constant-rate", "type: ramping-rate", 1),
-			want: "ramp_time is required",
+			want: "requires a ramp_time",
 		},
 		"stages on constant rate": {
 			src: strings.Replace(minimal, "      duration: 30s",
 				"      duration: 30s\n      stages: [{rate: 1, duration: 1s}]", 1),
-			want: "stages is only valid for staircase",
+			want: "stages is only valid for the staircase executor",
 		},
 		"bad threshold": {
 			src:  minimal + "thresholds: [\"latency_2xx.p95 500ms\"]\n",

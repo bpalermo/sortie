@@ -137,6 +137,27 @@ RPC exists in `api/client/service.proto` but the service rejects it. Each stage
 is therefore its own execution: connections are re-established at every
 boundary, and each stage is reported and judged separately.
 
+## Anything this schema does not model
+
+`nighthawk_template` on a scenario carries Nighthawk options straight through.
+sortie overlays only the fields it owns — `requests_per_second`, `duration`,
+`execution_id`, the rate-limiter plugin, and whatever the scenario's own fields
+set — so everything else reaches the backend as written.
+
+```yaml
+scenarios:
+  - name: passthrough
+    executor: {type: constant-rate, rate: 100, duration: 30s}
+    nighthawk_template:
+      max_requests_per_connection: 1000
+      burst_size: 5
+```
+
+This mirrors how Nighthawk's own adaptive load controller takes a
+`nighthawk_traffic_template`, and it means sortie does not have to grow a field
+for every Nighthawk flag — transport sockets, request-source plugins,
+tunnelling and user-defined output plugins are all reachable without one.
+
 ## Thresholds
 
 Thresholds are `<metric> <op> <value>` strings. Operators are `<`, `<=`, `>`,
@@ -192,6 +213,34 @@ to hold. For a single-backend pool this is exactly the obvious behaviour.
   reuse it. Scenarios are stateless load.
 - **One execution per backend at a time.** `nighthawk_service` refuses a second
   concurrent run, so scenarios are sequential by design.
+
+## The plan schema
+
+The schema is a protobuf definition, `api/sortie/plan/v1/plan.proto`. Field
+names in a plan file are the field names there, and most constraints are
+declared inline with [protovalidate](https://github.com/bufbuild/protovalidate)
+so a rule sits next to the field it governs.
+
+Plans are parsed with `protoyaml`, which reports violations with a line and
+column and the offending line:
+
+```
+plan.yaml:11:7 scenarios[0].executor: the ramping-rate executor requires a ramp_time
+  11 |       type: ramping-rate
+  11 | ......^
+```
+
+Unknown fields are rejected, so a misspelled key fails the run rather than being
+silently ignored.
+
+Two kinds of rule cannot live in the schema and stay in Go: those spanning
+messages (a scenario naming a pool declared elsewhere in the file) and those
+depending on dispatch (a rate divisible by `backends x concurrency`, which needs
+the pool). Threshold expressions are also checked at load time, since their
+grammar belongs to sortie rather than to protobuf.
+
+Durations follow protobuf's own JSON mapping — decimal seconds ending in `s`,
+so `90s` rather than Go's `1m30s`.
 
 ## Protos
 

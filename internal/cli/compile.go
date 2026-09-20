@@ -29,21 +29,21 @@ generating any.`,
 			w := cmd.OutOrStdout()
 			marshal := protojson.MarshalOptions{Multiline: true, Indent: "  "}
 
-			for _, s := range p.Scenarios {
+			for _, s := range p.GetScenarios() {
 				executions, err := compile.Expand(s)
 				if err != nil {
 					return &usageError{err}
 				}
-				pool := p.PoolFor(s)
+				pool := plan.PoolFor(p, s)
 				for _, e := range executions {
 					addrs, perBackend, err := compile.ForPool(e, pool)
 					if err != nil {
 						return &usageError{err}
 					}
 					for i, opts := range perBackend {
-						if pool.Distributor != "" {
+						if pool.GetDistributor() != "" {
 							fmt.Fprintf(w, "# %s -> distributor %s, forwarded unchanged to %s\n",
-								e.Label, pool.Distributor, strings.Join(addrs, ", "))
+								e.Label, pool.GetDistributor(), strings.Join(addrs, ", "))
 						} else {
 							fmt.Fprintf(w, "# %s -> %s (backend %d/%d)\n",
 								e.Label, addrs[i], i+1, len(perBackend))

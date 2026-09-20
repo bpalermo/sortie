@@ -1,86 +1,81 @@
 package plan
 
-import "github.com/bpalermo/sortie/internal/threshold"
+import (
+	"google.golang.org/protobuf/proto"
 
-// validateThresholdSyntax reports whether a threshold expression parses. The
-// evaluation semantics live in internal/threshold; this keeps a malformed
-// expression a plan-load error rather than a surprise at the end of a run.
-func validateThresholdSyntax(expr string) error {
-	_, err := threshold.Parse(expr)
-	return err
-}
+	client "github.com/envoyproxy/nighthawk/api/client"
+)
 
-// effective returns s with any unset inheritable field filled in from
-// p.Defaults. Thresholds are additive rather than inherited, so they are
-// combined by EffectiveThresholds instead.
-func (p *Plan) effective(s Scenario) Scenario {
-	d := p.Defaults
+// applyDefaults folds the defaults block into every scenario so that consumers
+// of a loaded Plan never have to consult it again.
+//
+// Defaults are per field and only fill in what a scenario left unset; the
+// executor is treated as one unit rather than merged field by field, because a
+// scenario that declares an executor means that executor and not a blend.
+func applyDefaults(p *Plan) {
+	d := p.GetDefaults()
 	if d == nil {
-		return s
+		return
 	}
-	if s.Pool == "" {
-		s.Pool = d.Pool
-	}
-	if s.Target == "" {
-		s.Target = d.Target
-	}
-	if s.Method == "" {
-		s.Method = d.Method
-	}
-	if s.Body == "" {
-		s.Body = d.Body
-	}
-	if s.Protocol == "" {
-		s.Protocol = d.Protocol
-	}
-	if len(s.Headers) == 0 {
-		s.Headers = d.Headers
-	}
-	if s.Connections == nil {
-		s.Connections = d.Connections
-	}
-	if s.Concurrency == "" {
-		s.Concurrency = d.Concurrency
-	}
-	if s.MaxPendingRequests == nil {
-		s.MaxPendingRequests = d.MaxPendingRequests
-	}
-	if s.MaxConcurrentStream == nil {
-		s.MaxConcurrentStream = d.MaxConcurrentStream
-	}
-	if s.Timeout == nil {
-		s.Timeout = d.Timeout
-	}
-	if s.Executor.Type == "" {
-		s.Executor = d.Executor
-	}
-	return s
-}
-
-// applyDefaults folds Defaults into every scenario so that consumers of a
-// loaded Plan never have to consult Defaults again.
-func (p *Plan) applyDefaults() {
-	for i := range p.Scenarios {
-		p.Scenarios[i] = p.effective(p.Scenarios[i])
+	for _, s := range p.GetScenarios() {
+		if s.GetPool() == "" {
+			s.Pool = d.GetPool()
+		}
+		if s.GetTarget() == "" {
+			s.Target = d.GetTarget()
+		}
+		if s.GetMethod() == "" {
+			s.Method = d.GetMethod()
+		}
+		if s.GetBody() == "" {
+			s.Body = d.GetBody()
+		}
+		if s.GetProtocol() == "" {
+			s.Protocol = d.GetProtocol()
+		}
+		if len(s.GetHeaders()) == 0 {
+			s.Headers = d.GetHeaders()
+		}
+		if s.Connections == nil {
+			s.Connections = d.Connections
+		}
+		if s.GetConcurrency() == "" {
+			s.Concurrency = d.GetConcurrency()
+		}
+		if s.MaxPendingRequests == nil {
+			s.MaxPendingRequests = d.MaxPendingRequests
+		}
+		if s.MaxConcurrentStreams == nil {
+			s.MaxConcurrentStreams = d.MaxConcurrentStreams
+		}
+		if s.GetTimeout() == nil {
+			s.Timeout = d.GetTimeout()
+		}
+		if s.GetExecutor() == nil {
+			s.Executor = proto.Clone(d.GetExecutor()).(*Executor)
+		}
+		if s.GetNighthawkTemplate() == nil && d.GetNighthawkTemplate() != nil {
+			s.NighthawkTemplate = proto.Clone(d.GetNighthawkTemplate()).(*client.CommandLineOptions)
+		}
 	}
 }
 
 // PoolFor returns the pool a scenario runs on. The plan is validated at load
 // time, so the pool is guaranteed to exist.
-func (p *Plan) PoolFor(s Scenario) Pool {
-	for _, pool := range p.Pools {
-		if pool.Name == s.Pool {
+func PoolFor(p *Plan, s *Scenario) *Pool {
+	for _, pool := range p.GetPools() {
+		if pool.GetName() == s.GetPool() {
 			return pool
 		}
 	}
-	return Pool{}
+	return &Pool{}
 }
 
 // EffectiveThresholds returns the plan-wide thresholds followed by the
 // scenario's own. Both sets must hold for the scenario to pass.
-func (p *Plan) EffectiveThresholds(s Scenario) []string {
-	out := make([]string, 0, len(p.Thresholds)+len(s.Thresholds))
-	out = append(out, p.Thresholds...)
-	out = append(out, s.Thresholds...)
+func EffectiveThresholds(p *Plan, s *Scenario) []string {
+	out := make([]string, 0, len(p.GetThresholds())+len(s.GetThresholds()))
+	out = append(out, p.GetThresholds()...)
+	out = append(out, s.GetThresholds()...)
 	return out
 }

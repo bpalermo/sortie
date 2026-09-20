@@ -23,12 +23,12 @@ func newValidateCmd() *cobra.Command {
 			// division happens at dispatch, so validate has to go through the
 			// same path to be worth anything.
 			total := 0
-			for _, s := range p.Scenarios {
+			for _, s := range p.GetScenarios() {
 				executions, err := compile.Expand(s)
 				if err != nil {
 					return &usageError{err}
 				}
-				pool := p.PoolFor(s)
+				pool := plan.PoolFor(p, s)
 				for _, e := range executions {
 					if _, _, err := compile.ForPool(e, pool); err != nil {
 						return &usageError{err}
@@ -37,7 +37,7 @@ func newValidateCmd() *cobra.Command {
 				total += len(executions)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "ok: %d scenarios, %d executions, %d pools\n",
-				len(p.Scenarios), total, len(p.Pools))
+				len(p.GetScenarios()), total, len(p.GetPools()))
 			return nil
 		},
 	}
