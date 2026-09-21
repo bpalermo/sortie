@@ -1,8 +1,14 @@
 load("@rules_helm//helm:defs.bzl", "helm_chart", "helm_lint_test", "helm_template_test")
 
 # images pins the digest of //image:image_push into the chart at package time,
-# so the chart and the image it names cannot drift, and `bazel run :sortie.push`
-# publishes both together.
+# so the chart and the image it names cannot drift.
+#
+# helm_chart generates two push targets from this. :sortie.push publishes the
+# chart and the image together and is the convenient one by hand. The workflow
+# deliberately uses :sortie.push_registry, which publishes the chart alone
+# (include_images = False), because the image has to be pushed and signed
+# first: the chart names a digest, and that digest has to already exist and be
+# signed before a chart pointing at it is published.
 helm_chart(
     name = "sortie",
     chart = "Chart.yaml",
