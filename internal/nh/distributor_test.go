@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -51,7 +52,10 @@ func (f *fakeDistributor) DistributedRequestStream(
 		requested := make([]string, 0, len(req.GetServices()))
 		for _, svc := range req.GetServices() {
 			sa := svc.GetSocketAddress()
-			requested = append(requested, fmt.Sprintf("%s:%d", sa.GetAddress(), sa.GetPortValue()))
+			// A real distributor echoes back the address it was handed. Join
+			// rather than format, so an IPv6 literal stays unambiguous.
+			requested = append(requested,
+				net.JoinHostPort(sa.GetAddress(), strconv.FormatUint(uint64(sa.GetPortValue()), 10)))
 		}
 
 		resp := &distributorpb.DistributedResponse{}
@@ -81,10 +85,12 @@ func (f *fakeDistributor) DistributedRequestStream(
 }
 
 func splitHostPort(addr string) (string, uint32) {
-	idx := strings.LastIndex(addr, ":")
-	host := addr[:idx]
+	host, portText, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, 0
+	}
 	var port uint32
-	_, _ = fmt.Sscanf(addr[idx+1:], "%d", &port)
+	_, _ = fmt.Sscanf(portText, "%d", &port)
 	return host, port
 }
 
@@ -221,5 +227,38 @@ func TestExecuteSurfacesAFailureAfterTheResponse(t *testing.T) {
 		t.Fatal("a non-OK status after the response must not read as success")
 	} else if !strings.Contains(err.Error(), "backend died after responding") {
 		t.Errorf("error should quote the backend, got: %v", err)
+	}
+}
+
+// An IPv6 target must survive the round trip through the distributor. sortie
+// strips the brackets when building the request and the distributor echoes the
+// bare literal back, so an identity check that compares raw strings rejects a
+// perfectly good pool.
+func TestDistributeAcceptsIPv6Targets(t *testing.T) {
+	targets := []string{"[2001:db8::1]:8443", "[2001:db8::2]:8443"}
+	fake := startFakeDistributor(t, func(requested []string) []string { return requested })
+
+	names, err := distribute(t, fake, targets)
+	if err != nil {
+		t.Fatalf("Distribute rejected valid IPv6 targets: %v", err)
+	}
+	if len(names) != 2 {
+		t.Fatalf("got %d results, want one per target", len(names))
+	}
+	for _, name := range names {
+		if !strings.HasPrefix(name, "[") {
+			t.Errorf("result %q should be bracketed; %q is ambiguous", name, name)
+		}
+	}
+}
+
+// And a missing IPv6 target is still caught, so the normalisation has not
+// turned the check into one that accepts anything.
+func TestDistributeRejectsAMissingIPv6Target(t *testing.T) {
+	targets := []string{"[2001:db8::1]:8443", "[2001:db8::2]:8443"}
+	fake := startFakeDistributor(t, func(requested []string) []string { return requested[:1] })
+
+	if _, err := distribute(t, fake, targets); err == nil {
+		t.Fatal("a missing IPv6 target must still be rejected")
 	}
 }

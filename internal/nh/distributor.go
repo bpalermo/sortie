@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"slices"
+	"net"
 	"strconv"
 	"strings"
 
@@ -97,24 +97,32 @@ func Distribute(
 // checkTargetsAnswered reports whether every requested target answered exactly
 // once, naming what was missing or duplicated rather than only the counts.
 func checkTargetsAnswered(targets, answered []string) error {
+	// Compare canonical forms: what comes back is whatever the distributor
+	// echoed, which need not be spelled the way the plan wrote it.
+	wanted := make(map[string]string, len(targets))
+	for _, target := range targets {
+		wanted[canonicalAddress(target)] = target
+	}
+
 	seen := make(map[string]int, len(answered))
 	var unexpected []string
 	for _, name := range answered {
-		if !slices.Contains(targets, name) {
+		key := canonicalAddress(name)
+		if _, ok := wanted[key]; !ok {
 			unexpected = append(unexpected, name)
 			continue
 		}
-		seen[name]++
+		seen[key]++
 	}
 
 	var missing, duplicated []string
 	for _, target := range targets {
-		switch seen[target] {
+		switch seen[canonicalAddress(target)] {
 		case 1:
 		case 0:
 			missing = append(missing, target)
 		default:
-			duplicated = append(duplicated, fmt.Sprintf("%s (x%d)", target, seen[target]))
+			duplicated = append(duplicated, fmt.Sprintf("%s (x%d)", target, seen[canonicalAddress(target)]))
 		}
 	}
 
@@ -136,12 +144,13 @@ func checkTargetsAnswered(targets, answered []string) error {
 }
 
 func socketAddress(hostPort string) (*corev3.Address, error) {
-	idx := strings.LastIndex(hostPort, ":")
-	if idx < 0 {
-		return nil, fmt.Errorf("address %q: want host:port", hostPort)
+	// net.SplitHostPort understands the bracketed form an IPv6 literal must be
+	// written in; splitting on the last colon by hand does not.
+	host, portText, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		return nil, fmt.Errorf("address %q: want host:port: %w", hostPort, err)
 	}
-	host := strings.TrimSuffix(strings.TrimPrefix(hostPort[:idx], "["), "]")
-	port, err := strconv.ParseUint(hostPort[idx+1:], 10, 16)
+	port, err := strconv.ParseUint(portText, 10, 16)
 	if err != nil {
 		return nil, fmt.Errorf("address %q: invalid port: %w", hostPort, err)
 	}
@@ -160,5 +169,19 @@ func formatAddress(a *corev3.Address) string {
 	if sa == nil {
 		return "unknown"
 	}
-	return fmt.Sprintf("%s:%d", sa.GetAddress(), sa.GetPortValue())
+	// JoinHostPort brackets an IPv6 literal. Formatting it as "%s:%d" would
+	// produce 2001:db8::1:8443, which is ambiguous and matches no target.
+	return net.JoinHostPort(sa.GetAddress(), strconv.FormatUint(uint64(sa.GetPortValue()), 10))
+}
+
+// canonicalAddress normalises host:port so the bracketed and unbracketed
+// spellings of the same IPv6 literal compare equal. An address that does not
+// parse is returned unchanged, so it fails identity matching as itself rather
+// than as something else.
+func canonicalAddress(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return net.JoinHostPort(host, port)
 }
