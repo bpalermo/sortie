@@ -2,7 +2,10 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "sortie.fullname" . }}
+  # 52, not the usual 63: the CronJob controller appends an 11-character
+  # `-<timestamp>` suffix when it creates a Job, so the API server rejects a
+  # CronJob name longer than 63 - 11.
+  name: {{ include "sortie.fullname" . | trunc 52 | trimSuffix "-" }}
   labels:
     {{- include "sortie.labels" . | nindent 4 }}
 spec:
@@ -14,8 +17,9 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: {{ .Values.job.backoffLimit }}
-      {{- with .Values.job.ttlSecondsAfterFinished }}
-      ttlSecondsAfterFinished: {{ . }}
+      {{- /* Not `with`: see job.yaml. */}}
+      {{- if not (kindIs "invalid" .Values.job.ttlSecondsAfterFinished) }}
+      ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
       {{- end }}
       template:
         {{- include "sortie.podSpec" . | nindent 8 }}

@@ -106,5 +106,15 @@ jobs:
 
       # The chart carries the image's digest, pinned at package time, so this
       # publishes a chart that can only ever reference the image signed above.
+      #
+      # docker/login-action above is not enough: rules_helm pins
+      # HELM_REGISTRY_CONFIG to a fresh temp directory for every invocation, so
+      # Helm reads neither ~/.docker/config.json nor any config a prior
+      # `helm registry login` wrote. Its pusher logs in itself, but only when it
+      # finds both of these variables -- otherwise it skips the login without
+      # failing and the push gets a 401.
       - name: Push the chart
+        env:
+          HELM_REGISTRY_USERNAME: ${{ github.actor }}
+          HELM_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: bazel run //charts/sortie:sortie.push_registry

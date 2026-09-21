@@ -38,13 +38,21 @@ The ConfigMap's checksum is an annotation so that changing the plan rolls a new
 pod rather than leaving a CronJob running the previous one.
 */}}
 {{/*
-A short digest of everything that decides what this run does. It suffixes the
-Job name so that changing the plan produces a new Job rather than an attempt to
-patch an existing one's immutable spec.template -- which fails with
-"field is immutable" and never runs the new plan.
+A short digest of the rendered pod template. It suffixes the Job name so that
+changing the template produces a new Job rather than an attempt to patch an
+existing one's immutable spec.template -- which fails with "field is immutable"
+and never runs the new plan.
+
+This hashes the rendered podSpec rather than the individual values that feed it.
+Enumerating them means the hash silently stops covering any field added to
+podSpec later; hashing the output covers every one of them, including the
+resources, security contexts, annotations and scheduling fields, and keeps
+covering them. It also stays narrower than hashing .Values: a Job's backoffLimit
+and ttlSecondsAfterFinished are mutable, so changing one should patch the Job in
+place rather than start a new run.
 */}}
 {{- define "sortie.runHash" -}}
-{{- printf "%s|%s|%s" (toYaml .Values.plan) .Values.image.ref (toYaml .Values.args) | sha256sum | trunc 8 -}}
+{{- include "sortie.podSpec" . | sha256sum | trunc 8 -}}
 {{- end -}}
 
 {{- define "sortie.podSpec" -}}

@@ -12,8 +12,10 @@ metadata:
     {{- include "sortie.labels" . | nindent 4 }}
 spec:
   backoffLimit: {{ .Values.job.backoffLimit }}
-  {{- with .Values.job.ttlSecondsAfterFinished }}
-  ttlSecondsAfterFinished: {{ . }}
+  {{- /* Not `with`: 0 is a valid TTL meaning "delete immediately", and `with`
+         treats it as empty, which would silently leave the Job with no TTL. */}}
+  {{- if not (kindIs "invalid" .Values.job.ttlSecondsAfterFinished) }}
+  ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
   {{- end }}
   template:
     {{- include "sortie.podSpec" . | nindent 4 }}
