@@ -418,3 +418,42 @@ func TestNighthawkTemplateRateLimiterIsNotInherited(t *testing.T) {
 		t.Error("a ramping execution must install the ramp limiter")
 	}
 }
+
+// Concurrency is cast to uint32 for the rate division, so a value that does not
+// fit has to be refused while it is still a string. Parsed as a plain int,
+// 4294967296 wraps to zero and the division panics instead of reporting a bad
+// plan.
+func TestConcurrencyBeyondUint32IsRejected(t *testing.T) {
+	for _, concurrency := range []string{"4294967296", "99999999999999999999"} {
+		t.Run(concurrency, func(t *testing.T) {
+			s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second)})
+			s.Concurrency = concurrency
+
+			execs, err := Expand(s)
+			if err != nil {
+				t.Fatalf("Expand: %v", err)
+			}
+			if _, err := Divide(execs[0], 1); err == nil {
+				t.Fatal("a concurrency that does not fit in 32 bits must be an error")
+			}
+		})
+	}
+}
+
+// The boundary itself still works.
+func TestConcurrencyAtTheUint32LimitIsAccepted(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 4294967295, Duration: dur(time.Second)})
+	s.Concurrency = "4294967295"
+
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	perBackend, err := Divide(execs[0], 1)
+	if err != nil {
+		t.Fatalf("the maximum concurrency should still divide: %v", err)
+	}
+	if got := perBackend[0].GetRequestsPerSecond().GetValue(); got != 1 {
+		t.Errorf("--rps = %d, want 1", got)
+	}
+}

@@ -215,11 +215,16 @@ func workersPerBackend(s *plan.Scenario) (int, error) {
 				`Nighthawk's --rps is per worker and the worker count is only decided ` +
 				`on the backend; set concurrency to a number`)
 	}
-	n, err := strconv.Atoi(s.Concurrency)
+	// Bounded to 32 bits because that is what Nighthawk's --concurrency is, and
+	// because the rate division casts this to uint32: parsing as a plain int
+	// would let 4294967296 wrap to zero and turn a bad plan into a divide-by-
+	// zero panic rather than an error.
+	n, err := strconv.ParseUint(s.GetConcurrency(), 10, 32)
 	if err != nil || n < 1 {
-		return 0, fmt.Errorf("concurrency %q is not a positive integer", s.Concurrency)
+		return 0, fmt.Errorf(
+			"concurrency %q is not a positive integer that fits in 32 bits", s.GetConcurrency())
 	}
-	return n, nil
+	return int(n), nil
 }
 
 func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID string) (*client.CommandLineOptions, error) {
