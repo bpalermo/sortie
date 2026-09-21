@@ -51,6 +51,13 @@ job:
   # usually just generates the load twice and reports the same verdict.
   backoffLimit: 0
   # Keep finished pods around long enough to read the report out of the logs.
+  #
+  # Note the interaction with the Job's name, which is a digest of the pod
+  # template: once the TTL deletes the Job, the next `helm upgrade` finds it
+  # missing and creates it again, running the load test a second time even
+  # though nothing about the run changed. Set this to null to keep the Job, and
+  # the pods, until something deletes them; set it to 0 to delete it as soon as
+  # it finishes.
   ttlSecondsAfterFinished: 3600
 
 resources: {}

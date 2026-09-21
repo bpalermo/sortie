@@ -242,6 +242,12 @@ plan again, delete the Job. Changing only `backoffLimit` or
 `ttlSecondsAfterFinished` does not rename it -- those are mutable on a Job, so
 they patch the existing run instead of starting a new one.
 
+`job.ttlSecondsAfterFinished` defaults to an hour, and deleting the Job is also
+what re-runs it: once the TTL has removed it, the next `helm upgrade` finds it
+missing and creates it again, generating load even if the upgrade changed
+nothing about the run. Set it to `null` to keep finished Jobs until something
+deletes them.
+
 The ConfigMap is named after the plan's digest for the same reason in reverse.
 A stable name would be updated in place, and a CronJob's Job that was created
 before an upgrade but had not started yet would mount the new plan while
