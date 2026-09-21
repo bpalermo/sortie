@@ -4,6 +4,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -29,13 +30,32 @@ func badUsage(format string, args ...any) error {
 	return &usageError{fmt.Errorf(format, args...)}
 }
 
-// Execute runs the command tree and returns the process exit code.
+// Execute runs the command tree against the process arguments and returns the
+// exit code.
 func Execute(version string) int {
+	return execute(version, os.Args[1:], os.Stdout, os.Stderr)
+}
+
+// execute is Execute with its inputs and outputs supplied rather than taken
+// from the process, so the exit codes -- which are a contract with CI, not an
+// implementation detail -- can be tested.
+func execute(version string, args []string, stdout, stderr io.Writer) int {
 	root := newRootCmd(version)
+	root.SetArgs(args)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+
 	if err := root.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "sortie: %v\n", err)
+		fmt.Fprintf(stderr, "sortie: %v\n", err)
 		var ue *usageError
 		if errors.As(err, &ue) {
+			return exitBadUsage
+		}
+		// An error raised before any subcommand could run -- an unknown
+		// command, say -- is the caller's mistake, not a failed load test.
+		// Cobra reports it as an ordinary error, which would otherwise exit 1
+		// and be indistinguishable from a breached threshold.
+		if _, _, findErr := root.Find(args); findErr != nil {
 			return exitBadUsage
 		}
 		return exitFailed
@@ -57,6 +77,13 @@ Exit codes:
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+
+		// Without this, cobra prints the help text for a bare `sortie` and
+		// exits 0, which tells a script that a load test passed when none ran.
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_ = cmd.Help()
+			return badUsage("a command is required")
+		},
 	}
 
 	// Cobra reports a bad flag or a wrong argument count as an ordinary error,

@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "cli",
@@ -17,5 +17,16 @@ go_library(
         "//internal/run",
         "@com_github_spf13_cobra//:cobra",
         "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)
+
+go_test(
+    name = "cli_test",
+    srcs = ["cli_test.go"],
+    embed = [":cli"],
+    deps = [
+        "@nighthawk_api//:client_go_proto",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_protobuf//types/known/durationpb",
     ],
 )

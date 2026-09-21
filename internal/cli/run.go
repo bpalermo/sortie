@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -26,7 +27,7 @@ func newRunCmd() *cobra.Command {
 		Short: "Run the plan and report a verdict",
 		Args:  planArg(),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPlan(cmd.Context(), args[0], asJSON, out)
+			return runPlan(cmd.Context(), args[0], asJSON, out, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "write the report as JSON")
@@ -34,7 +35,7 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
-func runPlan(parent context.Context, path string, asJSON bool, out string) error {
+func runPlan(parent context.Context, path string, asJSON bool, out string, stdout, stderr io.Writer) error {
 	p, err := plan.Load(path)
 	if err != nil {
 		return &usageError{err}
@@ -59,20 +60,20 @@ func runPlan(parent context.Context, path string, asJSON bool, out string) error
 	go func() {
 		select {
 		case <-signals:
-			fmt.Fprintln(os.Stderr,
+			fmt.Fprintln(stderr,
 				"\nsortie: interrupted; Nighthawk backends keep running until their configured duration elapses")
 			cancel()
 		case <-ctx.Done():
 		}
 	}()
 
-	runner := &run.Runner{Plan: p, Observer: report.Progress{W: os.Stderr}}
+	runner := &run.Runner{Plan: p, Observer: report.Progress{W: stderr}}
 	r, runErr := runner.Run(ctx)
 	if r == nil {
 		return runErr
 	}
 
-	w := os.Stdout
+	w := stdout
 	if out != "" {
 		f, err := os.Create(out)
 		if err != nil {
