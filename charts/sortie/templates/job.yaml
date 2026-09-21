@@ -1,0 +1,15 @@
+{{- if not .Values.cronJob.enabled -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sortie.fullname" . }}
+  labels:
+    {{- include "sortie.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  {{- with .Values.job.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ . }}
+  {{- end }}
+  template:
+    {{- include "sortie.podSpec" . | nindent 4 }}
+{{- end -}}

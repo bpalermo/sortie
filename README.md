@@ -219,6 +219,50 @@ to hold. For a single-backend pool this is exactly the obvious behaviour.
 - **One execution per backend at a time.** `nighthawk_service` refuses a second
   concurrent run, so scenarios are sequential by design.
 
+## Running it in Kubernetes
+
+A multi-arch image and a Helm chart are published to GHCR on every push to main:
+
+```
+ghcr.io/bpalermo/sortie                 linux/amd64, linux/arm64
+oci://ghcr.io/bpalermo/sortie/charts    the chart
+```
+
+The chart runs a plan as a Job, or as a CronJob with `cronJob.enabled=true`.
+The plan is held in a ConfigMap and mounted read-only, so changing a run does
+not mean republishing anything. The Job's exit code is the verdict: a breached
+threshold fails it, and a malformed plan fails it differently.
+
+```console
+helm install nightly oci://ghcr.io/bpalermo/sortie/charts/sortie \
+  --set-file plan=plan.yaml
+```
+
+The default `plan` in `values.yaml` names no backend that exists. That is
+deliberate: a plausible-looking default would generate load against whatever
+happened to answer.
+
+### Provenance
+
+Images are signed with cosign, keyless, through GitHub's OIDC identity — there
+is no key to store or rotate. Signatures cover the index *and* every per-arch
+manifest, so pulling by an architecture-specific digest is covered too:
+
+```console
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/bpalermo/sortie/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/bpalermo/sortie@sha256:...
+```
+
+The chart pins the image by **digest**, injected at package time from the push
+target, so a chart can only ever reference the image built alongside it.
+
+Signing is a workflow step rather than a Bazel rule because ghcr.io does not
+implement the OCI Referrers API — verified, it returns `404 MANIFEST_UNKNOWN`
+for a real digest — and rules_img attaches signatures only as referrers, with
+no fallback. cosign's tag scheme does work there.
+
 ## The plan schema
 
 The schema is a protobuf definition, `api/sortie/plan/v1/plan.proto`. Field

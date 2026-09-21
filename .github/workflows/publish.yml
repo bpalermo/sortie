@@ -1,0 +1,105 @@
+name: publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Push the image and the chart to GHCR.
+  packages: write
+  # Exchanged with Fulcio for a short-lived signing certificate. Keyless: there
+  # is no private key to store or rotate.
+  id-token: write
+
+# Keyed by commit, not by branch. A branch-wide group keeps only one PENDING
+# run, so a run queued behind another cancels it -- and a commit merged to main
+# then publishes nothing, reported as "cancelled" rather than "failed", so
+# nothing alerts.
+concurrency:
+  group: publish-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Chart.yaml's appVersion comes from `git describe --tags`, which
+          # needs the tags and enough history to reach one.
+          fetch-depth: 0
+
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+          cache-save: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: sigstore/cosign-installer@v3.7.0
+
+      - name: Push the multi-arch image
+        run: bazel run //image:image_push
+
+      # The digest comes from the build rather than from the registry. Resolving
+      # it by listing tags would have to follow ghcr's pagination -- it returns
+      # 100 tags per page, ascending, so a freshly pushed tag sorts last and is
+      # never on the first page -- and re-resolving a tag reintroduces a
+      # time-of-check window against a mutable one. Bazel already wrote the
+      # digest it pushed.
+      - name: Record the pushed digest
+        id: digest
+        run: |
+          set -euo pipefail
+          # The digest is not a default output, so cquery does not list it.
+          # It sits beside the index manifest, which is, and both come from the
+          # same rule -- so derive one path from the other rather than assuming
+          # a bazel-bin layout.
+          index_file="$(bazel cquery //image:image_index --output=files 2>/dev/null \
+            | grep -E '_index\.json$' | head -1)"
+          digest_file="${index_file%_index.json}_digest"
+          if [ -z "${digest_file}" ] || [ ! -s "${digest_file}" ]; then
+            echo "::error::could not find the image index digest produced by the build" >&2
+            exit 1
+          fi
+          digest="$(cat "${digest_file}")"
+          case "${digest}" in
+            sha256:*) ;;
+            *) echo "::error::unexpected digest ${digest}" >&2; exit 1 ;;
+          esac
+          echo "image=ghcr.io/bpalermo/sortie@${digest}" >> "${GITHUB_OUTPUT}"
+          echo "pushed ghcr.io/bpalermo/sortie@${digest}"
+
+      # --recursive signs the index and every child manifest. Without it, anyone
+      # pulling the amd64 or arm64 manifest by its own digest gets something
+      # unsigned. Signing by digest rather than by tag avoids cosign
+      # re-resolving a mutable tag to something other than what was pushed.
+      #
+      # ghcr does not implement the OCI Referrers API -- verified: it returns
+      # 404 MANIFEST_UNKNOWN for a real digest -- so rules_img's own signing
+      # support cannot be used, since it attaches signatures only as referrers.
+      # cosign's tag scheme (sha256-<digest>.sig) does work there.
+      - name: Sign the image
+        env:
+          COSIGN_YES: "true"
+        run: cosign sign --recursive "${{ steps.digest.outputs.image }}"
+
+      - name: Verify the signature
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${{ steps.digest.outputs.image }}"
+
+      # The chart carries the image's digest, pinned at package time, so this
+      # publishes a chart that can only ever reference the image signed above.
+      - name: Push the chart
+        run: bazel run //charts/sortie:sortie.push_registry

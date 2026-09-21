@@ -147,3 +147,29 @@ against what the plan asked for. `examples/smoke.yaml` is the shortest path.
 A ramping executor is the sharpest check of the rate-limiter wiring: ramping to
 R over T then holding for H should produce `R*T/2 + R*H` requests, and the count
 comes back exact.
+
+## Publishing
+
+`//image` builds a multi-arch image, `//charts/sortie` packages the Helm chart,
+and `.github/workflows/publish.yml` pushes and signs both on a push to main.
+Four things there are deliberate and easy to undo by accident:
+
+- **`stamp = "force"` on the image rules**, not the default `"auto"`. `"auto"`
+  defers to `--stamp`, which only a release build passes, so every other build
+  would bake the literal string `{{.STABLE_GIT_COMMIT}}` in as the revision.
+- **`build --stamp` in .bazelrc.** rules_helm has no per-target equivalent:
+  `helm_package` always defers to the flag, so without it a chart carries
+  `0.1.0-GIT-COMMIT` as its version.
+- **The signing step reads the digest from the build**, not from the registry.
+  Resolving it by listing tags would have to follow ghcr's pagination — it
+  returns 100 tags per page, ascending, so a freshly pushed tag sorts last and
+  is never on the first page — and re-resolving a mutable tag reintroduces a
+  time-of-check window. Bazel already wrote the digest it pushed.
+- **`concurrency` is keyed by commit, not by branch.** GitHub keeps only one
+  pending run per group, so a branch-wide key lets a newly queued run cancel an
+  older pending one; a merged commit then publishes nothing and reports
+  "cancelled" rather than "failed", so nothing alerts.
+
+Signing cannot be done with rules_img's own support: ghcr does not implement the
+OCI Referrers API (verified — `404 MANIFEST_UNKNOWN` for a real digest) and
+rules_img attaches signatures only as referrers. cosign's tag scheme works.

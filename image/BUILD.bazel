@@ -1,0 +1,82 @@
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+load("@rules_img//img:image.bzl", "image_index", "image_manifest")
+load("@rules_img//img:layer.bzl", "file_metadata", "image_layer")
+load("@rules_img//img:push.bzl", "image_push")
+
+# The tag the image is published under. Defaults to "dev"; a release sets it
+# with --//image:tag=vX.Y.Z.
+string_flag(
+    name = "tag",
+    build_setting_default = "dev",
+    visibility = ["//visibility:public"],
+)
+
+image_layer(
+    name = "binary_layer",
+    srcs = {"/sortie": "//cmd/sortie"},
+    compress = "zstd",
+    default_metadata = file_metadata(mode = "0755"),
+    # sortie is a static Go binary with no runfiles; including them would add
+    # an empty tree and a second layer for nothing.
+    include_runfiles = False,
+)
+
+image_manifest(
+    name = "image_manifest",
+    base = "@distroless_static",
+    entrypoint = ["/sortie"],
+    labels = {
+        "org.opencontainers.image.description": "Declarative load-test plans on Nighthawk",
+        "org.opencontainers.image.licenses": "Apache-2.0",
+        "org.opencontainers.image.revision": "{{.STABLE_GIT_COMMIT}}",
+        "org.opencontainers.image.source": "https://github.com/bpalermo/sortie",
+    },
+    layers = [":binary_layer"],
+    # "force" rather than the default "auto": auto defers to --stamp, which only
+    # a release build passes, so every other build would bake the literal string
+    # "{{.STABLE_GIT_COMMIT}}" in as the revision. The stamped values are
+    # constant metadata to Bazel, so builds at one commit stay reproducible.
+    stamp = "force",
+)
+
+# One manifest, two platforms: the index performs the transition itself, so
+# rules_go's toolchains cross-build the binary for each.
+image_index(
+    name = "image_index",
+    manifests = [":image_manifest"],
+    platforms = [
+        "@rules_go//go/toolchain:linux_amd64",
+        "@rules_go//go/toolchain:linux_arm64",
+    ],
+    stamp = "force",
+    visibility = ["//visibility:public"],
+)
+
+# Two tags deliberately. The first is mutable and is what a human pulls; the
+# second is immutable and is the only one that can answer "which commit is
+# this?" after the fact.
+image_push(
+    name = "image_push",
+    build_settings = {"tag": ":tag"},
+    image = ":image_index",
+    registry = "ghcr.io",
+    repository = "bpalermo/sortie",
+    tag_list = [
+        "{{.tag}}",
+        "{{if .GIT_COMMIT}}{{.tag}}-{{.GIT_COMMIT}}{{end}}",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "starlark_srcs",
+    srcs = glob(
+        [
+            "*.bzl",
+            "*.bazel",
+            "*.BUILD",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//:__pkg__"],
+)

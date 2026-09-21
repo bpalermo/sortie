@@ -1,0 +1,78 @@
+# Default values for the sortie chart.
+
+image:
+  # Substituted at package time with the digest-pinned reference produced by
+  # //image:image_push, so the chart and the image it names cannot drift.
+  ref: "{@//image:image_push}"
+  pullPolicy: IfNotPresent
+
+# The plan, verbatim. It is mounted from a ConfigMap rather than baked into the
+# image so a run can be changed without republishing anything.
+#
+# Replace this: the default names no backend that exists, so it is valid YAML
+# that cannot run. That is deliberate -- a plausible-looking default would
+# generate load at whatever happened to answer.
+plan: |
+  version: v1
+  pools:
+    - name: local
+      services: ["nighthawk-service.default.svc.cluster.local:8443"]
+  scenarios:
+    - name: smoke
+      pool: local
+      target: http://target.default.svc.cluster.local/
+      executor:
+        type: constant-rate
+        rate: 100
+        duration: 30s
+      thresholds:
+        - "counter:benchmark.http_5xx == 0"
+        - "latency_2xx.p95 < 500ms"
+
+# Arguments before the plan path. --json is useful when something collects the
+# pod's logs; the plan path itself is appended by the template.
+args:
+  - run
+
+# Run on a schedule instead of once. A load test that runs once is a gate; one
+# that runs on a schedule is a canary.
+cronJob:
+  enabled: false
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+job:
+  # A load test that failed its thresholds failed for a reason; retrying it
+  # usually just generates the load twice and reports the same verdict.
+  backoffLimit: 0
+  # Keep finished pods around long enough to read the report out of the logs.
+  ttlSecondsAfterFinished: 3600
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# sortie opens outbound gRPC connections and needs nothing else.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
