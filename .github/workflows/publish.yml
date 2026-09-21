@@ -140,6 +140,17 @@ jobs:
           echo "image=ghcr.io/bpalermo/sortie@${digest}" >> "${GITHUB_OUTPUT}"
           echo "pushed ghcr.io/bpalermo/sortie@${digest}"
 
+          # The children too, so verification can cover what signing covered.
+          # They come out of the index the build wrote, for the same reason the
+          # index digest does: it is what was pushed.
+          children="$(jq -r '[.manifests[].digest] | join(" ")' "${index_file}")"
+          if [ -z "${children}" ]; then
+            echo "::error::the index lists no child manifests" >&2
+            exit 1
+          fi
+          echo "children=${children}" >> "${GITHUB_OUTPUT}"
+          echo "child manifests: ${children}"
+
       # --recursive signs the index and every child manifest. Without it, anyone
       # pulling the amd64 or arm64 manifest by its own digest gets something
       # unsigned. Signing by digest rather than by tag avoids cosign
@@ -154,12 +165,27 @@ jobs:
           COSIGN_YES: "true"
         run: cosign sign --recursive "${{ steps.digest.outputs.image }}"
 
-      - name: Verify the signature
+      # Every digest that was signed, not just the index. `cosign verify` has no
+      # --recursive to match `cosign sign --recursive`, so verifying the index
+      # alone would pass while the per-architecture manifests went unchecked --
+      # exactly the coverage --recursive exists to provide, and exactly what
+      # someone pulling by an architecture-specific digest relies on.
+      - name: Verify the signatures
         run: |
+          set -euo pipefail
+          for digest in ${{ steps.digest.outputs.children }}; do
+            echo "verifying child ${digest}"
+            cosign verify \
+              --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "ghcr.io/bpalermo/sortie@${digest}" > /dev/null
+          done
+          echo "verifying index ${{ steps.digest.outputs.image }}"
           cosign verify \
             --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "${{ steps.digest.outputs.image }}"
+            "${{ steps.digest.outputs.image }}" > /dev/null
+          echo "index and all child manifests verified"
 
       # The chart carries the image's digest, pinned at package time, so this
       # publishes a chart that can only ever reference the image signed above.

@@ -49,6 +49,12 @@ cronJob:
 job:
   # A load test that failed its thresholds failed for a reason; retrying it
   # usually just generates the load twice and reports the same verdict.
+  #
+  # One consequence worth knowing: upgrading a release while a run is in flight
+  # replaces the Job, and terminating sortie does not stop the backend, which
+  # generates until its configured duration elapses. The replacement then finds
+  # the backend busy and fails without retrying. Wait for a run to finish
+  # before upgrading it.
   backoffLimit: 0
   # Keep finished pods around long enough to read the report out of the logs.
   #
