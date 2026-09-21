@@ -179,6 +179,13 @@ Four things there are deliberate and easy to undo by accident:
   nothing. That is the better failure — a skipped commit is visible as a
   cancelled run and the commit that superseded it publishes seconds later, while
   a stale `dev` is silent.
+- **Do not add `cosign-release` to the cosign-installer step.** Pinning the
+  action pins the binary: at the pinned SHA the input defaults to the action's
+  own bootstrap version, so cosign is verified against a SHA-256 hardcoded in
+  the action and the install stops there. Any other value takes the weaker path
+  — `verify-blob --insecure-ignore-tlog` against a key fetched from
+  raw.githubusercontent.com — and a value that matches only today silently
+  lands on that path when the action is bumped.
 - **Third-party actions are pinned to commit SHAs**, with the version in a
   comment. This job holds `packages: write` and `id-token: write`, and a
   signature does not help: a swapped action would sign with this repository's

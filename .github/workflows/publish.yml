@@ -61,6 +61,15 @@ jobs:
           repository-cache: true
           cache-save: ${{ github.ref == 'refs/heads/main' }}
 
+      # Deliberately no `cosign-release`. Pinning the action already pins the
+      # binary: at this SHA the input defaults to v2.4.1, which is also the
+      # action's bootstrap version, so cosign is downloaded and checked against
+      # a SHA-256 hardcoded in the action itself, and the install exits there.
+      # Naming any other version takes the weaker path instead -- verify-blob
+      # with --insecure-ignore-tlog against a public key fetched from
+      # raw.githubusercontent.com at that tag. Naming v2.4.1 explicitly is a
+      # no-op that has to be kept in lockstep with the pin above, and silently
+      # drops onto that weaker path the moment the action is bumped.
       - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
 
       # Everything is built before any credential exists on the runner. Bazel
