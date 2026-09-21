@@ -2,7 +2,12 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "sortie.fullname" . }}
+  # Suffixed with a digest of the plan, image and args. A Job's spec.template is
+  # immutable, so a stable name would make `helm upgrade` with a changed plan
+  # fail with "field is immutable" instead of running it. With the suffix the
+  # upgrade creates a new Job and Helm removes the previous one, which is what
+  # "change the plan and re-run" should mean.
+  name: {{ printf "%s-%s" (include "sortie.fullname" . | trunc 54 | trimSuffix "-") (include "sortie.runHash" .) }}
   labels:
     {{- include "sortie.labels" . | nindent 4 }}
 spec:

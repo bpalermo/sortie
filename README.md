@@ -233,6 +233,13 @@ The plan is held in a ConfigMap and mounted read-only, so changing a run does
 not mean republishing anything. The Job's exit code is the verdict: a breached
 threshold fails it, and a malformed plan fails it differently.
 
+The Job's name carries a digest of the plan, image and arguments, because a
+Job's `spec.template` is immutable: with a stable name, `helm upgrade` with a
+changed plan would fail with `field is immutable` rather than run it. With the
+suffix an upgrade creates a new Job and Helm removes the previous one. Changing
+nothing therefore re-applies the same Job rather than re-running it; to run an
+unchanged plan again, delete the Job.
+
 ```console
 helm install nightly oci://ghcr.io/bpalermo/sortie/charts/sortie \
   --set-file plan=plan.yaml

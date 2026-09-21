@@ -37,6 +37,16 @@ The pod spec, shared by the Job and the CronJob so the two cannot drift.
 The ConfigMap's checksum is an annotation so that changing the plan rolls a new
 pod rather than leaving a CronJob running the previous one.
 */}}
+{{/*
+A short digest of everything that decides what this run does. It suffixes the
+Job name so that changing the plan produces a new Job rather than an attempt to
+patch an existing one's immutable spec.template -- which fails with
+"field is immutable" and never runs the new plan.
+*/}}
+{{- define "sortie.runHash" -}}
+{{- printf "%s|%s|%s" (toYaml .Values.plan) .Values.image.ref (toYaml .Values.args) | sha256sum | trunc 8 -}}
+{{- end -}}
+
 {{- define "sortie.podSpec" -}}
 metadata:
   labels:
@@ -49,6 +59,10 @@ metadata:
 spec:
   restartPolicy: Never
   serviceAccountName: {{ include "sortie.serviceAccountName" . }}
+  # sortie makes outbound gRPC calls and never touches the Kubernetes API, so a
+  # mounted bearer token is a credential a compromised load generator could use
+  # and nothing else.
+  automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
   securityContext:
     {{- toYaml .Values.podSecurityContext | nindent 4 }}
   containers:

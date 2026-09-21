@@ -58,6 +58,10 @@ affinity: {}
 
 podAnnotations: {}
 
+# sortie never calls the Kubernetes API. Leave this false unless something in
+# your cluster needs the token for admission or identity purposes.
+automountServiceAccountToken: false
+
 serviceAccount:
   create: true
   name: ""

@@ -23,6 +23,11 @@ concurrency:
 
 jobs:
   publish:
+    # workflow_dispatch can target any branch. Without this guard a manual run
+    # from a feature branch would publish under the same mutable tags and sign
+    # with a certificate the verification identity below accepts, making it
+    # indistinguishable from a publication from main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
