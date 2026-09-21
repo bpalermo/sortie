@@ -1,0 +1,29 @@
+# Collapse machine-written files in pull request diffs.
+#
+# linguist-generated hides the file by default in a GitHub diff (still
+# expandable) and keeps it out of the repository's language statistics.
+
+# Gazelle owns these. Editing one by hand is a mistake CI already catches, so
+# there is nothing in them for a reviewer to read.
+**/BUILD.bazel linguist-generated=true
+
+# ...except the ones that are hand-written. Last match wins, so these undo the
+# blanket rule above. They carry gazelle directives, lint wiring and the nogo
+# and proto targets -- all real review material.
+/BUILD.bazel linguist-generated=false
+/bazel/BUILD.bazel linguist-generated=false
+/bazel/nighthawk/BUILD.bazel linguist-generated=false
+/bazel/lint/BUILD.bazel linguist-generated=false
+/tools/nogo/BUILD.bazel linguist-generated=false
+
+# Resolved by Bazel from MODULE.bazel; large and mechanical.
+MODULE.bazel.lock linguist-generated=true
+
+# Checksums only.
+go.sum linguist-generated=true
+
+# NOTE: go.mod is hand-maintained here, not generated -- `go mod tidy` cannot
+# resolve the Bazel-only proto packages. It is collapsed for diff noise, but a
+# change to it IS meaningful and worth expanding. The invariants that look
+# deletable are enforced by //tools/deps:deps_test rather than by review alone.
+go.mod linguist-generated=true

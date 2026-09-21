@@ -1,0 +1,85 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# GHAS requires an explicit least-privilege grant; the default token permissions
+# are otherwise write-heavy for every job in the workflow.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bazel:
+    name: bazel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # No version is pinned here: bazelisk reads .bazelversion, so the
+      # checkout is the single source of the Bazel version and CI cannot drift
+      # from a local build.
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+          # Pull requests RESTORE caches but never SAVE them, so only reviewed
+          # code populates a cache a later trusted build consumes. Gated on the
+          # ref rather than the event, because workflow_dispatch can target any
+          # branch and would otherwise write branch-scoped caches that evict
+          # main's from the shared repo quota.
+          cache-save: ${{ github.ref == 'refs/heads/main' }}
+
+      # Lint runs as ordinary test targets (tags = ["lint"]), so this covers
+      # both. There is no separate go vet or gofmt step.
+      - name: bazel test //...
+        run: bazel test //... --test_output=errors
+
+      # Gazelle generates the BUILD files, so a hand-edited or stale one is a
+      # real failure mode: the Bazel build keeps working against the old graph
+      # until someone regenerates and the diff appears in an unrelated PR.
+      - name: BUILD files are up to date
+        run: |
+          bazel run //:gazelle
+          if ! git diff --exit-code -- 'BUILD.bazel' '**/BUILD.bazel'; then
+            echo "::error::BUILD files are stale; run 'bazel run //:gazelle'" >&2
+            exit 1
+          fi
+
+  # The single check branch protection requires, and the only reason this job
+  # exists.
+  #
+  # A required status check is matched by CHECK RUN name, so requiring the jobs
+  # themselves ties branch protection to their names: rename or split one, or
+  # add a matrix, and the required check can never report again -- which blocks
+  # every pull request on something that will never turn green, rather than
+  # failing it. Requiring one aggregate leaves the jobs free to change.
+  #
+  # if: always() so it runs even when a job fails -- a skipped job reports
+  # nothing, and a required check that never reports blocks the pull request
+  # instead of failing it.
+  ci:
+    name: ci
+    needs: [bazel]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      # Reads the results rather than naming the jobs, so adding a job to
+      # `needs` above is enough to have it gate merges.
+      - name: every job this depends on must have succeeded
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "results: ${results}"
+          for result in ${results}; do
+            if [ "${result}" != "success" ]; then
+              echo "::error::a required job reported '${result}'" >&2
+              exit 1
+            fi
+          done

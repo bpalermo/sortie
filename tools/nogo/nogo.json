@@ -1,0 +1,9 @@
+{
+    "_base": {
+        "exclude_files": {
+            "(^|/)external/": "Dependency sources; a finding here is not ours to fix and would fail the build on a routine dependency bump.",
+            "(^|/)bazel-out/": "Generated output.",
+            "\\.pb\\.go$": "Generated protobuf code."
+        }
+    }
+}

@@ -1,0 +1,15 @@
+# The Nighthawk proto fetch and its BUILD template live in //bazel/nighthawk.
+# This package exists so the Starlark directly under bazel/ is still linted.
+
+filegroup(
+    name = "starlark_srcs",
+    srcs = glob(
+        [
+            "*.bzl",
+            "*.bazel",
+            "*.BUILD",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//:__pkg__"],
+)

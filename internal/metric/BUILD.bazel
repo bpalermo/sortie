@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "metric",
+    srcs = [
+        "resolve.go",
+        "selector.go",
+    ],
+    importpath = "github.com/bpalermo/sortie/internal/metric",
+    visibility = ["//:__subpackages__"],
+    deps = ["@nighthawk_api//:client_go_proto"],
+)
+
+go_test(
+    name = "metric_test",
+    size = "small",
+    srcs = ["resolve_test.go"],
+    embed = [":metric"],
+    deps = [
+        "@nighthawk_api//:client_go_proto",
+        "@org_golang_google_protobuf//types/known/durationpb",
+    ],
+)

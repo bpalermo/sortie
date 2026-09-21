@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "plan",
+    srcs = [
+        "defaults.go",
+        "plan.go",
+        "validate.go",
+    ],
+    importpath = "github.com/bpalermo/sortie/internal/plan",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//api/sortie/plan/v1:plan",
+        "//internal/threshold",
+        "@build_buf_go_protovalidate//:protovalidate",
+        "@build_buf_go_protoyaml//:protoyaml",
+        "@nighthawk_api//:client_go_proto",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "plan_test",
+    size = "small",
+    srcs = ["plan_test.go"],
+    embed = [":plan"],
+)

@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "deps_test",
+    size = "small",
+    srcs = ["floor_test.go"],
+    # readRepoFile() reads these by relative path, not by Go import, so
+    # Gazelle cannot infer the dependency.
+    # keep
+    data = [
+        "//:MODULE.bazel",
+        "//:go.mod",
+        # The hand-written Bazel files, so the test can check that every
+        # bazel-only requirement is still named by one.
+        "//:starlark",
+    ],
+)

@@ -1,0 +1,8 @@
+build --enable_platform_specific_config
+build --incompatible_strict_action_env
+
+test --test_output=errors
+test --test_verbose_timeout_warnings
+
+# Local developer overrides (remote cache, RBE, ...) live here and are gitignored.
+try-import %workspace%/user.bazelrc

@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "sortie_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/bpalermo/sortie/cmd/sortie",
+    visibility = ["//visibility:private"],
+    deps = ["//internal/cli"],
+)
+
+go_binary(
+    name = "sortie",
+    embed = [":sortie_lib"],
+    visibility = ["//visibility:public"],
+)

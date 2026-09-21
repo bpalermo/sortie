@@ -1,0 +1,276 @@
+syntax = "proto3";
+
+// Package sortie.plan.v1 is the schema of a sortie plan file: what load to
+// generate, where to generate it from, and what must hold for the run to pass.
+//
+// Plans are written as YAML and parsed into these messages, so field names here
+// are the field names in a plan file. Constraints are declared inline rather
+// than checked in Go, which keeps the rule next to the field it governs.
+package sortie.plan.v1;
+
+import "api/client/options.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/duration.proto";
+
+// Plan is the root of a plan file.
+message Plan {
+  option (buf.validate.message).cel = {
+    id: "plan.pools.unique_names"
+    message: "pool names must be unique"
+    expression: "this.pools.map(p, p.name).size() == this.pools.size()"
+  };
+  option (buf.validate.message).cel = {
+    id: "plan.scenarios.unique_names"
+    message: "scenario names must be unique"
+    expression: "this.scenarios.map(s, s.name).size() == this.scenarios.size()"
+  };
+
+  // Schema version. Only "v1" is understood by this binary.
+  string version = 1 [(buf.validate.field).cel = {
+    id: "plan.version.supported"
+    message: "unsupported plan version, want \"v1\""
+    expression: "this == 'v1'"
+  }];
+
+  // Pools name the Nighthawk backends that scenarios run on.
+  repeated Pool pools = 2 [(buf.validate.field).repeated.min_items = 1];
+
+  // Defaults supplies field values inherited by every scenario that does not
+  // set them itself. Its name and thresholds are ignored.
+  Scenario defaults = 3;
+
+  // Scenarios run in file order.
+  repeated Scenario scenarios = 4 [(buf.validate.field).repeated.min_items = 1];
+
+  // Thresholds applied to every scenario, in addition to any the scenario
+  // declares itself.
+  repeated string thresholds = 5;
+}
+
+// Pool is a set of Nighthawk backends that a scenario's load is spread over.
+//
+// Exactly one of services or distributor is set. services addresses
+// nighthawk_service instances that sortie drives directly, merging the results
+// itself. distributor addresses a nighthawk_distributor that fans the request
+// out to targets on sortie's behalf.
+message Pool {
+  option (buf.validate.message).cel = {
+    id: "pool.one_dispatch_mode"
+    message: "set either services or distributor, not both"
+    expression: "!(this.services.size() > 0 && this.distributor != '')"
+  };
+  option (buf.validate.message).cel = {
+    id: "pool.some_dispatch_mode"
+    message: "set one of services or distributor"
+    expression: "this.services.size() > 0 || this.distributor != ''"
+  };
+  option (buf.validate.message).cel = {
+    id: "pool.distributor_needs_targets"
+    message: "distributor requires at least one entry in targets"
+    expression: "this.distributor == '' || this.targets.size() > 0"
+  };
+  option (buf.validate.message).cel = {
+    id: "pool.targets_need_distributor"
+    message: "targets is only meaningful together with distributor"
+    expression: "this.targets.size() == 0 || this.distributor != ''"
+  };
+
+  string name = 1 [(buf.validate.field).string.min_len = 1];
+
+  repeated string services = 2 [(buf.validate.field).repeated.items.cel = {
+      id: "pool.service.host_port"
+      message: "each service must be host:port"
+      expression: "this.matches('^\\\\[?[^\\\\[\\\\]]+\\\\]?:[0-9]{1,5}$')"
+    }];
+
+  string distributor = 3 [
+    (buf.validate.field).cel = {
+      id: "pool.distributor.host_port"
+      message: "distributor must be host:port"
+      expression: "this.matches('^\\\\[?[^\\\\[\\\\]]+\\\\]?:[0-9]{1,5}$')"
+    },
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+
+  // Addresses the distributor fans out to. Only meaningful with distributor.
+  repeated string targets = 4 [(buf.validate.field).repeated.items.cel = {
+      id: "pool.target.host_port"
+      message: "each target must be host:port"
+      expression: "this.matches('^\\\\[?[^\\\\[\\\\]]+\\\\]?:[0-9]{1,5}$')"
+    }];
+}
+
+// Scenario is one unit of load: a target, an executor that shapes the request
+// rate over time, and the client tuning that goes with it.
+message Scenario {
+  string name = 1;
+
+  string pool = 2;
+
+  // URI to benchmark. http:// and https:// only.
+  string target = 3 [
+    (buf.validate.field).cel = {
+      id: "scenario.target.scheme"
+      message: "target scheme must be http or https"
+      expression: "this.startsWith('http://') || this.startsWith('https://')"
+    },
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+
+  string method = 4;
+
+  // Request headers, each written "Name: value".
+  repeated string headers = 5 [(buf.validate.field).repeated.items.cel = {
+    id: "scenario.header.format"
+    message: "each header must be written \"Name: value\""
+    expression: "this.matches('^[^:]+:.*$')"
+  }];
+
+  // Request body, sent verbatim. Nighthawk sets no Content-Type for it, so
+  // supply one in headers.
+  string body = 6;
+
+  // http1, http2 or http3. Defaults to http1.
+  string protocol = 7 [
+    (buf.validate.field).cel = {
+      id: "scenario.protocol.known"
+      message: "protocol must be http1, http2 or http3"
+      expression: "this in ['http1', 'http2', 'http3']"
+    },
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+
+  Executor executor = 8;
+
+  // Nighthawk's --connections: the per-worker connection circuit-breaker cap,
+  // not a target concurrency.
+  optional uint32 connections = 9 [(buf.validate.field).uint32.gte = 1];
+
+  // Nighthawk's --concurrency: worker threads per backend, a positive integer
+  // or "auto". "auto" cannot be combined with a rate, because the aggregate
+  // rate is divided by the worker count and only the backend knows it.
+  string concurrency = 10 [
+    (buf.validate.field).cel = {
+      id: "scenario.concurrency.format"
+      message: "concurrency must be a positive integer or \"auto\""
+      expression: "this.matches('^([1-9][0-9]*|auto)$')"
+    },
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+
+  optional uint32 max_pending_requests = 11;
+
+  optional uint32 max_concurrent_streams = 12 [(buf.validate.field).uint32.gte = 1];
+
+  google.protobuf.Duration timeout = 13 [
+    (buf.validate.field).duration.gt = {seconds: 0},
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+
+  // Thresholds applied to this scenario only.
+  repeated string thresholds = 14;
+
+  // Nighthawk options passed through untouched, for anything this schema does
+  // not model: transport sockets, request source plugins, tunnelling,
+  // user-defined output plugins.
+  //
+  // sortie overlays only the fields it owns -- requests_per_second, duration,
+  // execution_id, the rate limiter plugin, and whatever the fields above set --
+  // so anything else here reaches the backend as written. This mirrors how
+  // Nighthawk's own adaptive load controller takes a
+  // nighthawk_traffic_template.
+  nighthawk.client.CommandLineOptions nighthawk_template = 15;
+}
+
+// Executor shapes the request rate over time.
+message Executor {
+  option (buf.validate.message).cel = {
+    id: "executor.stages_only_for_staircase"
+    message: "stages is only valid for the staircase executor"
+    expression: "this.type == 'staircase' || this.stages.size() == 0"
+  };
+  option (buf.validate.message).cel = {
+    id: "executor.ramp_time_only_for_ramping_rate"
+    message: "ramp_time is only valid for the ramping-rate executor"
+    expression: "this.type == 'ramping-rate' || !has(this.ramp_time)"
+  };
+  option (buf.validate.message).cel = {
+    id: "executor.staircase_needs_stages"
+    message: "the staircase executor requires at least one stage"
+    expression: "this.type != 'staircase' || this.stages.size() > 0"
+  };
+  option (buf.validate.message).cel = {
+    id: "executor.staircase_rate_on_stages"
+    message: "set rate and duration on each stage, not on a staircase executor"
+    expression: "this.type != 'staircase' || (this.rate == 0u && !has(this.duration))"
+  };
+  option (buf.validate.message).cel = {
+    id: "executor.rate_required"
+    message: "rate must be greater than zero"
+    expression: "this.type == 'staircase' || this.rate > 0u"
+  };
+  option (buf.validate.message).cel = {
+    id: "executor.duration_required"
+    message: "duration is required"
+    expression: "this.type == 'staircase' || has(this.duration)"
+  };
+  option (buf.validate.message).cel = {
+    id: "executor.ramping_rate_needs_ramp_time"
+    message: "the ramping-rate executor requires a ramp_time"
+    expression: "this.type != 'ramping-rate' || has(this.ramp_time)"
+  };
+  // Nighthawk's linear ramping rate limiter ramps to --rps over ramp_time and
+  // then holds, so a ramp that fills the whole run never reaches its plateau.
+  option (buf.validate.message).cel = {
+    id: "executor.ramp_time_shorter_than_duration"
+    message: "ramp_time must be shorter than duration"
+    expression: "!has(this.ramp_time) || !has(this.duration) || this.ramp_time < this.duration"
+  };
+
+  // constant-rate, ramping-rate or staircase.
+  string type = 1 [(buf.validate.field).cel = {
+    id: "executor.type.known"
+    message: "executor type must be constant-rate, ramping-rate or staircase"
+    expression: "this in ['constant-rate', 'ramping-rate', 'staircase']"
+  }];
+
+  // Aggregate requests per second the target receives, across every worker
+  // thread of every backend in the pool. Nighthawk's own --rps is per worker,
+  // so sortie divides this by backends x concurrency.
+  uint32 rate = 2;
+
+  google.protobuf.Duration duration = 3 [
+    (buf.validate.field).duration.gt = {seconds: 0},
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+
+  // Ramp linearly from zero to rate over this long, then hold rate for the
+  // remainder of duration. ramping-rate only.
+  google.protobuf.Duration ramp_time = 4 [
+    (buf.validate.field).duration.gt = {seconds: 0},
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+
+  // staircase only.
+  repeated Stage stages = 5;
+
+  // Select Nighthawk's open-loop mode, in which the rate limiter never
+  // compensates for a client that cannot keep pace and saturation is reported
+  // as pool overflow rather than as latency.
+  bool open_loop = 6;
+}
+
+// Stage is one step of a staircase executor.
+//
+// Each stage is dispatched as its own Nighthawk execution, because Nighthawk
+// cannot change the rate of a run already in flight: the UpdateRequest RPC in
+// its service proto is declared but unimplemented. Connections are therefore
+// re-established at every stage boundary and each stage yields its own result.
+message Stage {
+  uint32 rate = 1 [(buf.validate.field).uint32.gt = 0];
+
+  google.protobuf.Duration duration = 2 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).duration.gt = {seconds: 0}
+  ];
+}

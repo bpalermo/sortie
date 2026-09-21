@@ -1,0 +1,92 @@
+# Three shapes of load, run in file order.
+#
+# Scenarios always run sequentially: Nighthawk accepts one execution per service
+# instance at a time, and two scenarios sharing a target would distort each
+# other's latency measurements even on separate pools.
+version: v1
+
+pools:
+  - name: local
+    services:
+      - "127.0.0.1:8443"
+
+  # A distributor fans one request out to several instances itself. It forwards
+  # one request unchanged to every target, so sortie sends it the per-target
+  # share rather than the aggregate: rate still means what the target receives,
+  # but it has to divide exactly by targets x concurrency, since there is only
+  # one request to put a remainder in.
+  #
+  # Note that Nighthawk ships no distributor binary: the service exists in its
+  # sources as a library and is marked experimental (#369), and
+  # nighthawk_service does not host it. This pool is unusable until someone
+  # builds a host for it. No scenario below uses it.
+  - name: fleet
+    distributor: "127.0.0.1:8442"
+    targets:
+      - "10.0.0.11:8443"
+      - "10.0.0.12:8443"
+
+defaults:
+  pool: local
+  target: http://127.0.0.1:8080/
+  protocol: http2
+
+thresholds:
+  - "counter:benchmark.http_5xx == 0"
+
+scenarios:
+  # Ramp linearly from zero to 500 rps over the first 30s, then hold 500 rps
+  # for the remaining 90s. This is Nighthawk's linear ramping rate limiter.
+  - name: ramp
+    executor:
+      type: ramping-rate
+      rate: 500
+      ramp_time: 30s
+      duration: 120s
+    thresholds:
+      - "latency_2xx.p99 < 500ms"
+
+  # Step through fixed rates. Each stage is a separate Nighthawk execution --
+  # connections are re-established at every boundary and each stage is reported
+  # and judged on its own -- because Nighthawk cannot change the rate of a run
+  # already in flight.
+  - name: steps
+    executor:
+      type: staircase
+      stages:
+        - {rate: 100, duration: 30s}
+        - {rate: 250, duration: 30s}
+        - {rate: 500, duration: 30s}
+    thresholds:
+      - "latency_2xx.p95 < 250ms"
+      - "counter:benchmark.pool_overflow < 100"
+
+  # Open loop: the rate limiter never compensates for a client that cannot keep
+  # pace, so saturation shows up as pool overflow rather than as latency.
+  - name: saturate
+    executor:
+      type: constant-rate
+      rate: 2000
+      duration: 60s
+      open_loop: true
+    thresholds:
+      - "rate:benchmark.http_2xx >= 1900"
+
+  # Anything this schema does not model can be set on the Nighthawk options
+  # directly. sortie overlays only the fields it owns -- requests_per_second,
+  # duration, execution_id and the rate limiter plugin -- so everything here
+  # reaches the backend as written.
+  #
+  # This mirrors how Nighthawk's own adaptive load controller takes a
+  # nighthawk_traffic_template, and it means sortie does not have to grow a
+  # field for every Nighthawk flag.
+  - name: passthrough
+    executor:
+      type: constant-rate
+      rate: 100
+      duration: 30s
+    nighthawk_template:
+      max_requests_per_connection: 1000
+      burst_size: 5
+    thresholds:
+      - "latency_2xx.p95 < 250ms"

@@ -1,0 +1,49 @@
+# Lint aspects live in linters.bzl; this package exists to host them.
+
+# The platform-appropriate buildifier binary.
+#
+# linters.bzl cannot select() here itself: the aspect's binary is an attribute
+# default, which is evaluated at load time, and select() is not. An alias moves
+# the choice into analysis, where the exec platform is known.
+#
+# These are buildifier_prebuilt's raw downloaded executables rather than its
+# @buildifier_prebuilt//:buildifier launcher, whose runfiles do not reach the
+# sandbox when an aspect creates the action (aspect-build/rules_lint#991, fixed
+# in 2.9.1 but not yet on the BCR). See the comment in MODULE.bazel.
+alias(
+    name = "buildifier",
+    actual = select({
+        "@platforms//cpu:arm64": ":buildifier_arm64",
+        "//conditions:default": ":buildifier_amd64",
+    }),
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "buildifier_arm64",
+    actual = select({
+        "@platforms//os:macos": "@buildifier_darwin_arm64//file:buildifier",
+        "//conditions:default": "@buildifier_linux_arm64//file:buildifier",
+    }),
+)
+
+alias(
+    name = "buildifier_amd64",
+    actual = select({
+        "@platforms//os:macos": "@buildifier_darwin_amd64//file:buildifier",
+        "//conditions:default": "@buildifier_linux_amd64//file:buildifier",
+    }),
+)
+
+filegroup(
+    name = "starlark_srcs",
+    srcs = glob(
+        [
+            "*.bzl",
+            "*.bazel",
+            "*.BUILD",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//:__pkg__"],
+)
