@@ -188,3 +188,38 @@ func TestParseFractionalPercentile(t *testing.T) {
 		t.Errorf("p99.9 = %s, want %s (the 0.9990234375 bucket)", got, want)
 	}
 }
+
+// Each aggregate is a oneof, and the getter for its raw arm returns zero when
+// the oneof is unset. Reading it without checking presence reports "no
+// measurement" as "zero", which satisfies every upper-bound threshold written
+// against it -- so a statistic with no mean would pass "mean < 1ms".
+func TestResolveAbsentAggregateIsAnError(t *testing.T) {
+	// Percentiles present, no aggregates at all.
+	bare := &client.Result{Statistics: []*client.Statistic{{
+		Id: "benchmark_http_client.latency_2xx",
+		Percentiles: []*client.Percentile{
+			{Percentile: 1, DurationType: &client.Percentile_Duration{Duration: durationpb.New(time.Second)}},
+		},
+	}}}
+
+	for _, aggregate := range []string{"mean", "pstdev", "min", "max"} {
+		t.Run(aggregate, func(t *testing.T) {
+			sel, err := ParseSelector("latency_2xx." + aggregate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v, err := Resolve(bare, sel); err == nil {
+				t.Fatalf("an absent %s resolved to %v instead of erroring", aggregate, v.Num)
+			}
+		})
+	}
+
+	// count is not a oneof, so zero is a real measurement rather than an absence.
+	sel, err := ParseSelector("latency_2xx.count")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Resolve(bare, sel); err != nil {
+		t.Errorf("count should resolve to zero rather than error: %v", err)
+	}
+}

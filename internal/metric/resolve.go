@@ -95,31 +95,53 @@ func resolvePercentile(st *client.Statistic, sel Selector) (Value, error) {
 }
 
 func resolveAggregate(st *client.Statistic, sel Selector) (Value, error) {
+	// Each aggregate is a oneof: either a duration or a raw number, and
+	// possibly neither. The generated getter for the raw arm returns zero when
+	// the oneof is unset, so reading it without checking presence reports "no
+	// measurement" as "zero" -- which satisfies every upper-bound threshold
+	// written against it. Presence is checked first for that reason.
 	switch sel.Aggregate {
 	case Count:
+		// Not a oneof: a count of zero is a real measurement.
 		return Value{Num: float64(st.GetCount())}, nil
 	case Mean:
+		if st.GetMeanType() == nil {
+			return Value{}, missingAggregate(st, sel)
+		}
 		if d := st.GetMean(); d != nil {
 			return Value{Num: float64(d.AsDuration().Nanoseconds()), IsDuration: true}, nil
 		}
 		return Value{Num: st.GetRawMean()}, nil
 	case Pstdev:
+		if st.GetPstdevType() == nil {
+			return Value{}, missingAggregate(st, sel)
+		}
 		if d := st.GetPstdev(); d != nil {
 			return Value{Num: float64(d.AsDuration().Nanoseconds()), IsDuration: true}, nil
 		}
 		return Value{Num: st.GetRawPstdev()}, nil
 	case Min:
+		if st.GetMinType() == nil {
+			return Value{}, missingAggregate(st, sel)
+		}
 		if d := st.GetMin(); d != nil {
 			return Value{Num: float64(d.AsDuration().Nanoseconds()), IsDuration: true}, nil
 		}
 		return Value{Num: float64(st.GetRawMin())}, nil
 	case Max:
+		if st.GetMaxType() == nil {
+			return Value{}, missingAggregate(st, sel)
+		}
 		if d := st.GetMax(); d != nil {
 			return Value{Num: float64(d.AsDuration().Nanoseconds()), IsDuration: true}, nil
 		}
 		return Value{Num: float64(st.GetRawMax())}, nil
 	}
 	return Value{}, fmt.Errorf("%s: unknown aggregate %q", sel.Raw, sel.Aggregate)
+}
+
+func missingAggregate(st *client.Statistic, sel Selector) error {
+	return fmt.Errorf("%s: statistic %q carries no %s", sel.Raw, st.GetId(), sel.Aggregate)
 }
 
 // findStatistic matches name exactly, or as a dotted suffix so that
