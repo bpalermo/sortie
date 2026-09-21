@@ -66,9 +66,18 @@ func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLin
 	}
 
 	// Drain so the server sees a clean half-close rather than a cancelled RPC.
+	//
+	// Only io.EOF means the stream finished cleanly. A streaming RPC can
+	// deliver a response and then end with a non-OK status, and swallowing that
+	// would have us evaluate thresholds against a run whose backend failed
+	// after reporting.
 	for {
-		if _, err := stream.Recv(); err != nil {
+		_, err := stream.Recv()
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("execution stream failed after responding: %w", err)
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -83,15 +84,55 @@ func Distribute(
 			outputs = append(outputs, er.GetOutput())
 		}
 	}
-	// Anything less than one result per target means the pool that ran is not
-	// the pool the plan described. Evaluating thresholds against the subset
-	// would report a pass for a run that never happened in full.
-	if len(outputs) != len(targets) {
-		return nil, nil, fmt.Errorf(
-			"distributor returned %d results for %d targets (%s); refusing to judge a partial pool",
-			len(outputs), len(targets), strings.Join(names, ", "))
+	// The pool that ran has to be the pool the plan described. Counting results
+	// is not enough: two results for one target and none for another would
+	// satisfy a count check while a backend never ran at all, and thresholds
+	// would then pass on a pool that was never fully exercised. Match identities.
+	if err := checkTargetsAnswered(targets, names); err != nil {
+		return nil, nil, err
 	}
 	return names, outputs, nil
+}
+
+// checkTargetsAnswered reports whether every requested target answered exactly
+// once, naming what was missing or duplicated rather than only the counts.
+func checkTargetsAnswered(targets, answered []string) error {
+	seen := make(map[string]int, len(answered))
+	var unexpected []string
+	for _, name := range answered {
+		if !slices.Contains(targets, name) {
+			unexpected = append(unexpected, name)
+			continue
+		}
+		seen[name]++
+	}
+
+	var missing, duplicated []string
+	for _, target := range targets {
+		switch seen[target] {
+		case 1:
+		case 0:
+			missing = append(missing, target)
+		default:
+			duplicated = append(duplicated, fmt.Sprintf("%s (x%d)", target, seen[target]))
+		}
+	}
+
+	var problems []string
+	if len(missing) > 0 {
+		problems = append(problems, "no result from "+strings.Join(missing, ", "))
+	}
+	if len(duplicated) > 0 {
+		problems = append(problems, "repeated results from "+strings.Join(duplicated, ", "))
+	}
+	if len(unexpected) > 0 {
+		problems = append(problems, "results from untargeted "+strings.Join(unexpected, ", "))
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("distributor did not run the pool as requested: %s",
+			strings.Join(problems, "; "))
+	}
+	return nil
 }
 
 func socketAddress(hostPort string) (*corev3.Address, error) {
