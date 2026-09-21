@@ -10,7 +10,7 @@ description: |
   it dispatches to are addressed by the plan and are not deployed here.
 type: application
 # Stamped at package time from the workspace status.
-version: "0.1.0-{GIT_COMMIT}"
+version: "0.1.0-{STABLE_GIT_COMMIT}"
 appVersion: "{STABLE_GIT_VERSION}"
 keywords:
   - load-testing

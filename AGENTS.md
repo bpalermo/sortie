@@ -165,6 +165,12 @@ Four things there are deliberate and easy to undo by accident:
   returns 100 tags per page, ascending, so a freshly pushed tag sorts last and
   is never on the first page — and re-resolving a mutable tag reintroduces a
   time-of-check window. Bazel already wrote the digest it pushed.
+- **Every workspace-status key is `STABLE_`.** Unprefixed keys land in
+  volatile-status.txt, which Bazel treats as constant metadata: an action that
+  embeds one is not invalidated when it changes, so a cached action can keep
+  publishing a stale value. The image's commit tag and the chart's version both
+  identify a commit, so both must invalidate. Do not add an unprefixed key for
+  anything that identifies a build.
 - **`concurrency` is keyed by branch, not by commit**, so publications are
   serialized. The `dev` tag is mutable: a commit-keyed group lets two pushes to
   main publish at once, and an older, slower run finishing last leaves the tag

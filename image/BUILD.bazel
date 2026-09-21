@@ -61,9 +61,13 @@ image_push(
     image = ":image_index",
     registry = "ghcr.io",
     repository = "bpalermo/sortie",
+    # STABLE_, not the volatile GIT_COMMIT: a volatile value is constant
+    # metadata to Bazel, so an action that embeds one is not invalidated when it
+    # changes. A commit-identifying tag has to invalidate, or a cached push
+    # script republishes the previous commit's tag.
     tag_list = [
         "{{.tag}}",
-        "{{if .GIT_COMMIT}}{{.tag}}-{{.GIT_COMMIT}}{{end}}",
+        "{{if .STABLE_GIT_COMMIT}}{{.tag}}-{{.STABLE_GIT_COMMIT}}{{end}}",
     ],
     visibility = ["//visibility:public"],
 )
