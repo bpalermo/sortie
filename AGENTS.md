@@ -165,10 +165,25 @@ Four things there are deliberate and easy to undo by accident:
   returns 100 tags per page, ascending, so a freshly pushed tag sorts last and
   is never on the first page — and re-resolving a mutable tag reintroduces a
   time-of-check window. Bazel already wrote the digest it pushed.
-- **`concurrency` is keyed by commit, not by branch.** GitHub keeps only one
-  pending run per group, so a branch-wide key lets a newly queued run cancel an
-  older pending one; a merged commit then publishes nothing and reports
-  "cancelled" rather than "failed", so nothing alerts.
+- **`concurrency` is keyed by branch, not by commit**, so publications are
+  serialized. The `dev` tag is mutable: a commit-keyed group lets two pushes to
+  main publish at once, and an older, slower run finishing last leaves the tag
+  pointing at a stale commit. The cost is that GitHub keeps only one pending run
+  per group, so a commit queued behind another is cancelled and publishes
+  nothing. That is the better failure — a skipped commit is visible as a
+  cancelled run and the commit that superseded it publishes seconds later, while
+  a stale `dev` is silent.
+- **Third-party actions are pinned to commit SHAs**, with the version in a
+  comment. This job holds `packages: write` and `id-token: write`, and a
+  signature does not help: a swapped action would sign with this repository's
+  genuine identity, so `cosign verify` would pass. `.github/dependabot.yml`
+  moves the SHA and the comment together so the pins stay current.
+- **The chart push needs `HELM_REGISTRY_USERNAME`/`HELM_REGISTRY_PASSWORD`.**
+  `docker/login-action` is not enough: rules_helm pins `HELM_REGISTRY_CONFIG` to
+  a fresh temp directory per invocation, so Helm reads neither
+  `~/.docker/config.json` nor anything a prior `helm registry login` wrote. Its
+  pusher skips the login without failing when the variables are absent, so the
+  push fails with a 401 rather than a clear error.
 
 Signing cannot be done with rules_img's own support: ghcr does not implement the
 OCI Referrers API (verified — `404 MANIFEST_UNKNOWN` for a real digest) and

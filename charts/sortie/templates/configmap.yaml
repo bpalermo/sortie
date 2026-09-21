@@ -1,7 +1,8 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "sortie.fullname" . }}
+  # Named by the plan's digest -- see sortie.configMapName.
+  name: {{ include "sortie.configMapName" . }}
   labels:
     {{- include "sortie.labels" . | nindent 4 }}
 data:

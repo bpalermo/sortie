@@ -47,6 +47,12 @@ jobs:
           # Chart.yaml's appVersion comes from `git describe --tags`, which
           # needs the tags and enough history to reach one.
           fetch-depth: 0
+          # checkout otherwise leaves GITHUB_TOKEN in .git/config, and this job
+          # then runs Bazel, which executes build tooling from the dependency
+          # graph while that token holds `packages: write`. Nothing after this
+          # step talks to git over the network -- workspace_status.sh only reads
+          # the local repository -- so the credential has no reason to persist.
+          persist-credentials: false
 
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:

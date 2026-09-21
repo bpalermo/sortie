@@ -34,9 +34,29 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{/*
 The pod spec, shared by the Job and the CronJob so the two cannot drift.
 
-The ConfigMap's checksum is an annotation so that changing the plan rolls a new
-pod rather than leaving a CronJob running the previous one.
+Changing the plan changes the name of the ConfigMap this mounts, so the pod
+template changes with it and a CronJob does not keep running the previous plan.
+That is why there is no checksum annotation: it would be a second mechanism for
+the thing the volume name already does.
 */}}
+{{/*
+The ConfigMap holding the plan, named by its contents.
+
+A stable name would be updated in place by `helm upgrade`, and a Job that the
+CronJob controller created before the upgrade but has not started yet would then
+mount the new plan while its pod template and its Job name still describe the
+old one. A load test that silently measures a different plan than the one it
+reports is worse than one that does not start, so each plan gets its own object
+and a Job can only ever mount the plan it was created for.
+
+Helm deletes the previous ConfigMap on upgrade, since it is no longer in the
+manifest. A Job still pending against it then fails to mount and stays visibly
+unstarted, rather than running the wrong plan.
+*/}}
+{{- define "sortie.configMapName" -}}
+{{- printf "%s-%s" (include "sortie.fullname" . | trunc 54 | trimSuffix "-") (.Values.plan | sha256sum | trunc 8) -}}
+{{- end -}}
+
 {{/*
 A short digest of the rendered pod template. It suffixes the Job name so that
 changing the template produces a new Job rather than an attempt to patch an
@@ -59,11 +79,10 @@ place rather than start a new run.
 metadata:
   labels:
     {{- include "sortie.selectorLabels" . | nindent 4 }}
+  {{- with .Values.podAnnotations }}
   annotations:
-    checksum/plan: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-    {{- with .Values.podAnnotations }}
     {{- toYaml . | nindent 4 }}
-    {{- end }}
+  {{- end }}
 spec:
   restartPolicy: Never
   serviceAccountName: {{ include "sortie.serviceAccountName" . }}
@@ -91,7 +110,7 @@ spec:
   volumes:
     - name: plan
       configMap:
-        name: {{ include "sortie.fullname" . }}
+        name: {{ include "sortie.configMapName" . }}
   {{- with .Values.nodeSelector }}
   nodeSelector:
     {{- toYaml . | nindent 4 }}
