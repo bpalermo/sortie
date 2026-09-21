@@ -9,18 +9,21 @@ image:
 # The plan, verbatim. It is mounted from a ConfigMap rather than baked into the
 # image so a run can be changed without republishing anything.
 #
-# Replace this: the default names no backend that exists, so it is valid YAML
-# that cannot run. That is deliberate -- a plausible-looking default would
-# generate load at whatever happened to answer.
+# Replace this. The hosts are under .invalid, which RFC 2606 reserves and
+# guarantees will never resolve, so the default is valid YAML that cannot run
+# anywhere. That is deliberate, and the reason it is not a cluster-local name
+# like target.default.svc.cluster.local: a plausible default is one that
+# eventually matches a real Service in somebody's cluster, and then installing
+# the chart without a plan aims a load test at it.
 plan: |
   version: v1
   pools:
     - name: local
-      services: ["nighthawk-service.default.svc.cluster.local:8443"]
+      services: ["nighthawk-service.invalid:8443"]
   scenarios:
     - name: smoke
       pool: local
-      target: http://target.default.svc.cluster.local/
+      target: http://target.invalid/
       executor:
         type: constant-rate
         rate: 100
