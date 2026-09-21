@@ -14,6 +14,8 @@
 /bazel/BUILD.bazel linguist-generated=false
 /bazel/nighthawk/BUILD.bazel linguist-generated=false
 /bazel/lint/BUILD.bazel linguist-generated=false
+/charts/sortie/BUILD.bazel linguist-generated=false
+/image/BUILD.bazel linguist-generated=false
 /tools/nogo/BUILD.bazel linguist-generated=false
 
 # Resolved by Bazel from MODULE.bazel; large and mechanical.

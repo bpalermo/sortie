@@ -1,0 +1,21 @@
+apiVersion: v2
+name: sortie
+description: |
+  Runs a sortie load-test plan as a Kubernetes Job or CronJob. The plan is held
+  in a ConfigMap and mounted read-only; the Job's exit code is the verdict, so
+  a breached threshold fails the Job and a malformed plan fails it differently
+  (2 rather than 1).
+
+  This chart deploys the load generator's driver only. The Nighthawk backends
+  it dispatches to are addressed by the plan and are not deployed here.
+type: application
+# Stamped at package time from the workspace status.
+version: "0.1.0-{STABLE_GIT_COMMIT}"
+appVersion: "{STABLE_GIT_VERSION}"
+keywords:
+  - load-testing
+  - benchmarking
+  - nighthawk
+  - envoy
+sources:
+  - https://github.com/bpalermo/sortie

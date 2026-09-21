@@ -6,6 +6,16 @@ module(
 bazel_dep(name = "rules_go", version = "0.63.0")
 bazel_dep(name = "gazelle", version = "0.54.0")
 bazel_dep(name = "aspect_rules_lint", version = "2.9.0")
+
+# Named by //image for string_flag.
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "rules_img", version = "0.3.21")
+bazel_dep(name = "rules_helm", version = "0.32.0")
+
+# Transitive dependency of rules_img, pinned for Bazel 9: older versions reach
+# it through rules_pkg and use the removed incompatible_use_toolchain_transition
+# keyword.
+bazel_dep(name = "rules_foreign_cc", version = "0.16.0")
 bazel_dep(name = "buildifier_prebuilt", version = "10.0.1")
 
 # Named directly by the select() in //bazel/lint that picks buildifier's
@@ -118,4 +128,24 @@ go_deps.gazelle_override(
 go_deps.gazelle_override(
     build_file_generation = "off",
     path = "cel.dev/expr",
+)
+
+# Helm's own binary, so the chart is built and linted with a pinned toolchain
+# rather than whatever is on a developer's PATH.
+helm = use_extension("@rules_helm//helm:extensions.bzl", "helm")
+helm.host_tools()
+use_repo(helm, "helm", "helm_toolchains")
+
+register_toolchains("@helm_toolchains//:all")
+
+# The image base. Pinned by digest: a tag would let the contents of a release
+# change without the build changing.
+pull = use_repo_rule("@rules_img//img:pull.bzl", "pull")
+
+pull(
+    name = "distroless_static",
+    digest = "sha256:1c2c046bc09ed40fad370b599a0b1ae7987f55b01e247cf27a7c27cd97e5bbc7",
+    layer_handling = "lazy",
+    registry = "gcr.io",
+    repository = "distroless/static-debian13",
 )

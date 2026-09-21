@@ -1,0 +1,12 @@
+# Pinning actions to commit SHAs stops a retagged release from silently
+# changing what runs, but it also means a pinned action never picks up a fix on
+# its own. Dependabot understands the `<sha> # <version>` form and moves both
+# parts together, so the pins stay current without becoming mutable again.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore"

@@ -1,0 +1,22 @@
+{{- if not .Values.cronJob.enabled -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Suffixed with a digest of the plan, image and args. A Job's spec.template is
+  # immutable, so a stable name would make `helm upgrade` with a changed plan
+  # fail with "field is immutable" instead of running it. With the suffix the
+  # upgrade creates a new Job and Helm removes the previous one, which is what
+  # "change the plan and re-run" should mean.
+  name: {{ printf "%s-%s" (include "sortie.fullname" . | trunc 54 | trimSuffix "-") (include "sortie.runHash" .) }}
+  labels:
+    {{- include "sortie.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  {{- /* Not `with`: 0 is a valid TTL meaning "delete immediately", and `with`
+         treats it as empty, which would silently leave the Job with no TTL. */}}
+  {{- if not (kindIs "invalid" .Values.job.ttlSecondsAfterFinished) }}
+  ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
+  {{- end }}
+  template:
+    {{- include "sortie.podSpec" . | nindent 4 }}
+{{- end -}}

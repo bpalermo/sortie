@@ -147,3 +147,57 @@ against what the plan asked for. `examples/smoke.yaml` is the shortest path.
 A ramping executor is the sharpest check of the rate-limiter wiring: ramping to
 R over T then holding for H should produce `R*T/2 + R*H` requests, and the count
 comes back exact.
+
+## Publishing
+
+`//image` builds a multi-arch image, `//charts/sortie` packages the Helm chart,
+and `.github/workflows/publish.yml` pushes and signs both on a push to main.
+Four things there are deliberate and easy to undo by accident:
+
+- **`stamp = "force"` on the image rules**, not the default `"auto"`. `"auto"`
+  defers to `--stamp`, which only a release build passes, so every other build
+  would bake the literal string `{{.STABLE_GIT_COMMIT}}` in as the revision.
+- **`build --stamp` in .bazelrc.** rules_helm has no per-target equivalent:
+  `helm_package` always defers to the flag, so without it a chart carries
+  `0.1.0-GIT-COMMIT` as its version.
+- **The signing step reads the digest from the build**, not from the registry.
+  Resolving it by listing tags would have to follow ghcr's pagination — it
+  returns 100 tags per page, ascending, so a freshly pushed tag sorts last and
+  is never on the first page — and re-resolving a mutable tag reintroduces a
+  time-of-check window. Bazel already wrote the digest it pushed.
+- **Every workspace-status key is `STABLE_`.** Unprefixed keys land in
+  volatile-status.txt, which Bazel treats as constant metadata: an action that
+  embeds one is not invalidated when it changes, so a cached action can keep
+  publishing a stale value. The image's commit tag and the chart's version both
+  identify a commit, so both must invalidate. Do not add an unprefixed key for
+  anything that identifies a build.
+- **`concurrency` is keyed by branch, not by commit**, so publications are
+  serialized. The `dev` tag is mutable: a commit-keyed group lets two pushes to
+  main publish at once, and an older, slower run finishing last leaves the tag
+  pointing at a stale commit. The cost is that GitHub keeps only one pending run
+  per group, so a commit queued behind another is cancelled and publishes
+  nothing. That is the better failure — a skipped commit is visible as a
+  cancelled run and the commit that superseded it publishes seconds later, while
+  a stale `dev` is silent.
+- **Do not add `cosign-release` to the cosign-installer step.** Pinning the
+  action pins the binary: at the pinned SHA the input defaults to the action's
+  own bootstrap version, so cosign is verified against a SHA-256 hardcoded in
+  the action and the install stops there. Any other value takes the weaker path
+  — `verify-blob --insecure-ignore-tlog` against a key fetched from
+  raw.githubusercontent.com — and a value that matches only today silently
+  lands on that path when the action is bumped.
+- **Third-party actions are pinned to commit SHAs**, with the version in a
+  comment. This job holds `packages: write` and `id-token: write`, and a
+  signature does not help: a swapped action would sign with this repository's
+  genuine identity, so `cosign verify` would pass. `.github/dependabot.yml`
+  moves the SHA and the comment together so the pins stay current.
+- **The chart push needs `HELM_REGISTRY_USERNAME`/`HELM_REGISTRY_PASSWORD`.**
+  `docker/login-action` is not enough: rules_helm pins `HELM_REGISTRY_CONFIG` to
+  a fresh temp directory per invocation, so Helm reads neither
+  `~/.docker/config.json` nor anything a prior `helm registry login` wrote. Its
+  pusher skips the login without failing when the variables are absent, so the
+  push fails with a 401 rather than a clear error.
+
+Signing cannot be done with rules_img's own support: ghcr does not implement the
+OCI Referrers API (verified — `404 MANIFEST_UNKNOWN` for a real digest) and
+rules_img attaches signatures only as referrers. cosign's tag scheme works.

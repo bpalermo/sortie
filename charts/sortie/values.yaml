@@ -1,0 +1,98 @@
+# Default values for the sortie chart.
+
+image:
+  # Substituted at package time with the digest-pinned reference produced by
+  # //image:image_push, so the chart and the image it names cannot drift.
+  ref: "{@//image:image_push}"
+  pullPolicy: IfNotPresent
+
+# The plan, verbatim. It is mounted from a ConfigMap rather than baked into the
+# image so a run can be changed without republishing anything.
+#
+# Replace this. The hosts are under .invalid, which RFC 2606 reserves and
+# guarantees will never resolve, so the default is valid YAML that cannot run
+# anywhere. That is deliberate, and the reason it is not a cluster-local name
+# like target.default.svc.cluster.local: a plausible default is one that
+# eventually matches a real Service in somebody's cluster, and then installing
+# the chart without a plan aims a load test at it.
+plan: |
+  version: v1
+  pools:
+    - name: local
+      services: ["nighthawk-service.invalid:8443"]
+  scenarios:
+    - name: smoke
+      pool: local
+      target: http://target.invalid/
+      executor:
+        type: constant-rate
+        rate: 100
+        duration: 30s
+      thresholds:
+        - "counter:benchmark.http_5xx == 0"
+        - "latency_2xx.p95 < 500ms"
+
+# Arguments before the plan path. --json is useful when something collects the
+# pod's logs; the plan path itself is appended by the template.
+args:
+  - run
+
+# Run on a schedule instead of once. A load test that runs once is a gate; one
+# that runs on a schedule is a canary.
+cronJob:
+  enabled: false
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+job:
+  # A load test that failed its thresholds failed for a reason; retrying it
+  # usually just generates the load twice and reports the same verdict.
+  #
+  # One consequence worth knowing: upgrading a release while a run is in flight
+  # replaces the Job, and terminating sortie does not stop the backend, which
+  # generates until its configured duration elapses. The replacement then finds
+  # the backend busy and fails without retrying. Wait for a run to finish
+  # before upgrading it.
+  backoffLimit: 0
+  # Keep finished pods around long enough to read the report out of the logs.
+  #
+  # Note the interaction with the Job's name, which is a digest of the pod
+  # template: once the TTL deletes the Job, the next `helm upgrade` finds it
+  # missing and creates it again, running the load test a second time even
+  # though nothing about the run changed. Set this to null to keep the Job, and
+  # the pods, until something deletes them; set it to 0 to delete it as soon as
+  # it finishes.
+  ttlSecondsAfterFinished: 3600
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+
+# sortie never calls the Kubernetes API. Leave this false unless something in
+# your cluster needs the token for admission or identity purposes.
+automountServiceAccountToken: false
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# sortie opens outbound gRPC connections and needs nothing else.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]

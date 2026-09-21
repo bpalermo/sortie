@@ -1,6 +1,18 @@
 build --enable_platform_specific_config
 build --incompatible_strict_action_env
 
+# Image labels and tags carry the git commit; this is where it comes from. The
+# script never fails, so it cannot break a build.
+build --workspace_status_command=bazel/workspace_status.sh
+
+# Stamp by default. rules_helm has no per-target equivalent of the image rules'
+# stamp = "force": helm_package always defers to this flag, so without it a
+# chart built outside a release carries the literal placeholders
+# "0.1.0-GIT-COMMIT" and "STABLE-GIT-VERSION" as its versions. Only the image
+# manifest and the chart consume the workspace status, so this re-runs two
+# cheap actions per commit and nothing else.
+build --stamp
+
 test --test_output=errors
 test --test_verbose_timeout_warnings
 

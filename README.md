@@ -219,6 +219,82 @@ to hold. For a single-backend pool this is exactly the obvious behaviour.
 - **One execution per backend at a time.** `nighthawk_service` refuses a second
   concurrent run, so scenarios are sequential by design.
 
+## Running it in Kubernetes
+
+A multi-arch image and a Helm chart are published to GHCR on every push to main:
+
+```
+ghcr.io/bpalermo/sortie                 linux/amd64, linux/arm64
+oci://ghcr.io/bpalermo/sortie/charts    the chart
+```
+
+The chart runs a plan as a Job, or as a CronJob with `cronJob.enabled=true`.
+The plan is held in a ConfigMap and mounted read-only, so changing a run does
+not mean republishing anything. The Job's exit code is the verdict: a breached
+threshold fails it, and a malformed plan fails it differently.
+
+The Job's name carries a digest of its rendered pod template, because a Job's
+`spec.template` is immutable: with a stable name, `helm upgrade` with a changed
+plan would fail with `field is immutable` rather than run it. With the suffix an
+upgrade creates a new Job and Helm removes the previous one. Changing nothing
+therefore re-applies the same Job rather than re-running it; to run an unchanged
+plan again, delete the Job. Changing only `backoffLimit` or
+`ttlSecondsAfterFinished` does not rename it -- those are mutable on a Job, so
+they patch the existing run instead of starting a new one.
+
+`job.ttlSecondsAfterFinished` defaults to an hour, and deleting the Job is also
+what re-runs it: once the TTL has removed it, the next `helm upgrade` finds it
+missing and creates it again, generating load even if the upgrade changed
+nothing about the run. Set it to `null` to keep finished Jobs until something
+deletes them.
+
+**Wait for a run to finish before upgrading it.** Replacing the Job deletes the
+running one, and terminating sortie does not stop the load: a Nighthawk backend
+keeps generating until its configured duration elapses, because the gRPC
+cancellation message is declared in Nighthawk's API but not implemented by the
+service ([envoyproxy/nighthawk#380][nh380]). A backend also runs one execution
+at a time, so the replacement Job starts, finds the backend still busy with the
+run it just abandoned, and fails -- with `backoffLimit: 0` it does not retry.
+The old run finishes on its own either way; what is lost is the new one.
+
+[nh380]: https://github.com/envoyproxy/nighthawk/issues/380
+
+The ConfigMap is named after the plan's digest for the same reason in reverse.
+A stable name would be updated in place, and a CronJob's Job that was created
+before an upgrade but had not started yet would mount the new plan while
+reporting itself as the old one. Each plan gets its own object, so a Job can
+only mount the plan it was created for.
+
+```console
+helm install nightly oci://ghcr.io/bpalermo/sortie/charts/sortie \
+  --set-file plan=plan.yaml
+```
+
+The default `plan` in `values.yaml` names no backend that exists. That is
+deliberate: a plausible-looking default would generate load against whatever
+happened to answer.
+
+### Provenance
+
+Images are signed with cosign, keyless, through GitHub's OIDC identity — there
+is no key to store or rotate. Signatures cover the index *and* every per-arch
+manifest, so pulling by an architecture-specific digest is covered too:
+
+```console
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/bpalermo/sortie/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/bpalermo/sortie@sha256:...
+```
+
+The chart pins the image by **digest**, injected at package time from the push
+target, so a chart can only ever reference the image built alongside it.
+
+Signing is a workflow step rather than a Bazel rule because ghcr.io does not
+implement the OCI Referrers API — verified, it returns `404 MANIFEST_UNKNOWN`
+for a real digest — and rules_img attaches signatures only as referrers, with
+no fallback. cosign's tag scheme does work there.
+
 ## The plan schema
 
 The schema is a protobuf definition, `api/sortie/plan/v1/plan.proto`. Field
