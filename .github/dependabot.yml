@@ -10,3 +10,21 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore"
+    ignore:
+      # A major of this action is a major of Cosign, and Cosign 3 changes the
+      # signature format on the registry: --new-bundle-format defaults to true,
+      # so signatures move off the sha256-<digest>.sig tag onto the OCI 1.1
+      # referrers fallback tag, where Cosign 2 clients do not find them at all
+      # -- they report "no signatures found", which is what an unsigned image
+      # looks like. Measured, not assumed, in #4.
+      #
+      # Nothing in CI can catch that: ci.yml never runs publish.yml, and
+      # publish.yml verifies with the same binary it just signed with, so the
+      # gate passes while consumers break.
+      #
+      # Scoped to this action rather than all of them, since a major elsewhere
+      # may carry a fix worth taking. Lift it deliberately, together with
+      # deciding what to do about Cosign 2 verifiers and the README and
+      # AGENTS.md claims about the .sig tag scheme -- not as a dependency bump.
+      - dependency-name: sigstore/cosign-installer
+        update-types: ["version-update:semver-major"]
