@@ -11,20 +11,22 @@ updates:
     commit-message:
       prefix: "chore"
     ignore:
-      # A major of this action is a major of Cosign, and Cosign 3 changes the
-      # signature format on the registry: --new-bundle-format defaults to true,
-      # so signatures move off the sha256-<digest>.sig tag onto the OCI 1.1
-      # referrers fallback tag, where Cosign 2 clients do not find them at all
-      # -- they report "no signatures found", which is what an unsigned image
-      # looks like. Measured, not assumed, in #4.
+      # A major of this action is a major of Cosign, and a major of Cosign can
+      # change the signature format on the registry rather than just the tool.
+      # Cosign 3 did exactly that: --new-bundle-format defaults to true, which
+      # moves signatures off the sha256-<digest>.sig tag onto the OCI 1.1
+      # referrers fallback tag, where Cosign 2 clients find nothing at all --
+      # they report "no signatures found", which is what an unsigned image
+      # looks like. Measured on ghcr, not assumed.
       #
-      # Nothing in CI can catch that: ci.yml never runs publish.yml, and
-      # publish.yml verifies with the same binary it just signed with, so the
-      # gate passes while consumers break.
+      # Nothing in CI can catch that class of change: ci.yml never runs
+      # publish.yml, and publish.yml verifies with the same binary it just
+      # signed with, so the gate passes while consumers break. So majors of
+      # this action are taken by hand, after establishing what the new version
+      # writes to the registry and updating the README and AGENTS.md claims
+      # about it. That is how the move to Cosign 3 was done.
       #
-      # Scoped to this action rather than all of them, since a major elsewhere
-      # may carry a fix worth taking. Lift it deliberately, together with
-      # deciding what to do about Cosign 2 verifiers and the README and
-      # AGENTS.md claims about the .sig tag scheme -- not as a dependency bump.
+      # Scoped to this action. A major elsewhere may carry a fix worth taking,
+      # and a blanket rule would hide it.
       - dependency-name: sigstore/cosign-installer
         update-types: ["version-update:semver-major"]

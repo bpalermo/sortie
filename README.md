@@ -290,10 +290,18 @@ cosign verify \
 The chart pins the image by **digest**, injected at package time from the push
 target, so a chart can only ever reference the image built alongside it.
 
-Signing is a workflow step rather than a Bazel rule because ghcr.io does not
-implement the OCI Referrers API — verified, it returns `404 MANIFEST_UNKNOWN`
-for a real digest — and rules_img attaches signatures only as referrers, with
-no fallback. cosign's tag scheme does work there.
+Verification needs **cosign 3 or newer**. Signatures are written in cosign's
+bundle format, which attaches them as OCI 1.1 referrers and falls back to a
+`sha256-<digest>` tag on registries that do not serve the Referrers API — ghcr
+being one. A cosign 2 client does not find them and reports `no signatures
+found`, which is indistinguishable from an unsigned image, so check the version
+before concluding anything from that.
+
+Signing is a workflow step rather than a Bazel rule for the same reason the
+fallback matters: ghcr.io does not implement the Referrers API — verified, it
+returns `404` for a real digest — and rules_img attaches signatures as
+referrers with *no* fallback, so its signing support cannot work there. cosign's
+fallback can.
 
 ## The plan schema
 

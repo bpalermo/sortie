@@ -84,15 +84,15 @@ jobs:
           cache-save: ${{ github.ref == 'refs/heads/main' }}
 
       # Deliberately no `cosign-release`. Pinning the action already pins the
-      # binary: at this SHA the input defaults to v2.4.1, which is also the
+      # binary: at this SHA the input defaults to v3.0.6, which is also the
       # action's bootstrap version, so cosign is downloaded and checked against
       # a SHA-256 hardcoded in the action itself, and the install exits there.
       # Naming any other version takes the weaker path instead -- verify-blob
       # with --insecure-ignore-tlog against a public key fetched from
-      # raw.githubusercontent.com at that tag. Naming v2.4.1 explicitly is a
+      # raw.githubusercontent.com at that tag. Naming v3.0.6 explicitly is a
       # no-op that has to be kept in lockstep with the pin above, and silently
       # drops onto that weaker path the moment the action is bumped.
-      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # Everything is built before any credential exists on the runner. Bazel
       # executes build tooling from the dependency graph, and a registry
@@ -156,10 +156,16 @@ jobs:
       # unsigned. Signing by digest rather than by tag avoids cosign
       # re-resolving a mutable tag to something other than what was pushed.
       #
-      # ghcr does not implement the OCI Referrers API -- verified: it returns
-      # 404 MANIFEST_UNKNOWN for a real digest -- so rules_img's own signing
-      # support cannot be used, since it attaches signatures only as referrers.
-      # cosign's tag scheme (sha256-<digest>.sig) does work there.
+      # ghcr does not implement the OCI Referrers API: it returns 404 for a
+      # real digest. That rules out rules_img's own signing support, which
+      # attaches signatures as referrers with no fallback. cosign attaches them
+      # as referrers too, but falls back to the OCI 1.1 `sha256-<digest>` tag
+      # when the API is absent, which is what makes it work here -- the
+      # distinction is the fallback, not referrers versus tags.
+      #
+      # Rehearsed on a throwaway package before this was pointed at the real
+      # one: ghcr answered the referrers API with 404 and cosign signed and
+      # verified the index and every child regardless.
       - name: Sign the image
         env:
           COSIGN_YES: "true"
