@@ -92,7 +92,7 @@ jobs:
       # raw.githubusercontent.com at that tag. Naming v2.4.1 explicitly is a
       # no-op that has to be kept in lockstep with the pin above, and silently
       # drops onto that weaker path the moment the action is bumped.
-      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       # Everything is built before any credential exists on the runner. Bazel
       # executes build tooling from the dependency graph, and a registry
