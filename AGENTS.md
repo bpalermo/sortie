@@ -190,7 +190,9 @@ Four things there are deliberate and easy to undo by accident:
   comment. This job holds `packages: write` and `id-token: write`, and a
   signature does not help: a swapped action would sign with this repository's
   genuine identity, so `cosign verify` would pass. `.github/dependabot.yml`
-  moves the SHA and the comment together so the pins stay current.
+  moves the SHA and the comment together so the pins stay current — except for
+  majors of cosign-installer, which it holds back deliberately, since those are
+  Cosign majors and can change the signature format on the registry.
 - **The chart push needs `HELM_REGISTRY_USERNAME`/`HELM_REGISTRY_PASSWORD`.**
   `docker/login-action` is not enough: rules_helm pins `HELM_REGISTRY_CONFIG` to
   a fresh temp directory per invocation, so Helm reads neither
@@ -199,5 +201,13 @@ Four things there are deliberate and easy to undo by accident:
   push fails with a 401 rather than a clear error.
 
 Signing cannot be done with rules_img's own support: ghcr does not implement the
-OCI Referrers API (verified — `404 MANIFEST_UNKNOWN` for a real digest) and
-rules_img attaches signatures only as referrers. cosign's tag scheme works.
+OCI Referrers API (verified — `404` for a real digest) and rules_img attaches
+signatures as referrers with **no fallback**. cosign attaches them as referrers
+too, but falls back to a `sha256-<digest>` tag when the API is absent, which is
+what makes it work here. The distinction is the fallback, not referrers versus
+tags — rehearsed on a throwaway package before the real one depended on it.
+
+Signatures are therefore in cosign's bundle format and need **cosign 3+** to
+verify; a cosign 2 client reports `no signatures found`. That break was taken
+deliberately, while sortie had no consumers, rather than deferred to a point
+where it would cost something.
