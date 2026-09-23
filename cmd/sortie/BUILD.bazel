@@ -12,4 +12,17 @@ go_binary(
     name = "sortie",
     embed = [":sortie_lib"],
     visibility = ["//visibility:public"],
+    # Without this the binary reports "dev" and cannot say what it is, which is
+    # the first question asked of a load generator that produced a surprising
+    # number. STABLE_GIT_VERSION is `git describe --tags --always --dirty`, the
+    # same value the chart stamps into appVersion, so a running pod and the
+    # release it came from agree. `build --stamp` is set in .bazelrc.
+    x_defs = {"github.com/bpalermo/sortie/cmd/sortie.version": "{STABLE_GIT_VERSION}"},
 )
+
+# Read as data by //tools/stamp:stamp_test, which checks that the version
+# stamping wiring in this file has not been removed.
+exports_files([
+    "BUILD.bazel",
+    "main.go",
+])

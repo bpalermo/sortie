@@ -28,8 +28,10 @@ gazelle(name = "gazelle")
 
 # MODULE.bazel and go.mod default to //visibility:private as source file
 # targets; //tools/deps:deps_test needs both by label to check the x/tools
-# floor against the pinned Go SDK version.
+# floor against the pinned Go SDK version. .bazelrc is the same, for
+# //tools/stamp:stamp_test, which checks that --stamp is still set.
 exports_files([
+    ".bazelrc",
     "MODULE.bazel",
     "go.mod",
 ])
