@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "stamp_test",
+    size = "small",
+    srcs = ["stamp_test.go"],
+    # Read by relative path rather than imported, so Gazelle cannot infer these.
+    # keep
+    data = [
+        "//:.bazelrc",
+        "//bazel:workspace_status.sh",
+        "//cmd/sortie:BUILD.bazel",
+        "//cmd/sortie:main.go",
+    ],
+)
