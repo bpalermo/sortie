@@ -21,6 +21,17 @@ import (
 // variable, then the variable name.
 const versionSymbol = "github.com/bpalermo/sortie/cmd/sortie.version"
 
+// The exact value it must be assigned. Asserting on the value rather than on
+// the file's contents is deliberate: a check that the file mentions some
+// {STABLE_*} placeholder somewhere passes for a hardcoded version as soon as
+// any other stamped attribute exists, and a check that it does not mention
+// {GIT_COMMIT} is a blocklist that any other volatile key walks past. Naming
+// the one correct value covers every wrong one.
+const versionValue = "{STABLE_GIT_VERSION}"
+
+// xDefValue captures what x_defs assigns to versionSymbol.
+var xDefValue = regexp.MustCompile(regexp.QuoteMeta(`"`+versionSymbol+`"`) + `\s*:\s*"([^"]*)"`)
+
 // read resolves a repository-relative path. Under `bazel test` the working
 // directory is the runfiles tree; under `go test` it is the package directory.
 // Both are handled so the test is not tied to one runner -- the same approach
@@ -43,28 +54,26 @@ func read(t *testing.T, name string) string {
 	return ""
 }
 
-// TestVersionIsStamped checks the three parts together, because each is useless
-// alone and each looks like dead weight to someone tidying up.
+// TestVersionIsStamped checks the parts together, because each is useless alone
+// and each looks like dead weight to someone tidying up.
 func TestVersionIsStamped(t *testing.T) {
 	build := read(t, "cmd/sortie/BUILD.bazel")
-	if !strings.Contains(build, versionSymbol) {
-		t.Errorf("cmd/sortie/BUILD.bazel does not set %q via x_defs;\n"+
+
+	got := xDefValue.FindStringSubmatch(build)
+	if got == nil {
+		// Fatal: every check below is about the value, and there is none.
+		t.Fatalf("cmd/sortie/BUILD.bazel does not set %q via x_defs;\n"+
 			"without it the binary reports the %q default and cannot identify itself",
 			versionSymbol, "dev")
 	}
-	// A stamped value, not a literal. A hardcoded version is worse than "dev":
-	// it is wrong rather than obviously absent.
-	if strings.Contains(build, versionSymbol) &&
-		!regexp.MustCompile(`\{STABLE_[A-Z_]+\}`).MatchString(build) {
-		t.Errorf("cmd/sortie/BUILD.bazel sets %q to something other than a {STABLE_*} "+
-			"workspace-status key; a literal version goes stale silently", versionSymbol)
-	}
-
-	// Volatile keys do not invalidate the actions that embed them, so a version
-	// stamped from one can be served stale from cache.
-	if regexp.MustCompile(`x_defs.*\{(?:GIT_COMMIT|GIT_BRANCH)\}`).MatchString(build) {
-		t.Error("cmd/sortie/BUILD.bazel stamps from an unprefixed workspace-status key; " +
-			"those are volatile and do not invalidate the action that embeds them")
+	if got[1] != versionValue {
+		t.Errorf("cmd/sortie/BUILD.bazel assigns %q to %s, want %s.\n"+
+			"  a literal version is worse than %q -- it is wrong rather than obviously absent\n"+
+			"  an unprefixed key is volatile, and volatile status does not invalidate the\n"+
+			"    action that embeds it, so the version can be served stale from cache\n"+
+			"  another {STABLE_*} key diverges from the chart, which stamps appVersion\n"+
+			"    from %s -- a pod and its release would then disagree",
+			got[1], versionSymbol, versionValue, "dev", versionValue)
 	}
 
 	if main := read(t, "cmd/sortie/main.go"); !strings.Contains(main, "var version") {
