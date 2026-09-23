@@ -182,10 +182,13 @@ Four things there are deliberate and easy to undo by accident:
 - **Do not add `cosign-release` to the cosign-installer step.** Pinning the
   action pins the binary: at the pinned SHA the input defaults to the action's
   own bootstrap version, so cosign is verified against a SHA-256 hardcoded in
-  the action and the install stops there. Any other value takes the weaker path
-  — `verify-blob --insecure-ignore-tlog` against a key fetched from
-  raw.githubusercontent.com — and a value that matches only today silently
-  lands on that path when the action is bumped.
+  the action and the install stops there. Any other value leaves that path for
+  one that fetches a release key over the network — sound in v4, which pins the
+  key's digest and fails closed, but more moving parts for nothing, and a value
+  that matches only today stops matching when the action is bumped.
+  (Until after the move to v4 this entry described v3.7.0's weaker variant,
+  `verify-blob --insecure-ignore-tlog` against an unpinned key, because the bump
+  changed the version numbers around it and not the mechanism. Read the action.)
 - **Third-party actions are pinned to commit SHAs**, with the version in a
   comment. This job holds `packages: write` and `id-token: write`, and a
   signature does not help: a swapped action would sign with this repository's
@@ -200,12 +203,24 @@ Four things there are deliberate and easy to undo by accident:
   pusher skips the login without failing when the variables are absent, so the
   push fails with a 401 rather than a clear error.
 
-Signing cannot be done with rules_img's own support: ghcr does not implement the
-OCI Referrers API (verified — `404` for a real digest) and rules_img attaches
-signatures as referrers with **no fallback**. cosign attaches them as referrers
-too, but falls back to a `sha256-<digest>` tag when the API is absent, which is
-what makes it work here. The distinction is the fallback, not referrers versus
-tags — rehearsed on a throwaway package before the real one depended on it.
+Signing cannot be done with rules_img's own support, and it is worth separating
+what is sourced from what is inferred, because the two were stated with equal
+confidence here before and one of them sent a reader re-deriving a settled call:
+
+- **Measured:** ghcr does not implement the OCI Referrers API — `404` for a real
+  digest. And cosign works there anyway: rehearsed on a throwaway package, ghcr
+  404s the referrers endpoint and cosign signs and verifies the index and every
+  child regardless, because it falls back to a `sha256-<digest>` tag.
+- **Sourced:** rules_img pushes signatures as referrers. `signing_config`'s own
+  docstring: "The signature is then pushed to the image's repository as an OCI
+  referrer. `img` itself performs no cryptography." (Its `targets` attribute —
+  `roots`, `child_manifests`, `referrers` — is which *descriptors* get signed,
+  not where signatures land; reading it as the latter is what produced a wrong
+  "this claim is unfounded" correction.)
+- **Inferred, not established:** that it has no fallback. `img`'s referrer push
+  is a prebuilt Go binary that is not in the archive, so this cannot be read
+  from the source available. Without a fallback it cannot work on ghcr, which
+  is why the conclusion stands — but it is inference.
 
 Signatures are therefore in cosign's bundle format and need **cosign 3+** to
 verify; a cosign 2 client reports `no signatures found`. That break was taken
