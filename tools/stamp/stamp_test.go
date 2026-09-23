@@ -29,8 +29,29 @@ const versionSymbol = "github.com/bpalermo/sortie/cmd/sortie.version"
 // the one correct value covers every wrong one.
 const versionValue = "{STABLE_GIT_VERSION}"
 
+// versionKey is the same thing without the placeholder braces: what the
+// workspace status script has to emit for the substitution to resolve.
+const versionKey = "STABLE_GIT_VERSION"
+
+// statusCommand captures the script .bazelrc points --workspace_status_command at.
+var statusCommand = regexp.MustCompile(`--workspace_status_command=(\S+)`)
+
 // xDefValue captures what x_defs assigns to versionSymbol.
 var xDefValue = regexp.MustCompile(regexp.QuoteMeta(`"`+versionSymbol+`"`) + `\s*:\s*"([^"]*)"`)
+
+// active strips comments and blank lines, so a setting that has been commented
+// out does not read as present. Searching the raw text would let
+// `# build --stamp` satisfy a check for "--stamp" -- the same mistake as
+// asserting on a file's contents instead of on its effective value.
+func active(s string) string {
+	var keep []string
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" && !strings.HasPrefix(t, "#") {
+			keep = append(keep, line)
+		}
+	}
+	return strings.Join(keep, "\n")
+}
 
 // read resolves a repository-relative path. Under `bazel test` the working
 // directory is the runfiles tree; under `go test` it is the package directory.
@@ -81,8 +102,25 @@ func TestVersionIsStamped(t *testing.T) {
 			"that must exist, and a rename makes the stamping silently do nothing")
 	}
 
-	if rc := read(t, ".bazelrc"); !strings.Contains(rc, "--stamp") {
+	rc := active(read(t, ".bazelrc"))
+	if !strings.Contains(rc, "--stamp") {
 		t.Error(".bazelrc no longer sets --stamp; x_defs placeholders are then left " +
 			"unsubstituted or defaulted")
+	}
+
+	// --stamp only says to stamp; it does not say where the keys come from.
+	// Without a workspace status command there is no STABLE_GIT_VERSION, and
+	// the build still succeeds -- the binary just reports "dev" again, which is
+	// the original bug reappearing with nothing to notice it.
+	status := statusCommand.FindStringSubmatch(rc)
+	if status == nil {
+		t.Fatalf(".bazelrc no longer sets --workspace_status_command; %s is then undefined "+
+			"and the binary silently falls back to %q", versionValue, "dev")
+	}
+
+	// Read the script .bazelrc actually names rather than a hardcoded path, so
+	// moving or renaming it is not mistaken for deleting the key.
+	if script := active(read(t, status[1])); !strings.Contains(script, versionKey) {
+		t.Errorf("%s no longer emits %s, which %s stamps from", status[1], versionKey, versionSymbol)
 	}
 }

@@ -9,6 +9,7 @@ go_test(
     data = [
         "//:.bazelrc",
         "//cmd/sortie:BUILD.bazel",
+        "//bazel:workspace_status.sh",
         "//cmd/sortie:main.go",
     ],
 )
