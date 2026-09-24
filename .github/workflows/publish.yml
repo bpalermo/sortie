@@ -163,15 +163,19 @@ jobs:
       # re-resolving a mutable tag to something other than what was pushed.
       #
       # ghcr does not implement the OCI Referrers API: it returns 404 for a
-      # real digest. That rules out rules_img's own signing support, which
-      # attaches signatures as referrers with no fallback. cosign attaches them
-      # as referrers too, but falls back to the OCI 1.1 `sha256-<digest>` tag
-      # when the API is absent, which is what makes it work here -- the
-      # distinction is the fallback, not referrers versus tags.
+      # real digest. cosign works there anyway because it falls back to the OCI
+      # 1.1 `sha256-<digest>` tag -- rehearsed on a throwaway package before
+      # this was pointed at the real one: ghcr answered the referrers endpoint
+      # with 404 and cosign signed and verified the index and every child
+      # regardless.
       #
-      # Rehearsed on a throwaway package before this was pointed at the real
-      # one: ghcr answered the referrers API with 404 and cosign signed and
-      # verified the index and every child regardless.
+      # That is also why rules_img's own signing support is not used here. Its
+      # `signing_config` docstring says "the signature is then pushed to the
+      # image's repository as an OCI referrer", and whether it also falls back
+      # to a tag is not visible -- that push is a prebuilt binary, not in the
+      # archive. Without a fallback it cannot work here, which is the
+      # assumption this rests on. It is an assumption, not a measurement; see
+      # AGENTS.md, which separates the two.
       - name: Sign the image
         env:
           COSIGN_YES: "true"
