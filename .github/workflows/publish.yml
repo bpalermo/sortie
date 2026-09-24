@@ -87,11 +87,17 @@ jobs:
       # binary: at this SHA the input defaults to v3.0.6, which is also the
       # action's bootstrap version, so cosign is downloaded and checked against
       # a SHA-256 hardcoded in the action itself, and the install exits there.
-      # Naming any other version takes the weaker path instead -- verify-blob
-      # with --insecure-ignore-tlog against a public key fetched from
-      # raw.githubusercontent.com at that tag. Naming v3.0.6 explicitly is a
-      # no-op that has to be kept in lockstep with the pin above, and silently
-      # drops onto that weaker path the moment the action is bumped.
+      # Naming any other version leaves that path for one that fetches a
+      # release key over the network and verifies a signature with it. v4 pins
+      # that key's digest and fails closed on a mismatch, so it is sound -- but
+      # it is more moving parts for no benefit, and the value has to be kept in
+      # lockstep with the pin above or it silently stops matching.
+      #
+      # This comment described v3.7.0's weaker variant of that path
+      # (verify-blob --insecure-ignore-tlog against an unpinned key) until
+      # after the bump to v4, because the version numbers in it were updated
+      # and the mechanism was not. Check the action, not this comment, when
+      # changing the pin.
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # Everything is built before any credential exists on the runner. Bazel
@@ -157,15 +163,19 @@ jobs:
       # re-resolving a mutable tag to something other than what was pushed.
       #
       # ghcr does not implement the OCI Referrers API: it returns 404 for a
-      # real digest. That rules out rules_img's own signing support, which
-      # attaches signatures as referrers with no fallback. cosign attaches them
-      # as referrers too, but falls back to the OCI 1.1 `sha256-<digest>` tag
-      # when the API is absent, which is what makes it work here -- the
-      # distinction is the fallback, not referrers versus tags.
+      # real digest. cosign works there anyway because it falls back to the OCI
+      # 1.1 `sha256-<digest>` tag -- rehearsed on a throwaway package before
+      # this was pointed at the real one: ghcr answered the referrers endpoint
+      # with 404 and cosign signed and verified the index and every child
+      # regardless.
       #
-      # Rehearsed on a throwaway package before this was pointed at the real
-      # one: ghcr answered the referrers API with 404 and cosign signed and
-      # verified the index and every child regardless.
+      # That is also why rules_img's own signing support is not used here. Its
+      # `signing_config` docstring says "the signature is then pushed to the
+      # image's repository as an OCI referrer", and whether it also falls back
+      # to a tag is not visible -- that push is a prebuilt binary, not in the
+      # archive. Without a fallback it cannot work here, which is the
+      # assumption this rests on. It is an assumption, not a measurement; see
+      # AGENTS.md, which separates the two.
       - name: Sign the image
         env:
           COSIGN_YES: "true"
@@ -192,6 +202,42 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "${{ steps.digest.outputs.image }}" > /dev/null
           echo "index and all child manifests verified"
+
+      # Ask the registry which layout landed, rather than asking the binary
+      # that just wrote the signature whether it likes what it wrote.
+      #
+      # cosign 3 writes signatures to the OCI 1.1 fallback tag `sha256-<digest>`
+      # rather than cosign 2's `sha256-<digest>.sig`. The two are mutually
+      # exclusive per digest, so their presence says which format was produced.
+      # The verify step above cannot: it auto-detects and accepts either, and
+      # `--new-bundle-format=true` does not constrain it -- measured, it returns
+      # 0 against a cosign 2 signature. (`=false` does gate, but only for a
+      # repository holding the old layout.) So the assertion has to be here.
+      - name: Assert the published signature layout
+        run: |
+          set -euo pipefail
+          token="$(curl -fsSL -u "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+            "https://ghcr.io/token?scope=repository:bpalermo/sortie:pull" | jq -r .token)"
+          status() {
+            curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${token}" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
+              "https://ghcr.io/v2/bpalermo/sortie/manifests/$1"
+          }
+          fail=0
+          for digest in ${{ steps.digest.outputs.children }} ${{ steps.digest.outputs.image }}; do
+            # The index arrives as a full reference; the children as bare digests.
+            hex="${digest##*@}"; hex="${hex#sha256:}"
+            bundle="$(status "sha256-${hex}")"
+            legacy="$(status "sha256-${hex}.sig")"
+            if [ "${bundle}" != "200" ] || [ "${legacy}" != "404" ]; then
+              echo "::error::sha256-${hex}: expected the bundle tag present (got ${bundle}) and the .sig tag absent (got ${legacy})" >&2
+              fail=1
+            else
+              echo "  sha256-${hex}: bundle tag present, .sig absent"
+            fi
+          done
+          [ "${fail}" -eq 0 ] || exit 1
+          echo "every signature is in the expected layout"
 
       # The chart carries the image's digest, pinned at package time, so this
       # publishes a chart that can only ever reference the image signed above.

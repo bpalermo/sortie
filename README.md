@@ -297,11 +297,13 @@ being one. A cosign 2 client does not find them and reports `no signatures
 found`, which is indistinguishable from an unsigned image, so check the version
 before concluding anything from that.
 
-Signing is a workflow step rather than a Bazel rule for the same reason the
-fallback matters: ghcr.io does not implement the Referrers API — verified, it
-returns `404` for a real digest — and rules_img attaches signatures as
-referrers with *no* fallback, so its signing support cannot work there. cosign's
-fallback can.
+Signing is a workflow step rather than a Bazel rule because of that fallback.
+ghcr.io does not implement the Referrers API — verified, it returns `404` for a
+real digest — and rules_img pushes signatures as referrers: its `signing_config`
+docstring says "the signature is then pushed to the image's repository as an OCI
+referrer". Whether it also falls back to a tag is not visible from its source,
+since that push lives in a prebuilt binary; without a fallback it cannot work
+here, which is the assumption this rests on. cosign's fallback is verified.
 
 ## The plan schema
 
