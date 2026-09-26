@@ -62,7 +62,7 @@ func TestNogoXToolsFloor(t *testing.T) {
 	sdk := matchVersion(t, goSDKRe, module, "go_sdk.download in MODULE.bazel")
 	floor, known := xToolsFloors[sdk.minor]
 	if !known {
-		t.Fatalf("Go SDK is 1.%d but tools/deps/floor_test.go has no x/tools floor for it.\n"+
+		t.Fatalf("Go SDK is 1.%d but bazel/deps/floor_test.go has no x/tools floor for it.\n"+
 			"Look up the minimum golang.org/x/tools that supports this SDK's export data "+
 			"version and add it to xToolsFloors, or nogo will fail every Go compile with a "+
 			"message that never mentions x/tools.", sdk.minor)

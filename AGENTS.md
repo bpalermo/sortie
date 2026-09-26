@@ -42,7 +42,7 @@ Go source imports it, and it carries a `// bazel-only:` comment saying so.
 Demote one to `// indirect` and the next tidy drops its `use_repo` entry and the
 build breaks somewhere that says nothing about go.mod.
 
-`//tools/deps:deps_test` enforces this for every annotated requirement, in both
+`//bazel/deps:deps_test` enforces this for every annotated requirement, in both
 directions: annotated means direct, and annotated means some hand-written Bazel
 file still names it. Adding a bazel-only dependency needs only the annotation;
 the test picks it up without being extended.
@@ -126,11 +126,11 @@ Picking a different target for the same import path fails the link with
 ## Linting
 
 buildifier runs over the hand-written Starlark via `aspect_rules_lint`, as a
-test target tagged `lint`. Go is covered by rules_go's `nogo` (`//tools/nogo`),
+test target tagged `lint`. Go is covered by rules_go's `nogo` (`//:nogo`),
 which runs during compilation. rules_lint ships no Go linter, which is why the
 two are split. Do not add `go vet` or `gofmt` steps to CI.
 
-Two traps here, both guarded by `//tools/deps:deps_test`:
+Two traps here, both guarded by `//bazel/deps:deps_test`:
 
 - `nogo` on a Go 1.27 SDK needs `golang.org/x/tools` >= v0.48.0. It is an
   `// indirect` requirement that nothing imports, existing only to raise the MVS
@@ -150,7 +150,7 @@ comes back exact.
 
 ## Publishing
 
-`//image` builds a multi-arch image, `//charts/sortie` packages the Helm chart,
+`//sortie` builds the binary and its multi-arch image, `//charts/sortie` packages the Helm chart,
 and `.github/workflows/publish.yml` pushes and signs both on a push to main.
 Four things there are deliberate and easy to undo by accident:
 

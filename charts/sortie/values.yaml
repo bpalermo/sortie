@@ -2,8 +2,8 @@
 
 image:
   # Substituted at package time with the digest-pinned reference produced by
-  # //image:image_push, so the chart and the image it names cannot drift.
-  ref: "{@//image:image_push}"
+  # //sortie:image_push, so the chart and the image it names cannot drift.
+  ref: "{@//sortie:image_push}"
   pullPolicy: IfNotPresent
 
 # The plan, verbatim. It is mounted from a ConfigMap rather than baked into the

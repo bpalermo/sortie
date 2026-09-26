@@ -106,7 +106,7 @@ jobs:
       # by all of it. The `bazel run` steps below then only execute what this
       # step already produced.
       - name: Build the image and the chart
-        run: bazel build //image:image_push //charts/sortie:sortie.push_registry
+        run: bazel build //sortie:image_push //charts/sortie:sortie.push_registry
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
@@ -115,7 +115,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push the multi-arch image
-        run: bazel run //image:image_push
+        run: bazel run //sortie:image_push
 
       # The digest comes from the build rather than from the registry. Resolving
       # it by listing tags would have to follow ghcr's pagination -- it returns
@@ -131,7 +131,7 @@ jobs:
           # It sits beside the index manifest, which is, and both come from the
           # same rule -- so derive one path from the other rather than assuming
           # a bazel-bin layout.
-          index_file="$(bazel cquery //image:image_index --output=files 2>/dev/null \
+          index_file="$(bazel cquery //sortie:image_index --output=files 2>/dev/null \
             | grep -E '_index\.json$' | head -1)"
           digest_file="${index_file%_index.json}_digest"
           if [ -z "${digest_file}" ] || [ ! -s "${digest_file}" ]; then
