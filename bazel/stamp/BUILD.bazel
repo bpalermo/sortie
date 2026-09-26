@@ -8,8 +8,8 @@ go_test(
     # keep
     data = [
         "//:.bazelrc",
+        "//:BUILD.bazel",
+        "//:main.go",
         "//bazel:workspace_status.sh",
-        "//sortie:BUILD.bazel",
-        "//sortie:main.go",
     ],
 )

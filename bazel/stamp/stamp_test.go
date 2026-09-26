@@ -19,7 +19,7 @@ import (
 
 // The symbol x_defs must set: the importpath of the package declaring the
 // variable, then the variable name.
-const versionSymbol = "github.com/bpalermo/sortie/sortie.version"
+const versionSymbol = "github.com/bpalermo/sortie.version"
 
 // The exact value it must be assigned. Asserting on the value rather than on
 // the file's contents is deliberate: a check that the file mentions some
@@ -78,17 +78,17 @@ func read(t *testing.T, name string) string {
 // TestVersionIsStamped checks the parts together, because each is useless alone
 // and each looks like dead weight to someone tidying up.
 func TestVersionIsStamped(t *testing.T) {
-	build := read(t, "sortie/BUILD.bazel")
+	build := read(t, "BUILD.bazel")
 
 	got := xDefValue.FindStringSubmatch(build)
 	if got == nil {
 		// Fatal: every check below is about the value, and there is none.
-		t.Fatalf("sortie/BUILD.bazel does not set %q via x_defs;\n"+
+		t.Fatalf("BUILD.bazel does not set %q via x_defs;\n"+
 			"without it the binary reports the %q default and cannot identify itself",
 			versionSymbol, "dev")
 	}
 	if got[1] != versionValue {
-		t.Errorf("sortie/BUILD.bazel assigns %q to %s, want %s.\n"+
+		t.Errorf("BUILD.bazel assigns %q to %s, want %s.\n"+
 			"  a literal version is worse than %q -- it is wrong rather than obviously absent\n"+
 			"  an unprefixed key is volatile, and volatile status does not invalidate the\n"+
 			"    action that embeds it, so the version can be served stale from cache\n"+
@@ -97,8 +97,8 @@ func TestVersionIsStamped(t *testing.T) {
 			got[1], versionSymbol, versionValue, "dev", versionValue)
 	}
 
-	if main := read(t, "sortie/main.go"); !strings.Contains(main, "var version") {
-		t.Error("sortie/main.go no longer declares `version`; x_defs sets a symbol " +
+	if main := read(t, "main.go"); !strings.Contains(main, "var version") {
+		t.Error("main.go no longer declares `version`; x_defs sets a symbol " +
 			"that must exist, and a rename makes the stamping silently do nothing")
 	}
 

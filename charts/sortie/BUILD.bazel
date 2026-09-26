@@ -1,6 +1,6 @@
 load("@rules_helm//helm:defs.bzl", "helm_chart", "helm_lint_test", "helm_template_test")
 
-# images pins the digest of //sortie:image_push into the chart at package time,
+# images pins the digest of //:image_push into the chart at package time,
 # so the chart and the image it names cannot drift.
 #
 # helm_chart generates two push targets from this. :sortie.push publishes the
@@ -12,7 +12,7 @@ load("@rules_helm//helm:defs.bzl", "helm_chart", "helm_lint_test", "helm_templat
 helm_chart(
     name = "sortie",
     chart = "Chart.yaml",
-    images = ["//sortie:image_push"],
+    images = ["//:image_push"],
     login_url = "ghcr.io",
     registry_url = "oci://ghcr.io/bpalermo/sortie/charts",
     templates = glob(["templates/**"]),
