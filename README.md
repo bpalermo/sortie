@@ -54,7 +54,7 @@ PASS  1/1 executions passed
 ## Build
 
 ```console
-bazel build //cmd/sortie
+bazel build //sortie
 bazel test //...
 ```
 
@@ -352,12 +352,12 @@ taken from the genproto module gRPC-Go already links.
 `aspect_rules_lint` runs buildifier over the hand-written Starlark as an
 ordinary test target, so `bazel test //...` covers it.
 
-Go is analysed by rules_go's `nogo` (`//tools/nogo`), which runs as part of
+Go is analysed by rules_go's `nogo` (`//:nogo`), which runs as part of
 compilation, so a vet finding fails the build rather than a separate job.
 `aspect_rules_lint` ships no Go linter, which is why the two are split.
 
 `nogo` on a Go 1.27 SDK needs `golang.org/x/tools` >= v0.48.0, and `go_deps`
 resolves one `x/tools` across every module by MVS, so this repository's `go.mod`
-is what the analyzers are built against. `//tools/deps:deps_test` fails if that
+is what the analyzers are built against. `//bazel/deps:deps_test` fails if that
 floor is breached, because the symptom otherwise is an export-data error that
 never mentions `x/tools`.

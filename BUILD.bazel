@@ -1,4 +1,5 @@
 load("@gazelle//:def.bzl", "gazelle")
+load("@rules_go//go:def.bzl", "TOOLS_NOGO", "nogo")
 load("//bazel/lint:linters.bzl", "buildifier_test")
 
 # gazelle:prefix github.com/bpalermo/sortie
@@ -26,10 +27,20 @@ load("//bazel/lint:linters.bzl", "buildifier_test")
 
 gazelle(name = "gazelle")
 
+# nogo is declared at the root because MODULE.bazel's go_sdk.nogo() needs a
+# label that does not move: it is build configuration for every Go target in
+# the repository, not a component of any package.
+nogo(
+    name = "nogo",
+    config = "nogo.json",
+    visibility = ["//visibility:public"],
+    deps = TOOLS_NOGO,
+)
+
 # MODULE.bazel and go.mod default to //visibility:private as source file
-# targets; //tools/deps:deps_test needs both by label to check the x/tools
+# targets; //bazel/deps:deps_test needs both by label to check the x/tools
 # floor against the pinned Go SDK version. .bazelrc is the same, for
-# //tools/stamp:stamp_test, which checks that --stamp is still set.
+# //bazel/stamp:stamp_test, which checks that --stamp is still set.
 exports_files([
     ".bazelrc",
     "MODULE.bazel",
@@ -45,16 +56,16 @@ filegroup(
         "BUILD.bazel",
         "MODULE.bazel",
         "//bazel:starlark_srcs",
+        "//bazel/image:starlark_srcs",
         "//bazel/lint:starlark_srcs",
         "//bazel/nighthawk:starlark_srcs",
         "//charts/sortie:starlark_srcs",
-        "//image:starlark_srcs",
-        "//tools/nogo:starlark_srcs",
+        "//sortie:BUILD.bazel",
     ],
     tags = ["starlark"],
-    # //tools/deps reads these to check that every bazel-only requirement is
+    # //bazel/deps reads these to check that every bazel-only requirement is
     # still named by a hand-written Bazel file.
-    visibility = ["//tools/deps:__pkg__"],
+    visibility = ["//bazel/deps:__pkg__"],
 )
 
 buildifier_test(

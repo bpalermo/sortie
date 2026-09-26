@@ -7,7 +7,7 @@ bazel_dep(name = "rules_go", version = "0.63.0")
 bazel_dep(name = "gazelle", version = "0.54.0")
 bazel_dep(name = "aspect_rules_lint", version = "2.9.0")
 
-# Named by //image for string_flag.
+# Named by //bazel/image for string_flag.
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "rules_img", version = "0.3.21")
 bazel_dep(name = "rules_helm", version = "0.32.0")
@@ -83,7 +83,7 @@ go_sdk.download(version = "1.27.1")
 # carries golang.org/x/tools >= v0.48.0 (bazel-contrib/rules_go#4701, which
 # postdates rules_go 0.63.0 and only bumped rules_go's own go.mod) purely to
 # raise that MVS floor so nogo can run on this Go 1.27 SDK.
-go_sdk.nogo(nogo = "//tools/nogo:nogo")
+go_sdk.nogo(nogo = "//:nogo")
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")

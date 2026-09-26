@@ -14,6 +14,6 @@ filegroup(
     visibility = ["//:__pkg__"],
 )
 
-# Read as data by //tools/stamp:stamp_test, which checks that this still emits
+# Read as data by //bazel/stamp:stamp_test, which checks that this still emits
 # the key the version stamping depends on.
 exports_files(["workspace_status.sh"])
