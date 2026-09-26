@@ -1,5 +1,6 @@
 load("@gazelle//:def.bzl", "gazelle")
-load("@rules_go//go:def.bzl", "TOOLS_NOGO", "nogo")
+load("@rules_go//go:def.bzl", "TOOLS_NOGO", "go_binary", "go_library", "nogo")
+load("//bazel/image:defs.bzl", "go_image")
 load("//bazel/lint:linters.bzl", "buildifier_test")
 
 # gazelle:prefix github.com/bpalermo/sortie
@@ -27,6 +28,39 @@ load("//bazel/lint:linters.bzl", "buildifier_test")
 
 gazelle(name = "gazelle")
 
+go_library(
+    name = "sortie_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/bpalermo/sortie",
+    visibility = ["//visibility:private"],
+    deps = ["//internal/cli"],
+)
+
+go_binary(
+    name = "sortie",
+    embed = [":sortie_lib"],
+    visibility = ["//visibility:public"],
+    # Without this the binary reports "dev" and cannot say what it is, which is
+    # the first question asked of a load generator that produced a surprising
+    # number. STABLE_GIT_VERSION is `git describe --tags --always --dirty`, the
+    # same value the chart stamps into appVersion, so a running pod and the
+    # release it came from agree. `build --stamp` is set in .bazelrc.
+    x_defs = {"github.com/bpalermo/sortie.version": "{STABLE_GIT_VERSION}"},
+)
+
+# The image is declared beside the binary it contains, which is now the root.
+go_image(
+    name = "image",
+    binary = ":sortie",
+    labels = {
+        "org.opencontainers.image.description": "Declarative load-test plans on Nighthawk",
+        "org.opencontainers.image.licenses": "Apache-2.0",
+        "org.opencontainers.image.source": "https://github.com/bpalermo/sortie",
+    },
+    registry = "ghcr.io",
+    repository = "bpalermo/sortie",
+)
+
 # nogo is declared at the root because MODULE.bazel's go_sdk.nogo() needs a
 # label that does not move: it is build configuration for every Go target in
 # the repository, not a component of any package.
@@ -43,8 +77,10 @@ nogo(
 # //bazel/stamp:stamp_test, which checks that --stamp is still set.
 exports_files([
     ".bazelrc",
+    "BUILD.bazel",
     "MODULE.bazel",
     "go.mod",
+    "main.go",
 ])
 
 # Hand-written Starlark. Gazelle-generated BUILD files are excluded: they are
@@ -60,7 +96,6 @@ filegroup(
         "//bazel/lint:starlark_srcs",
         "//bazel/nighthawk:starlark_srcs",
         "//charts/sortie:starlark_srcs",
-        "//sortie:BUILD.bazel",
     ],
     tags = ["starlark"],
     # //bazel/deps reads these to check that every bazel-only requirement is

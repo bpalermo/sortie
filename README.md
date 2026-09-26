@@ -54,7 +54,7 @@ PASS  1/1 executions passed
 ## Build
 
 ```console
-bazel build //sortie
+bazel build //:sortie
 bazel test //...
 ```
 

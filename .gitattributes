@@ -8,17 +8,15 @@
 **/BUILD.bazel linguist-generated=true
 
 # ...except the ones that are hand-written. Last match wins, so these undo the
-# blanket rule above. They carry gazelle directives, lint wiring and the nogo
-# and proto targets -- all real review material.
+# blanket rule above. They carry gazelle directives, lint wiring, nogo, the
+# proto targets, and -- at the root -- the binary, its version stamping and the
+# image. All real review material.
 /BUILD.bazel linguist-generated=false
 /bazel/BUILD.bazel linguist-generated=false
 /bazel/nighthawk/BUILD.bazel linguist-generated=false
 /bazel/lint/BUILD.bazel linguist-generated=false
 /bazel/image/BUILD.bazel linguist-generated=false
 /charts/sortie/BUILD.bazel linguist-generated=false
-# Gazelle owns the Go rules here, but the image definition and the version
-# stamping beside them are hand-written and are the reason to read it.
-/sortie/BUILD.bazel linguist-generated=false
 
 # Resolved by Bazel from MODULE.bazel; large and mechanical.
 MODULE.bazel.lock linguist-generated=true
