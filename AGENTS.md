@@ -150,7 +150,7 @@ comes back exact.
 
 ## Publishing
 
-`//sortie` builds the binary and its multi-arch image, `//charts/sortie` packages the Helm chart,
+`//:sortie` builds the binary and `//:image_push` its multi-arch image, `//charts/sortie` packages the Helm chart,
 and `.github/workflows/publish.yml` pushes and signs both on a push to main.
 Four things there are deliberate and easy to undo by accident:
 
