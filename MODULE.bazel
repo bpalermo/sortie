@@ -49,18 +49,39 @@ use_repo(
     "buildifier_linux_arm64",
 )
 
-# Nighthawk's protos import envoy's, so envoy_api supplies both the .proto files
-# and the go_proto_library targets whose importpaths match go-control-plane.
-# Generating those ourselves instead would put a second copy of every envoy
-# message in the binary and panic at init on duplicate registration.
-bazel_dep(name = "envoy_api", version = "0.0.0-20260901-005c18a.bcr.1")
+# Envoy, for the load engine that is moving into this workspace. The commit is
+# pinned with git_override rather than taken from a registry snapshot, so the
+# engine can build at any Envoy commit; the registry (see --registry in
+# .bazelrc) still supplies Envoy's transitive ".envoy"-suffixed modules and has
+# to be the commit Envoy's own .bazelrc pins at ENVOY_COMMIT. envoy_api also
+# supplies the .proto files and the go_proto_library targets whose importpaths
+# match go-control-plane; generating those ourselves would put a second copy of
+# every envoy message in the binary and panic at init on duplicate registration.
+ENVOY_COMMIT = "3ded46ef9e7550711e966b8011191d43281ab68f"
+
+bazel_dep(name = "envoy", version = "1.40.0-dev")
+bazel_dep(name = "envoy_api", version = "1.40.0-dev")
+
+git_override(
+    module_name = "envoy",
+    commit = ENVOY_COMMIT,
+    remote = "https://github.com/envoyproxy/envoy.git",
+)
+
+git_override(
+    module_name = "envoy_api",
+    commit = ENVOY_COMMIT,
+    remote = "https://github.com/envoyproxy/envoy.git",
+    strip_prefix = "api",
+)
 
 # Constraints on the plan schema are declared in the proto itself.
 bazel_dep(name = "protovalidate", version = "1.2.2")
 
 # protobuf owns proto_library now; rules_proto only re-exports it and is
-# deprecated, so the rule is loaded from the protobuf module directly.
-bazel_dep(name = "protobuf", version = "33.4", repo_name = "com_google_protobuf")
+# deprecated, so the rule is loaded from the protobuf module directly. The
+# version is Envoy's, from its registry.
+bazel_dep(name = "protobuf", version = "35.1.bcr.envoy", repo_name = "com_google_protobuf")
 
 # Versions follow envoy_api's own, so the proto graph resolves to one copy of
 # each dependency rather than two.
@@ -68,7 +89,7 @@ bazel_dep(name = "googleapis", version = "0.0.0-20251003-2193a2bf")
 bazel_dep(name = "googleapis-go", version = "1.0.0")
 bazel_dep(
     name = "protoc-gen-validate",
-    version = "1.2.1.bcr.2",
+    version = "1.3.3.envoy",
     repo_name = "com_envoyproxy_protoc_gen_validate",
 )
 
