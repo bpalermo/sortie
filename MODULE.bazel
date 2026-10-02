@@ -12,9 +12,9 @@ bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "rules_img", version = "0.3.21")
 bazel_dep(name = "rules_helm", version = "0.32.0")
 
-# Transitive dependency of rules_img, pinned for Bazel 9: older versions reach
-# it through rules_pkg and use the removed incompatible_use_toolchain_transition
-# keyword.
+# Transitive dependency of rules_img, pinned when this repo was on Bazel 9:
+# older versions reach it through rules_pkg and use the removed
+# incompatible_use_toolchain_transition keyword. Also fine on 8.8.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0")
 bazel_dep(name = "buildifier_prebuilt", version = "10.0.1")
 
@@ -72,6 +72,10 @@ bazel_dep(
     repo_name = "com_envoyproxy_protoc_gen_validate",
 )
 
+# The Go SDK and the Bazel version in .bazelversion track Envoy's pins (go_sdk
+# 1.27.1 and Bazel 8.8.0 at envoyproxy/envoy 3ded46e, 2026-10-01), so that the
+# Envoy-based load engine can share this workspace. Bump them together with the
+# Envoy pin, not independently.
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.download(version = "1.27.1")
 
