@@ -1,3 +1,11 @@
+# Module registries. Envoy's transitive dependencies with an ".envoy" version
+# suffix exist only in Envoy's own registry, which keeps a single rolling
+# snapshot per module and deletes older ones, so the commit here is part of the
+# Envoy pin: it must be the one Envoy's .bazelrc names at the ENVOY_COMMIT in
+# MODULE.bazel. Bump the two together.
+common --registry=https://bcr.bazel.build/
+common --registry=https://raw.githubusercontent.com/envoyproxy/bazel-registry/462e7c8781a6a94be81f7f3383a1c88b5347c58f
+
 build --enable_platform_specific_config
 build --incompatible_strict_action_env
 
