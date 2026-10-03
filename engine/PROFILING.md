@@ -34,11 +34,12 @@ Note that doing so affects both `nighthawk_client` and `nighthawk_test_server`.
 
 ### Visualizations: the pprof web UI
 
-After Nighthawk finishes and the server is stopped, you should have `/tmp/<test-name>.prof`.
-`pprof` comes with a webserver which you can start as follows:
+The profiler writes the file when `nighthawk_client` exits, so once the run
+above has finished you have `/tmp/nighthawk.prof`. `pprof` comes with a
+webserver which you can start as follows:
 
 ```bash
-pprof -http=localhost:8888 /tmp/envoy-test_http_h1_maxrps_no_client_side_queueing_IpVersion.IPV4.prof
+pprof -http=localhost:8888 /tmp/nighthawk.prof
 ```
 
 The interface served at localhost:8888 gives you various means to help with analysing the collected profile, including a flame-chart.

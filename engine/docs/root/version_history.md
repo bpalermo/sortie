@@ -1,9 +1,12 @@
 Version history
 ---------------
 
-> **Frozen.** This is upstream Nighthawk's history up to the commit this
-> engine was forked from; nothing is added to it. The engine's changes are
-> recorded in the sortie repository's history and release notes.
+> **Frozen.** Upstream Nighthawk's history up to the commit this engine was
+> forked from, plus the fork's own entries from before it was folded into
+> sortie (the unreleased 0.3 section's no-fork fix, `--request-body-file`,
+> `--grpc-mode` and the stats sink adapter are the fork's, not upstream's).
+> Nothing is added here; the engine's changes since are recorded in the
+> sortie repository's history and release notes.
 
 0.3 (TBD)
 =========================
