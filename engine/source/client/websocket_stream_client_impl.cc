@@ -7,6 +7,9 @@
 #include "source/common/http/utility.h"
 
 #include "absl/strings/escaping.h"
+#include "absl/strings/str_split.h"
+#include "absl/strings/match.h"
+#include "absl/strings/ascii.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 
@@ -87,6 +90,26 @@ void WebSocketStreamBenchmarkClientImpl::prepare() {
   dispatcher_.run(Envoy::Event::Dispatcher::RunType::RunUntilExit);
   wait_timer_.reset();
   waiting_for_ = WaitingFor::Nothing;
+  // An upgrade still pending when the wait expired is an open failure, and the stream is
+  // cancelled or reset: the run starts with what it has, and nothing joins it partway through
+  // the measurement.
+  for (uint32_t i = 0; i < stream_count_; i++) {
+    Stream& stream = streams_[i];
+    if (stream.state != StreamState::Opening) {
+      continue;
+    }
+    counters_.stream_open_failures_.inc();
+    pending_opens_--;
+    Envoy::Http::RequestEncoder* encoder = stream.encoder;
+    Envoy::Http::ConnectionPool::Cancellable* cancellable = stream.cancellable;
+    stream.cancellable = nullptr;
+    closeStream(i);
+    if (encoder != nullptr) {
+      encoder->getStream().resetStream(Envoy::Http::StreamResetReason::LocalReset);
+    } else if (cancellable != nullptr) {
+      cancellable->cancel(Envoy::ConnectionPool::CancelPolicy::Default);
+    }
+  }
   ENVOY_LOG(info, "Upgraded {} of {} WebSocket connections.", openStreams(), stream_count_);
 }
 
@@ -151,9 +174,26 @@ void WebSocketStreamBenchmarkClientImpl::onResponseHeaders(
   if (stream.state != StreamState::Opening) {
     return;
   }
+  // RFC 6455 4.1: a 101 whose Upgrade is websocket, whose Connection names Upgrade, and whose
+  // Sec-WebSocket-Accept matches the key. Anything short of that is not a WebSocket.
   const uint64_t response_code = Envoy::Http::Utility::getResponseStatus(*headers);
   const auto accept = headers->get(secWebSocketAccept());
-  const bool accepted = response_code == 101 && accept.size() == 1 &&
+  const bool upgrade_header_ok =
+      headers->Upgrade() != nullptr &&
+      absl::EqualsIgnoreCase(headers->Upgrade()->value().getStringView(),
+                             Envoy::Http::Headers::get().UpgradeValues.WebSocket);
+  bool connection_header_ok = false;
+  if (headers->Connection() != nullptr) {
+    for (absl::string_view token :
+         absl::StrSplit(headers->Connection()->value().getStringView(), ',')) {
+      if (absl::EqualsIgnoreCase(absl::StripAsciiWhitespace(token),
+                                 Envoy::Http::Headers::get().ConnectionValues.Upgrade)) {
+        connection_header_ok = true;
+      }
+    }
+  }
+  const bool accepted = response_code == 101 && upgrade_header_ok && connection_header_ok &&
+                        accept.size() == 1 &&
                         accept[0]->value().getStringView() == WebSocket::acceptKey(stream.key);
   pending_opens_--;
   if (!accepted || end_stream) {

@@ -61,14 +61,15 @@ public:
   }
 
   void createClient(uint32_t connections, uint32_t max_inflight = 256, bool expect_echo = true,
-                    std::chrono::nanoseconds drain = 50ms) {
+                    std::chrono::nanoseconds drain = 50ms,
+                    std::chrono::seconds open_timeout = 1s) {
     RequestGenerator request_generator = [this]() {
       return std::make_unique<RequestImpl>(header_map_, message_);
     };
     client_ = std::make_unique<TcpBenchmarkClientImpl>(
         *api_, *dispatcher_, *store_.rootScope(), std::make_unique<StreamingStatistic>(),
         cluster_manager_, "benchmark", request_generator, connections, max_inflight, expect_echo,
-        drain, /*open_timeout=*/1s);
+        drain, open_timeout);
     client_->setShouldMeasureLatencies(true);
   }
 
@@ -148,6 +149,24 @@ TEST_F(TcpBenchmarkClientTest, AConnectionThatClosesWhileConnectingIsAConnectFai
   EXPECT_EQ(1, getCounter("tcp_messages_sent"));
   EXPECT_EQ(1, getCounter("tcp_unavailable"));
   EXPECT_EQ(1, completions);
+}
+
+// A connection that has not connected when the wait expires is a connect failure, closed, and
+// never joins the run.
+TEST_F(TcpBenchmarkClientTest, ConnectionsStillConnectingAtTheTimeoutAreFailures) {
+  defer_connect_ = true;
+  createClient(2, 256, true, 50ms, /*open_timeout=*/1s);
+  Envoy::Event::TimerPtr timer = dispatcher_->createTimer(
+      [this]() { connections_[0]->raiseEvent(Envoy::Network::ConnectionEvent::Connected); });
+  timer->enableTimer(1ms);
+  // The connections only exist once prepare() asked the cluster for them, so the close is
+  // observed afterwards rather than expected up front.
+  client_->prepare();
+  EXPECT_EQ(1, client_->openConnections());
+  EXPECT_EQ(1, getCounter("tcp_connect_failures"));
+  // Connecting late changes nothing: the connection was closed and counted.
+  connections_[1]->raiseEvent(Envoy::Network::ConnectionEvent::Connected);
+  EXPECT_EQ(1, client_->openConnections());
 }
 
 TEST_F(TcpBenchmarkClientTest, MessagesRoundRobinAndEchoesCompleteThem) {

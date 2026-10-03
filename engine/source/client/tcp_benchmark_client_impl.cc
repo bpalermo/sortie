@@ -55,6 +55,14 @@ void TcpBenchmarkClientImpl::prepare() {
   dispatcher_.run(Envoy::Event::Dispatcher::RunType::RunUntilExit);
   wait_timer_.reset();
   waiting_for_ = WaitingFor::Nothing;
+  // A connection still connecting when the wait expired is a connect failure, and closed: the
+  // run starts with what it has, and nothing joins it partway through the measurement.
+  for (uint32_t i = 0; i < connection_count_; i++) {
+    if (connections_[i].state == State::Connecting) {
+      counters_.tcp_connect_failures_.inc();
+      closeConnection(i, Envoy::Network::ConnectionCloseType::NoFlush);
+    }
+  }
   ENVOY_LOG(info, "Opened {} of {} TCP connections.", openConnections(), connection_count_);
 }
 
