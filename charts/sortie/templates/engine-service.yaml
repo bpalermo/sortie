@@ -1,0 +1,19 @@
+{{- if .Values.engine.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sortie.fullname" . }}-engine
+  labels:
+    {{- include "sortie.labels" . | nindent 4 }}
+    app.kubernetes.io/component: engine
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "sortie.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: engine
+  ports:
+    - name: grpc
+      port: 8443
+      targetPort: grpc
+      protocol: TCP
+{{- end -}}

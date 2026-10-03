@@ -32,6 +32,28 @@ plan: |
         - "counter:benchmark.http_5xx == 0"
         - "latency_2xx.p95 < 500ms"
 
+# The engine: a Deployment of nighthawk_service, the backend a plan dispatches
+# to, with a Service in front of it on port 8443. Off by default, because the
+# plan above addresses its backends by name and must be changed to match:
+#
+#   services: ["<release>-sortie-engine:8443"]
+#
+# One execution runs per backend at a time, so replicas are parallel backends
+# for a plan's pool, not redundancy.
+engine:
+  enabled: false
+  image:
+    # The engine image published by the same workflow run as this chart, so
+    # the two always come from one commit. Stamped at package time.
+    ref: "ghcr.io/bpalermo/sortie/engine:dev-{STABLE_GIT_COMMIT}"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources: {}
+  # nighthawk_service is single-threaded until a plan sets concurrency; the
+  # generated load runs on the pod's CPUs, so give it the cores a plan asks for.
+  nodeSelector: {}
+  affinity: {}
+
 # Arguments before the plan path. --json is useful when something collects the
 # pod's logs; the plan path itself is appended by the template.
 args:

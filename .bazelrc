@@ -535,5 +535,15 @@ build:rbe-buildbuddy-arm64 --config=rbe-buildbuddy
 build:rbe-buildbuddy-arm64 --host_platform=//bazel/platforms:rbe_buildbuddy_arm64
 build:rbe-buildbuddy-arm64 --extra_execution_platforms=//bazel/platforms:rbe_buildbuddy_arm64
 
+#############################################################################
+# SORTIE: release build of the engine
+#############################################################################
+
+# Optimised, with DWARF stripped. --strip=always maps to the linker's
+# --strip-debug: the symbol table stays, which profilers need to symbolise
+# native frames.
+build:engine-release -c opt
+build:engine-release --strip=always
+
 # Local developer overrides (remote cache, RBE, ...) live here and are gitignored.
 try-import %workspace%/user.bazelrc
