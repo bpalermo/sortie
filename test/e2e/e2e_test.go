@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -52,8 +53,9 @@ static_resources:
               dynamic_stats: false
 `
 
-// A short constant-rate plan. 100 rps for 5 s is 500 requests; the assertion on
-// the count is what catches a rate off by the worker count.
+// A short constant-rate plan. 100 rps for 5 s is 500 requests. Two workers, so
+// the aggregate rate has to be divided between them: forwarding 100 rps to each
+// would produce 1000, which is the failure the exact count below catches.
 const planTemplate = `version: v1
 pools:
   - name: local
@@ -63,7 +65,7 @@ defaults:
   pool: local
   target: http://127.0.0.1:%d/
   protocol: http1
-  concurrency: "1"
+  concurrency: "2"
   connections: 4
 thresholds:
   - "counter:benchmark.http_5xx == 0"
@@ -163,9 +165,11 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	adminPath := filepath.Join(tmp, "admin_address")
+	// Hot restart is disabled so two test servers on one host (another test, a
+	// developer's own) cannot collide on Envoy's shared-memory base id.
 	start(t, ctx, rlocation(t, "_main/engine/nighthawk_test_server"),
 		"--config-path", configPath, "--admin-address-path", adminPath,
-		"--base-id-path", filepath.Join(tmp, "base_id"), "--concurrency", "1")
+		"--disable-hot-restart", "--concurrency", "1")
 	targetPort := listenerPort(t, waitForAddress(t, adminPath))
 
 	servicePath := filepath.Join(tmp, "service_address")
@@ -187,9 +191,11 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sortie run failed: %v", err)
 	}
-	for _, want := range []string{"500 requests in 5s", "PASS  1/1 executions passed"} {
-		if !strings.Contains(string(out), want) {
-			t.Errorf("sortie output lacks %q", want)
-		}
+	// Anchored, so that 1500 or 2500 requests cannot satisfy it.
+	if !regexp.MustCompile(`(?m)^\s+\S+: 500 requests in 5s$`).Match(out) {
+		t.Errorf("sortie output lacks the backend line with exactly 500 requests")
+	}
+	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict")
 	}
 }
