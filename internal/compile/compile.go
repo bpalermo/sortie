@@ -399,6 +399,11 @@ func requestOptions(s *plan.Scenario, base *client.RequestOptions) (*client.Requ
 			},
 		})
 	}
+	if s.Body != "" || s.GetBodyFile() != "" {
+		// The scenario's body is the body: a template's request_body_size would
+		// otherwise ride along, and the engine rejects the two together.
+		ro.RequestBodySize = nil
+	}
 	if s.Body != "" {
 		// RequestBody is sent verbatim and sets no Content-Type, leaving the
 		// header entirely under the plan's control.

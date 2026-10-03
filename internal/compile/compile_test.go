@@ -619,3 +619,26 @@ func TestGrpcBlockKeepsATemplateRequestOptions(t *testing.T) {
 		t.Errorf("body = %q, want the template's 5 bytes", ro.GetRequestBody())
 	}
 }
+
+// A scenario's body replaces a template's request_body_size, which the engine
+// would otherwise reject alongside it.
+func TestScenarioBodyReplacesATemplateBodySize(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second)})
+	s.Body = "hello"
+	s.NighthawkTemplate = &client.CommandLineOptions{
+		OneofRequestOptions: &client.CommandLineOptions_RequestOptions{RequestOptions: &client.RequestOptions{
+			RequestBodySize: wrapperspb.UInt32(1024),
+		}},
+	}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ro := execs[0].Options.GetRequestOptions()
+	if ro.RequestBodySize != nil {
+		t.Errorf("request_body_size = %v survived the scenario's body", ro.GetRequestBodySize())
+	}
+	if string(ro.GetRequestBody()) != "hello" {
+		t.Errorf("body = %q, want hello", ro.GetRequestBody())
+	}
+}
