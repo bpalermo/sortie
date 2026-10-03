@@ -71,6 +71,9 @@ func validateBeyondSchema(p *Plan) error {
 		if err := validateTls(p, s); err != nil {
 			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
 		}
+		if err := validateTcp(p, s); err != nil {
+			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
+		}
 	}
 	return nil
 }
@@ -100,6 +103,73 @@ func validateTls(p *Plan, s *Scenario) error {
 // to validate against when a plan leaves streams unset; the same for both
 // kinds of stream.
 const defaultBidiStreams = 20
+
+// IsTcpTarget reports whether a target URL selects raw TCP load.
+func IsTcpTarget(target string) bool {
+	return strings.HasPrefix(target, "tcp://") || strings.HasPrefix(target, "tcps://")
+}
+
+// validateTcp checks a raw TCP scenario: the target decides the mode, the tcp
+// block only tunes it, and nothing HTTP-shaped goes with it.
+func validateTcp(p *Plan, s *Scenario) error {
+	d := p.GetDefaults()
+	target := s.GetTarget()
+	if target == "" {
+		target = d.GetTarget()
+	}
+	tcp := s.GetTcp()
+	if tcp == nil {
+		tcp = d.GetTcp()
+	}
+	if !IsTcpTarget(target) {
+		if tcp != nil {
+			return fmt.Errorf("tcp applies to a tcp:// or tcps:// target (got %q)", target)
+		}
+		return nil
+	}
+	if _, port, err := splitTargetHostPort(target); err != nil || port == "" {
+		return fmt.Errorf("a tcp target needs an explicit port (got %q)", target)
+	}
+	effective := func(a, b string) string {
+		if a != "" {
+			return a
+		}
+		return b
+	}
+	if m := effective(s.GetMethod(), d.GetMethod()); m != "" {
+		return fmt.Errorf("method %q has no meaning with a tcp target: the body is the message", m)
+	}
+	if len(s.GetHeaders()) > 0 || len(d.GetHeaders()) > 0 {
+		return fmt.Errorf("headers have no meaning with a tcp target: the body is the message")
+	}
+	if pr := effective(s.GetProtocol(), d.GetProtocol()); pr != "" {
+		return fmt.Errorf("protocol %q has no meaning with a tcp target", pr)
+	}
+	if s.GetGrpc() != nil || d.GetGrpc() != nil || s.GetWebsocket() != nil || d.GetWebsocket() != nil {
+		return fmt.Errorf("grpc and websocket cannot go with a tcp target")
+	}
+	expectEcho := true
+	if tcp != nil && tcp.ExpectEcho != nil {
+		expectEcho = tcp.GetExpectEcho()
+	}
+	if expectEcho && effective(s.GetBody(), d.GetBody()) == "" && effective(s.GetBodyFile(), d.GetBodyFile()) == "" {
+		return fmt.Errorf("a tcp target needs a body or body_file: the message is what gets echoed and matched (or tcp.expect_echo: false)")
+	}
+	return nil
+}
+
+// splitTargetHostPort returns the host and port of a target URL's authority.
+func splitTargetHostPort(target string) (string, string, error) {
+	rest := target[strings.Index(target, "://")+3:]
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		rest = rest[:i]
+	}
+	i := strings.LastIndex(rest, ":")
+	if i < 0 || strings.Contains(rest[i:], "]") {
+		return rest, "", nil
+	}
+	return rest[:i], rest[i+1:], nil
+}
 
 // validateWebSocket checks what the engine would otherwise reject at run time:
 // the upgrade is an HTTP/1.1 GET, grpc is another thing entirely, and streams

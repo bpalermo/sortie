@@ -55,6 +55,8 @@ type (
 	WebSocket = planv1.WebSocket
 
 	Tls      = planv1.Tls
+
+	Tcp      = planv1.Tcp
 	Executor = planv1.Executor
 	Stage    = planv1.Stage
 )

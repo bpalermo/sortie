@@ -310,6 +310,28 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 			o.GrpcStream = so
 		}
 	}
+	if plan.IsTcpTarget(s.GetTarget()) {
+		// The engine reads the mode from the URI; the block only tunes it.
+		o.GrpcMode = nil
+		o.GrpcStream = nil
+		o.Websocket = nil
+		if t := s.GetTcp(); t != nil {
+			to := &client.CommandLineOptions_TcpOptions{}
+			if t.Connections != nil {
+				to.Connections = wrapperspb.UInt32(t.GetConnections())
+			}
+			if t.MaxInflightPerConnection != nil {
+				to.MaxInflightPerConnection = wrapperspb.UInt32(t.GetMaxInflightPerConnection())
+			}
+			if t.ExpectEcho != nil {
+				to.ExpectEcho = wrapperspb.Bool(t.GetExpectEcho())
+			}
+			if t.GetDrainDuration() != nil {
+				to.DrainDuration = t.GetDrainDuration()
+			}
+			o.Tcp = to
+		}
+	}
 	if w := s.GetWebsocket(); w != nil {
 		// The upgrade is an HTTP/1.1 request; the loader already rejected
 		// anything else.
@@ -355,6 +377,7 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 		o.TlsContext = tlsCtx
 	}
 	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil || s.GetWebsocket() != nil {
+	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil || s.GetWebsocket() != nil || plan.IsTcpTarget(s.GetTarget()) {
 		reqOpts, err := requestOptions(s, o.GetRequestOptions())
 		if err != nil {
 			return nil, err

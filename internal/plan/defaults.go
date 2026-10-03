@@ -40,6 +40,9 @@ func applyDefaults(p *Plan) {
 		if s.GetTls() == nil && d.GetTls() != nil {
 			s.Tls = proto.Clone(d.GetTls()).(*Tls)
 		}
+		if s.GetTcp() == nil && d.GetTcp() != nil {
+			s.Tcp = proto.Clone(d.GetTcp()).(*Tcp)
+		}
 		if s.GetProtocol() == "" {
 			s.Protocol = d.GetProtocol()
 		}

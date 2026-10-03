@@ -99,7 +99,9 @@ bazel-bin/engine/nighthawk_client  [--user-defined-plugin-config <string>] ...
 [--tls-context <string>]
 [--stream-drain-duration <string>]
 [--max-inflight-per-stream <uint32_t>]
-[--streams <uint32_t>] [--websocket-binary] [--websocket]
+[--streams <uint32_t>] [--tcp-no-echo]
+[--tcp-max-inflight-per-connection <uint32_t>]
+[--tcp-connections <uint32_t>] [--websocket-binary] [--websocket]
 [--grpc-mode <unary
 |bidi-stream>] [--request-body-file
 <string>] [--request-body-size <uint32_t>]
@@ -300,6 +302,21 @@ Maximum unanswered messages per stream (--grpc-mode bidi-stream,
 --streams <uint32_t>
 Total number of streams to open: gRPC bidi streams in --grpc-mode
 bidi-stream, connections with --websocket (default: 20).
+
+--tcp-no-echo
+With a tcp:// URI: the peer does not echo; a write completes at once
+and nothing is read or timed.
+
+--tcp-max-inflight-per-connection <uint32_t>
+With a tcp:// URI: unanswered messages a connection may hold before
+scheduled sends on it are dropped and counted in benchmark.tcp_deferred
+(default: 256).
+
+--tcp-connections <uint32_t>
+With a tcp:// or tcps:// URI (raw TCP load: the request body is written
+on a fixed pool of connections per worker, round-robin at --rps per
+worker, as is, and timed against its echo, matched in order):
+connections per worker (default: 1).
 
 --websocket-binary
 With --websocket, send binary frames rather than text.

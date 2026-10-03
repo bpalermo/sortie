@@ -68,6 +68,10 @@ public:
   uint32_t requestBodySize() const override { return request_body_size_; };
   const std::string& requestBody() const override { return request_body_; };
   nighthawk::client::GrpcMode::GrpcModeOptions grpcMode() const override { return grpc_mode_; };
+  bool tcp() const override { return tcp_; }
+  uint32_t tcpConnections() const override { return tcp_connections_; }
+  uint32_t tcpMaxInflightPerConnection() const override { return tcp_max_inflight_; }
+  bool tcpExpectEcho() const override { return tcp_expect_echo_; }
   bool websocket() const override { return websocket_; }
   bool websocketBinary() const override { return websocket_binary_; }
   uint32_t streams() const override { return streams_; };
@@ -185,6 +189,11 @@ private:
   bool streamModeEnabled() const { return grpcStreamEnabled() || websocket_; }
   bool websocket_{false};
   bool websocket_binary_{false};
+  // Derived from the URI's scheme (tcp, tcps) when the options are validated.
+  bool tcp_{false};
+  uint32_t tcp_connections_{1};
+  uint32_t tcp_max_inflight_{256};
+  bool tcp_expect_echo_{true};
   uint32_t streams_{20};
   uint32_t max_inflight_per_stream_{256};
   std::chrono::nanoseconds stream_drain_duration_{std::chrono::milliseconds(500)};

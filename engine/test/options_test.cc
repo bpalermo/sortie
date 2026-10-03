@@ -551,6 +551,55 @@ TEST_F(OptionsImplTest, WebSocketDefaultsRoundTripAndValidation) {
       MalformedArgvException, "--streams must be a positive multiple of --concurrency");
 }
 
+TEST_F(OptionsImplTest, TcpUriSelectsTcpModeWithDefaultsRoundTripAndValidation) {
+  std::unique_ptr<OptionsImpl> options = TestUtility::createOptionsImpl(
+      fmt::format("{} --rps 100 --request-body-size 4 tcp://127.0.0.1:9000", client_name_));
+  EXPECT_TRUE(options->tcp());
+  EXPECT_EQ(1, options->tcpConnections());
+  EXPECT_EQ(256, options->tcpMaxInflightPerConnection());
+  EXPECT_TRUE(options->tcpExpectEcho());
+  CommandLineOptionsPtr cmd = options->toCommandLineOptions();
+  ASSERT_TRUE(cmd->has_tcp());
+  EXPECT_EQ(1, cmd->tcp().connections().value());
+  EXPECT_TRUE(cmd->tcp().expect_echo().value());
+  OptionsImpl round_trip(*cmd);
+  EXPECT_TRUE(round_trip.tcp());
+
+  std::unique_ptr<OptionsImpl> explicit_values = TestUtility::createOptionsImpl(fmt::format(
+      "{} --rps 100 --tcp-connections 4 --tcp-max-inflight-per-connection 8 --tcp-no-echo "
+      "tcps://127.0.0.1:9000",
+      client_name_));
+  EXPECT_TRUE(explicit_values->tcp());
+  EXPECT_EQ(4, explicit_values->tcpConnections());
+  EXPECT_EQ(8, explicit_values->tcpMaxInflightPerConnection());
+  EXPECT_FALSE(explicit_values->tcpExpectEcho());
+  EXPECT_FALSE(explicit_values->toCommandLineOptions()->tcp().expect_echo().value());
+
+  // An http URI is not TCP mode, whatever the tcp flags say.
+  EXPECT_FALSE(TestUtility::createOptionsImpl(
+                   fmt::format("{} --tcp-connections 4 {}", client_name_, good_test_uri_))
+                   ->tcp());
+
+  EXPECT_THROW_WITH_REGEX(TestUtility::createOptionsImpl(
+                              fmt::format("{} --rps 100 tcp://127.0.0.1", client_name_)),
+                          MalformedArgvException, "Invalid target URI");
+  EXPECT_THROW_WITH_REGEX(TestUtility::createOptionsImpl(
+                              fmt::format("{} --rps 100 tcp://127.0.0.1:9000", client_name_)),
+                          MalformedArgvException, "needs a --request-body-file or --request-body-size");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(
+          fmt::format("{} --rps 100 --request-body-size 1 --grpc-mode unary tcp://127.0.0.1:9000", client_name_)),
+      MalformedArgvException, "cannot be combined with --grpc-mode or --websocket");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(
+          fmt::format("{} --rps 100 --request-body-size 1 --request-header x:y tcp://127.0.0.1:9000", client_name_)),
+      MalformedArgvException, "takes no --request-header or --request-method");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(
+          fmt::format("{} --rps 100 --request-body-size 1 --tcp-connections 0 tcp://127.0.0.1:9000", client_name_)),
+      MalformedArgvException, "--tcp-connections and --tcp-max-inflight-per-connection");
+}
+
 TEST_F(OptionsImplTest, GrpcStreamValidation) {
   EXPECT_THROW_WITH_REGEX(
       TestUtility::createOptionsImpl(fmt::format("{} --grpc-mode bidi-stream --concurrency auto {}",

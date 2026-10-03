@@ -755,3 +755,34 @@ func TestRedactedHidesTheClientKeyOnly(t *testing.T) {
 		t.Error("the original options were modified")
 	}
 }
+
+// A tcp target selects the engine's TCP mode by URI; the tcp block becomes
+// its options and the body is the message. The rate stays per worker.
+func TestTcpTargetOptions(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 400, Duration: dur(time.Second)})
+	s.Target = "tcp://127.0.0.1:9000"
+	s.Concurrency = "2"
+	s.Body = "ping"
+	s.Tcp = &plan.Tcp{Connections: proto.Uint32(3), ExpectEcho: proto.Bool(false)}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := execs[0].Options
+	if o.GetUri().GetValue() != "tcp://127.0.0.1:9000" {
+		t.Errorf("uri = %q", o.GetUri().GetValue())
+	}
+	if o.GetTcp().GetConnections().GetValue() != 3 || o.GetTcp().GetExpectEcho().GetValue() {
+		t.Errorf("tcp = %v, want 3 connections and no echo", o.GetTcp())
+	}
+	if string(o.GetRequestOptions().GetRequestBody()) != "ping" {
+		t.Errorf("body = %q, want ping", o.GetRequestOptions().GetRequestBody())
+	}
+	opts, err := Divide(execs[0], 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := opts[0].GetRequestsPerSecond().GetValue(); got != 100 {
+		t.Errorf("rps = %d, want 100 (400 over 2 backends x 2 workers: per worker, as HTTP)", got)
+	}
+}
