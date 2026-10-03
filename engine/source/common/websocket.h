@@ -69,8 +69,8 @@ public:
    * @param data the bytes received so far; whole frames are drained from it.
    * @param frames receives the decoded frames, payloads unmasked.
    * @return bool false on a protocol error (a reserved opcode, a control frame that is
-   * fragmented or oversized), after which data has been drained and the connection should be
-   * closed.
+   * fragmented or oversized, a payload length over 64 MiB or with the forbidden high bit set),
+   * after which data has been drained and the connection should be closed.
    */
   bool feed(Envoy::Buffer::Instance& data, std::vector<Frame>& frames);
 };

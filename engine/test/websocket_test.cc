@@ -81,6 +81,20 @@ TEST(WebSocketTest, DecoderLeavesAPartialFrameForLater) {
   EXPECT_EQ(0, buffer.length());
 }
 
+// A 64-bit length with the high bit set, or merely enormous, is a malformed header: rejected
+// before any arithmetic on it can wrap or any buffer can be sized by it.
+TEST(WebSocketTest, DecoderRejectsImpossiblePayloadLengths) {
+  for (const std::string length : {std::string("\xff\xff\xff\xff\xff\xff\xff\xff", 8),
+                                   std::string("\x80\x00\x00\x00\x00\x00\x00\x00", 8),
+                                   std::string("\x00\x00\x00\x00\x10\x00\x00\x00", 8)}) {
+    Envoy::Buffer::OwnedImpl buffer(std::string("\x82\x7f", 2) + length);
+    std::vector<Frame> frames;
+    EXPECT_FALSE(Decoder().feed(buffer, frames));
+    EXPECT_EQ(0, buffer.length());
+    EXPECT_TRUE(frames.empty());
+  }
+}
+
 TEST(WebSocketTest, DecoderRejectsReservedOpcodesAndFragmentedControlFrames) {
   {
     Envoy::Buffer::OwnedImpl buffer(std::string("\x83\x00", 2)); // opcode 3: reserved

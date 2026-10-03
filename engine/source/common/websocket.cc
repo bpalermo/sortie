@@ -12,6 +12,10 @@ namespace WebSocket {
 namespace {
 
 constexpr absl::string_view kGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+// The largest payload a frame may announce. Far below the 2^63-1 the wire format allows: a
+// message this engine sends or expects echoed is kilobytes, and anything claiming more is a
+// broken or hostile peer, not a frame to buffer.
+constexpr uint64_t kMaxPayloadLength = 64 * 1024 * 1024;
 
 bool isControl(Opcode opcode) { return static_cast<uint8_t>(opcode) >= 0x8; }
 
@@ -124,6 +128,12 @@ bool Decoder::feed(Envoy::Buffer::Instance& data, std::vector<Frame>& frames) {
       length = 0;
       for (int i = 0; i < 8; i++) {
         length = (length << 8) | extended[i];
+      }
+      // The high bit must be clear (RFC 6455 5.2), and a length anywhere near it would be a
+      // malformed header asking for an impossible allocation.
+      if (length > kMaxPayloadLength) {
+        data.drain(data.length());
+        return false;
       }
     }
     const Opcode op = static_cast<Opcode>(opcode);
