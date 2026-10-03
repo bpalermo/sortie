@@ -28,8 +28,17 @@ bazel build //charts/sortie:sortie //:image_load //engine:image_load \
 kind load image-archive --name "${cluster}" "${root}/bazel-bin/image_load_docker.tar"
 kind load image-archive --name "${cluster}" "${root}/bazel-bin/engine/image_load_docker.tar"
 
+# The tags are fixed and the pull policy is Never, so a pod already running
+# from an earlier run keeps the earlier image: restart whatever is there, so
+# the run exercises what was just loaded. Before the install, so the Job --
+# created with the engine -- meets the restarted engine, not the old one.
 kubectl apply -f "${here}/target.yaml"
+kubectl rollout restart deployment/target
 kubectl rollout status deployment/target --timeout=120s
+if kubectl get "deployment/${release}-sortie-engine" >/dev/null 2>&1; then
+  kubectl rollout restart "deployment/${release}-sortie-engine"
+  kubectl rollout status "deployment/${release}-sortie-engine" --timeout=120s
+fi
 
 # The Job's name is suffixed with a digest of its pod template, so each plan
 # below is a new Job and the newest one is the run just made.
