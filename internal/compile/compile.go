@@ -525,9 +525,13 @@ func requestMethod(name string) (corev3.RequestMethod, error) {
 func Redacted(o *client.CommandLineOptions) *client.CommandLineOptions {
 	c := proto.Clone(o).(*client.CommandLineOptions)
 	for _, cert := range c.GetTlsContext().GetCommonTlsContext().GetTlsCertificates() {
-		if key := cert.GetPrivateKey(); key != nil && len(key.GetInlineBytes()) > 0 {
+		// Either inline form -- a template's tls_context may carry a string; a
+		// filename is not a secret.
+		key := cert.GetPrivateKey()
+		size := len(key.GetInlineBytes()) + len(key.GetInlineString())
+		if size > 0 {
 			cert.PrivateKey = &corev3.DataSource{Specifier: &corev3.DataSource_InlineString{
-				InlineString: fmt.Sprintf("<redacted: %d bytes>", len(key.GetInlineBytes())),
+				InlineString: fmt.Sprintf("<redacted: %d bytes>", size),
 			}}
 		}
 	}

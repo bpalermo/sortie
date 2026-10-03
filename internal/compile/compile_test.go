@@ -742,6 +742,14 @@ func TestRedactedHidesTheClientKeyOnly(t *testing.T) {
 	if got := cert.GetPrivateKey().GetInlineString(); got != "<redacted: 6 bytes>" {
 		t.Errorf("private key = %q, want redacted", got)
 	}
+	// A key given inline as a string is redacted the same.
+	o.GetTlsContext().GetCommonTlsContext().GetTlsCertificates()[0].PrivateKey =
+		&corev3.DataSource{Specifier: &corev3.DataSource_InlineString{InlineString: "STRINGSECRET"}}
+	if got := Redacted(o).GetTlsContext().GetCommonTlsContext().GetTlsCertificates()[0].GetPrivateKey().GetInlineString(); got != "<redacted: 12 bytes>" {
+		t.Errorf("private key = %q, want redacted", got)
+	}
+	o.GetTlsContext().GetCommonTlsContext().GetTlsCertificates()[0].PrivateKey =
+		&corev3.DataSource{Specifier: &corev3.DataSource_InlineBytes{InlineBytes: []byte("SECRET")}}
 	// The original is untouched: it is what gets sent.
 	if string(o.GetTlsContext().GetCommonTlsContext().GetTlsCertificates()[0].GetPrivateKey().GetInlineBytes()) != "SECRET" {
 		t.Error("the original options were modified")

@@ -9,8 +9,16 @@ namespace Client {
 
 void redactPrivateKeys(envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext& context) {
   for (auto& certificate : *context.mutable_common_tls_context()->mutable_tls_certificates()) {
-    if (certificate.has_private_key() && !certificate.private_key().inline_bytes().empty()) {
-      const size_t size = certificate.private_key().inline_bytes().size();
+    if (!certificate.has_private_key()) {
+      continue;
+    }
+    // Either inline form; a filename is not a secret.
+    const auto& key = certificate.private_key();
+    const size_t size =
+        key.specifier_case() == envoy::config::core::v3::DataSource::SpecifierCase::kInlineBytes
+            ? key.inline_bytes().size()
+            : key.inline_string().size();
+    if (size > 0) {
       certificate.mutable_private_key()->set_inline_string(
           absl::StrCat("<redacted: ", size, " bytes>"));
     }

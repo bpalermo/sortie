@@ -32,6 +32,19 @@ TEST(RedactionTest, RedactsTheKeyAndOnlyTheKey) {
   EXPECT_EQ("CA", context.common_tls_context().validation_context().trusted_ca().inline_bytes());
 }
 
+// A key given as inline_string -- the form --tls-context's JSON takes -- is redacted the same.
+TEST(RedactionTest, RedactsAnInlineStringKeyToo) {
+  auto context = contextWithPair();
+  context.mutable_common_tls_context()->mutable_tls_certificates(0)->mutable_private_key()->set_inline_string("STRINGSECRET");
+  redactPrivateKeys(context);
+  const auto& key = context.common_tls_context().tls_certificates(0).private_key();
+  EXPECT_EQ("<redacted: 12 bytes>", key.inline_string());
+  // A key read from a file names the file, which is not a secret.
+  context.mutable_common_tls_context()->mutable_tls_certificates(0)->mutable_private_key()->set_filename("/etc/key.pem");
+  redactPrivateKeys(context);
+  EXPECT_EQ("/etc/key.pem", context.common_tls_context().tls_certificates(0).private_key().filename());
+}
+
 // What the service logs on reading a request carries no key; the request itself is untouched.
 TEST(RedactionTest, ExecutionRequestLogCopyCarriesNoKey) {
   nighthawk::client::ExecutionRequest request;
