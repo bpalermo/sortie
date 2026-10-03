@@ -26,6 +26,9 @@ import (
 // Marked experimental upstream (envoyproxy/nighthawk#369), and no released
 // Nighthawk binary hosts this service.
 //
+// There is no progress on this path: the distributor API carries no
+// progress_interval and relays nothing before the targets finish.
+//
 // Cancelling ctx abandons the distributor RPC and nothing more: the
 // distributor API carries one ExecutionRequest and no distributor hosted here
 // forwards a CancellationRequest to its targets, so they run to their

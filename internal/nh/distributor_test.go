@@ -223,7 +223,7 @@ func TestExecuteSurfacesAFailureAfterTheResponse(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if _, err := nh.Execute(ctx, conn, &client.CommandLineOptions{}); err == nil {
+	if _, err := nh.Execute(ctx, conn, &client.CommandLineOptions{}, nil); err == nil {
 		t.Fatal("a non-OK status after the response must not read as success")
 	} else if !strings.Contains(err.Error(), "backend died after responding") {
 		t.Errorf("error should quote the backend, got: %v", err)

@@ -11,6 +11,19 @@ import "engine/api/client/output.proto";
 
 message StartRequest {
   CommandLineOptions options = 1;
+  // When set, the service writes an interim ExecutionResponse this often while
+  // the execution runs: `progress` set, and `output` a snapshot of the run so
+  // far (its live counters and a copy of the latency statistics, in one
+  // "global" result whose execution_duration is the time since the workers
+  // started). The final response has no `progress`. Unset, nothing is written
+  // before the final response, as before.
+  google.protobuf.Duration progress_interval = 2;
+}
+
+// Marks an interim ExecutionResponse written while the execution runs.
+message Progress {
+  // Time since the execution's workers started.
+  google.protobuf.Duration elapsed = 1;
 }
 
 // TODO(oschaaf): Not implemented yet.
@@ -37,6 +50,8 @@ message ExecutionResponse {
   // if it is not set there it will be auto-generated. The format used for auto-generated
   // identifiers may change at any time.
   string execution_id = 8;
+  // Set on interim responses only; see StartRequest.progress_interval.
+  Progress progress = 9;
 }
 
 service NighthawkService {

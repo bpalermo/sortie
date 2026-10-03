@@ -315,6 +315,66 @@ TEST_P(ServiceTest, CancelFromAnotherStreamIsIgnored) {
   EXPECT_TRUE(owner->Finish().ok());
 }
 
+// With progress_interval set, interim responses carrying `progress` and a snapshot of the
+// run arrive while it is in flight; the final response has no `progress` and ends the stream.
+TEST_P(ServiceTest, ProgressIsStreamedWhenRequested) {
+  auto options = request_.mutable_start_request()->mutable_options();
+  options->mutable_duration()->set_seconds(3);
+  (*options->mutable_failure_predicates())["benchmark.nonexistent"] = 0;
+  request_.mutable_start_request()->mutable_progress_interval()->set_nanos(500000000);
+  auto r = stub_->ExecutionStream(&context_);
+  EXPECT_TRUE(r->Write(request_, {}));
+  EXPECT_TRUE(r->WritesDone());
+  int interim = 0;
+  bool final_seen = false;
+  nighthawk::client::ExecutionResponse response;
+  while (r->Read(&response)) {
+    EXPECT_FALSE(final_seen) << "a response followed the final one";
+    EXPECT_TRUE(response.has_output());
+    if (response.has_progress()) {
+      interim++;
+      EXPECT_GT(response.progress().elapsed().seconds() * 1000000000LL +
+                    response.progress().elapsed().nanos(),
+                0);
+      ASSERT_FALSE(response.output().results().empty());
+      EXPECT_EQ(response.output().results(0).name(), "global");
+    } else {
+      final_seen = true;
+    }
+  }
+  EXPECT_GE(interim, 2) << "expected about six interim responses in a 3 s run";
+  EXPECT_TRUE(final_seen);
+  EXPECT_TRUE(r->Finish().ok());
+}
+
+// An interval that cannot be honoured is refused rather than silently ignored.
+TEST_P(ServiceTest, ProgressIntervalBelowAMillisecondIsAnError) {
+  request_.mutable_start_request()->mutable_progress_interval()->set_nanos(-1);
+  auto r = stub_->ExecutionStream(&context_);
+  EXPECT_TRUE(r->Write(request_, {}));
+  EXPECT_TRUE(r->WritesDone());
+  EXPECT_TRUE(r->Read(&response_));
+  EXPECT_TRUE(response_.has_error_detail());
+  EXPECT_EQ(grpc::StatusCode::INVALID_ARGUMENT, response_.error_detail().code());
+  EXPECT_THAT(response_.error_detail().message(), HasSubstr("at least 1ms"));
+  EXPECT_FALSE(r->Read(&response_));
+  EXPECT_TRUE(r->Finish().ok());
+}
+
+// Without progress_interval nothing precedes the final response, as before.
+TEST_P(ServiceTest, NoProgressUnlessRequested) {
+  auto options = request_.mutable_start_request()->mutable_options();
+  options->mutable_duration()->set_seconds(2);
+  (*options->mutable_failure_predicates())["benchmark.nonexistent"] = 0;
+  auto r = stub_->ExecutionStream(&context_);
+  EXPECT_TRUE(r->Write(request_, {}));
+  EXPECT_TRUE(r->WritesDone());
+  EXPECT_TRUE(r->Read(&response_));
+  EXPECT_FALSE(response_.has_progress());
+  EXPECT_FALSE(r->Read(&response_));
+  EXPECT_TRUE(r->Finish().ok());
+}
+
 TEST_P(ServiceTest, Unresolvable) {
   auto options = request_.mutable_start_request()->mutable_options();
   options->mutable_uri()->set_value("http://unresolvable-host/");

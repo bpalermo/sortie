@@ -9,7 +9,9 @@ import (
 	"text/tabwriter"
 	"time"
 
+	client "github.com/bpalermo/sortie/engine/api/client"
 	"github.com/bpalermo/sortie/internal/compile"
+	"github.com/bpalermo/sortie/internal/metric"
 	"github.com/bpalermo/sortie/internal/run"
 )
 
@@ -162,4 +164,49 @@ func (p Progress) ExecutionStarted(e compile.Execution, backends []string) {
 	fmt.Fprintf(p.W, "  running %s (%s) on %s\n", e.Label, shape, strings.Join(backends, ", "))
 }
 
+func (p Progress) ExecutionProgress(e compile.Execution, backend string, elapsed time.Duration, out *client.Output) {
+	fmt.Fprintf(p.W, "    %s  %s  %s\n", backend, elapsed.Truncate(100*time.Millisecond), snapshotSummary(out))
+}
+
 func (p Progress) ExecutionFinished(r run.ExecutionReport) {}
+
+// snapshotSummary is one line from an interim Output: responses by class, the
+// failure counters that explain a missing class, and the p99 of whichever
+// latency statistic the run records.
+func snapshotSummary(out *client.Output) string {
+	global, err := metric.GlobalResult(out)
+	if err != nil {
+		return "no results yet"
+	}
+	var parts []string
+	for _, c := range global.GetCounters() {
+		switch c.GetName() {
+		case "benchmark.http_2xx", "benchmark.http_3xx", "benchmark.http_4xx", "benchmark.http_5xx",
+			"benchmark.pool_overflow", "benchmark.stream_resets", "benchmark.pool_connection_failure":
+			parts = append(parts, fmt.Sprintf("%s %d", strings.TrimPrefix(c.GetName(), "benchmark."), c.GetValue()))
+		}
+	}
+	for _, st := range global.GetStatistics() {
+		if st.GetId() != "benchmark_http_client.request_to_response" && st.GetId() != "benchmark_stream.message_latency" {
+			continue
+		}
+		// Nighthawk reports its histogram's own buckets, so p99 is the first
+		// bucket at or above 0.99 -- the rule the threshold resolver applies.
+		var best *client.Percentile
+		for _, pc := range st.GetPercentiles() {
+			if pc.GetPercentile() < 0.99 || pc.GetDuration() == nil {
+				continue
+			}
+			if best == nil || pc.GetPercentile() < best.GetPercentile() {
+				best = pc
+			}
+		}
+		if best != nil {
+			parts = append(parts, fmt.Sprintf("p99 %s", best.GetDuration().AsDuration()))
+		}
+	}
+	if len(parts) == 0 {
+		return "no responses yet"
+	}
+	return strings.Join(parts, "  ")
+}

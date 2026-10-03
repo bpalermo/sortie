@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -18,8 +19,9 @@ import (
 
 func newRunCmd() *cobra.Command {
 	var (
-		asJSON bool
-		out    string
+		asJSON   bool
+		out      string
+		progress time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -27,15 +29,20 @@ func newRunCmd() *cobra.Command {
 		Short: "Run the plan and report a verdict",
 		Args:  planArg(),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPlan(cmd.Context(), args[0], asJSON, out, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runPlan(cmd.Context(), args[0], asJSON, out, progress, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "write the report as JSON")
 	cmd.Flags().StringVarP(&out, "output", "o", "", "write the report to this file instead of stdout")
+	cmd.Flags().DurationVar(&progress, "progress", 0,
+		"print each backend's progress this often while it runs, on stderr (0: only when it finishes)")
 	return cmd
 }
 
-func runPlan(parent context.Context, path string, asJSON bool, out string, stdout, stderr io.Writer) error {
+func runPlan(parent context.Context, path string, asJSON bool, out string, progress time.Duration, stdout, stderr io.Writer) error {
+	if progress < 0 {
+		return &usageError{fmt.Errorf("--progress must not be negative (got %s)", progress)}
+	}
 	p, err := plan.Load(path)
 	if err != nil {
 		return &usageError{err}
@@ -64,7 +71,7 @@ func runPlan(parent context.Context, path string, asJSON bool, out string, stdou
 		}
 	}()
 
-	runner := &run.Runner{Plan: p, Observer: report.Progress{W: stderr}}
+	runner := &run.Runner{Plan: p, Observer: report.Progress{W: stderr}, ProgressInterval: progress}
 	r, runErr := runner.Run(ctx)
 	if r == nil {
 		return runErr

@@ -77,7 +77,7 @@ moves the pin and everything that has to move with it (see `AGENTS.md`).
 
 | Command | What it does |
 | --- | --- |
-| `sortie run <plan.yaml>` | Run the plan and report a verdict. `-json` for CI, `-o FILE` to redirect. |
+| `sortie run <plan.yaml>` | Run the plan and report a verdict. `-json` for CI, `-o FILE` to redirect, `--progress 5s` to narrate each backend's run on stderr. |
 | `sortie validate <plan.yaml>` | Check the plan without running anything. |
 | `sortie compile <plan.yaml>` | Print the `CommandLineOptions` it would send to each backend. |
 
@@ -257,8 +257,11 @@ to hold. For a single-backend pool this is exactly the obvious behaviour.
   distributor pool is the exception: the distributor RPC is abandoned and its
   targets run to their configured duration, because nothing here hosts a
   distributor that forwards cancellations.
-- **No progress during a run.** A Nighthawk execution returns nothing until it
-  finishes, so sortie reports per execution, not continuously.
+- **Progress is opt-in, and advisory.** `sortie run --progress 5s` asks each
+  backend for a snapshot of its run that often -- live counters and a copy of
+  the latency statistics -- and prints a line per backend on stderr. The
+  verdict comes from the final response only. Backends behind a distributor
+  report nothing until they finish.
 - **No scripting.** Nighthawk's `RequestSource` yields independent requests and
   never sees responses, so there is no session flow — no login, capture a token,
   reuse it. Scenarios are stateless load.

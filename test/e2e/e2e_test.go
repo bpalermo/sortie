@@ -209,11 +209,16 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath)
+	// --progress exercises the engine's interim responses on the way: a 5 s run
+	// at 1 s should narrate at least three snapshots on stderr.
+	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", "--progress", "1s", planPath)
 	out, err := cmd.CombinedOutput()
 	t.Logf("sortie run:\n%s", out)
 	if err != nil {
 		t.Fatalf("sortie run failed: %v", err)
+	}
+	if n := len(regexp.MustCompile(`(?m)^\s+\S+:\d+  \d+(\.\d+)?s  .*http_2xx \d+`).FindAll(out, -1)); n < 3 {
+		t.Errorf("expected at least three progress lines with an http_2xx count, found %d", n)
 	}
 	// Anchored on the count, so that 1500 or 2500 requests cannot satisfy it; the
 	// duration is the backend's measured one and may read 5.001s.

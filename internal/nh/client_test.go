@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	client "github.com/bpalermo/sortie/engine/api/client"
 	"github.com/bpalermo/sortie/internal/nh"
@@ -57,7 +58,7 @@ func TestExecuteCancelsTheRunWhenTheContextIsCancelled(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		cancel()
 	}()
-	resp, err := nh.Execute(ctx, conn, &client.CommandLineOptions{})
+	resp, err := nh.Execute(ctx, conn, &client.CommandLineOptions{}, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled run must return the context's error, got: %v", err)
 	}
@@ -68,6 +69,74 @@ func TestExecuteCancelsTheRunWhenTheContextIsCancelled(t *testing.T) {
 	case <-fake.cancelled:
 	default:
 		t.Fatal("the service never received a CancellationRequest")
+	}
+}
+
+// fakeProgressService answers a start request that asks for progress with
+// two interim responses, then the final one.
+type fakeProgressService struct {
+	client.UnimplementedNighthawkServiceServer
+	gotInterval time.Duration
+}
+
+func (f *fakeProgressService) ExecutionStream(stream client.NighthawkService_ExecutionStreamServer) error {
+	req, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	f.gotInterval = req.GetStartRequest().GetProgressInterval().AsDuration()
+	for i := 1; i <= 2; i++ {
+		interim := &client.ExecutionResponse{
+			Progress: &client.Progress{Elapsed: durationpb.New(time.Duration(i) * time.Second)},
+			Output:   &client.Output{Results: []*client.Result{{Name: "global", Counters: []*client.Counter{{Name: "benchmark.http_2xx", Value: uint64(100 * i)}}}}},
+		}
+		if err := stream.Send(interim); err != nil {
+			return err
+		}
+	}
+	return stream.Send(&client.ExecutionResponse{Output: &client.Output{Results: []*client.Result{{Name: "global"}}}})
+}
+
+// Interim responses reach the Progress callback with their elapsed time, the
+// requested interval reaches the service, and the final response is the one
+// returned -- the first without `progress`.
+func TestExecuteForwardsProgress(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	fake := &fakeProgressService{}
+	client.RegisterNighthawkServiceServer(server, fake)
+	go func() { _ = server.Serve(listener) }()
+	defer server.Stop()
+
+	conn, err := nh.Dial(context.Background(), listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	var elapsed []time.Duration
+	var counts []uint64
+	resp, err := nh.Execute(context.Background(), conn, &client.CommandLineOptions{}, &nh.Progress{
+		Interval: 500 * time.Millisecond,
+		Fn: func(e time.Duration, out *client.Output) {
+			elapsed = append(elapsed, e)
+			counts = append(counts, out.GetResults()[0].GetCounters()[0].GetValue())
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetProgress() != nil {
+		t.Error("the final response carries progress")
+	}
+	if fake.gotInterval != 500*time.Millisecond {
+		t.Errorf("service saw interval %s, want 500ms", fake.gotInterval)
+	}
+	if len(elapsed) != 2 || elapsed[0] != time.Second || elapsed[1] != 2*time.Second || counts[1] != 200 {
+		t.Errorf("progress = %v / %v, want two snapshots at 1s and 2s with 100 and 200", elapsed, counts)
 	}
 }
 

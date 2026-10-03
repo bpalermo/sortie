@@ -1,8 +1,11 @@
 #include "engine/source/client/service_impl.h"
 
 #include "source/common/common/cleanup.h"
+#include "source/common/protobuf/utility.h"
 
 #include <grpc++/grpc++.h>
+
+#include <thread>
 
 #include "envoy/config/core/v3/base.pb.h"
 
@@ -38,6 +41,23 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
     writeResponse(stream, response);
     return;
   }
+  // A set interval asks for progress; one that cannot be honoured -- not positive, or below
+  // the millisecond the timer runs at -- is an error rather than silently no progress. Checked
+  // before anything is created, so there is nothing to tear down on the way out.
+  std::chrono::milliseconds progress_interval(0);
+  if (request.start_request().has_progress_interval()) {
+    const auto& interval = request.start_request().progress_interval();
+    const int64_t nanos = interval.seconds() * 1000000000LL + interval.nanos();
+    if (nanos < 1000000) {
+      response.mutable_error_detail()->set_code(grpc::StatusCode::INVALID_ARGUMENT);
+      response.mutable_error_detail()->set_message(
+          "progress_interval must be at least 1ms (it is the period of the progress timer)");
+      writeResponse(stream, response);
+      return;
+    }
+    // Rounded up: a snapshot never comes more often than asked for.
+    progress_interval = std::chrono::milliseconds((nanos + 999999) / 1000000);
+  }
   envoy::config::core::v3::TypedExtensionConfig typed_dns_resolver_config;
   Envoy::Network::DnsResolverFactory& dns_resolver_factory =
       Envoy::Network::createDefaultDnsResolverFactory(typed_dns_resolver_config);
@@ -70,8 +90,54 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
     active_stream_ = nullptr;
   });
 
+  // Progress, when the request asks for it: a thread that snapshots the run every interval
+  // and writes the snapshot as an interim response. Writes on a gRPC stream must not overlap,
+  // so this thread is stopped and joined before the final response is written below (the
+  // stream's own thread only ever reads).
+  Envoy::Thread::MutexBasicLockable progress_lock;
+  Envoy::Thread::CondVar progress_stop;
+  bool stop_progress = false;
+  std::thread progress_thread;
+  if (progress_interval.count() > 0) {
+    progress_thread = std::thread([&]() {
+      Envoy::Thread::LockGuard guard(progress_lock);
+      while (!stop_progress) {
+        progress_stop.waitFor(progress_lock, progress_interval); // NO_CHECK_FORMAT(real_time)
+        if (stop_progress) {
+          break;
+        }
+        std::optional<nighthawk::client::Output> snapshot = process->snapshot();
+        if (!snapshot.has_value()) {
+          continue;
+        }
+        nighthawk::client::ExecutionResponse interim;
+        if (!snapshot->results().empty()) {
+          *interim.mutable_progress()->mutable_elapsed() =
+              snapshot->results(0).execution_duration();
+        } else {
+          interim.mutable_progress();
+        }
+        *interim.mutable_output() = std::move(*snapshot);
+        writeResponse(stream, interim);
+      }
+    });
+  }
+  auto stop_progress_thread = [&]() {
+    if (progress_thread.joinable()) {
+      {
+        Envoy::Thread::LockGuard guard(progress_lock);
+        stop_progress = true;
+        progress_stop.notifyAll();
+      }
+      progress_thread.join();
+    }
+  };
+  // Also on the exception paths out of run(), before the lambda's captures go out of scope.
+  Envoy::Cleanup stop_progress_on_exit(stop_progress_thread);
+
   OutputCollectorImpl output_collector(time_system_, *options);
   const bool ok = process->run(output_collector);
+  stop_progress_thread();
   if (!ok) {
     response.mutable_error_detail()->set_code(grpc::StatusCode::INTERNAL);
     // TODO(https://github.com/envoyproxy/nighthawk/issues/181): wire through error descriptions, so
