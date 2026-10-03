@@ -134,13 +134,20 @@ func uniformShare(e Execution, targets int) (*client.CommandLineOptions, error) 
 		return nil, fmt.Errorf("execution %q: %w", e.Label, err)
 	}
 
+	// Same rule as Divide: in bidi-stream the engine takes a backend's aggregate
+	// rate, so the division is by targets only and the share must be a multiple
+	// of the workers; elsewhere the rate is per worker.
 	divisor := uint32(targets) * uint32(workers)
-	if e.Rate%divisor != 0 {
+	bidi := e.Scenario.GetGrpc().GetMode() == "bidi-stream"
+	if bidi {
+		divisor = uint32(targets)
+	}
+	if e.Rate%divisor != 0 || (bidi && (e.Rate/divisor)%uint32(workers) != 0) {
 		return nil, fmt.Errorf(
 			"execution %q: rate %d is not divisible by %d targets x %d workers; "+
 				"a distributor sends every target the same options, so the rate must be "+
 				"a multiple of %d",
-			e.Label, e.Rate, targets, workers, divisor)
+			e.Label, e.Rate, targets, workers, uint32(targets)*uint32(workers))
 	}
 
 	clone := cloneOptions(e.Options)

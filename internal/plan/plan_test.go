@@ -138,6 +138,14 @@ func TestValidationErrors(t *testing.T) {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"4\"\n    grpc: {mode: bidi-stream, streams: 10}", 1),
 			want: "must be a multiple of concurrency",
 		},
+		"bidi default streams not a multiple of concurrency": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"3\"\n    grpc: {mode: bidi-stream}", 1),
+			want: "the engine's default",
+		},
+		"defaults with body and body_file": {
+			src:  minimal + "defaults:\n  body: x\n  body_file: x.bin\n",
+			want: "defaults: body and body_file are mutually exclusive",
+		},
 		"bidi with auto concurrency": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: auto\n    grpc: {mode: bidi-stream}", 1),
 			want: "numeric concurrency",

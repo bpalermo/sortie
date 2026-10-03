@@ -535,3 +535,28 @@ func TestDivideBidiStreamRejectsAShareNotDivisibleByWorkers(t *testing.T) {
 		t.Fatal("300 over 2 backends is 150 per backend, not a multiple of 4 workers; want an error")
 	}
 }
+
+// The distributor path has the same bidi-stream rule as the direct one: a
+// backend's aggregate rate, divided between targets only.
+func TestForPoolDistributorBidiStreamKeepsTheRatePerTarget(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 400, Duration: dur(time.Second)})
+	s.Concurrency = "2"
+	s.Grpc = &plan.Grpc{Mode: "bidi-stream"}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := &plan.Pool{Name: "p", Distributor: "127.0.0.1:1", Targets: []string{"a:1", "b:1"}}
+	_, opts, err := ForPool(execs[0], pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := opts[0].GetRequestsPerSecond().GetValue(); got != 200 {
+		t.Errorf("rps = %d, want 200 (400 over 2 targets, not divided by 2 workers)", got)
+	}
+	s.Executor.Rate = 300
+	execs, _ = Expand(s)
+	if _, _, err := ForPool(execs[0], pool); err == nil {
+		t.Fatal("300 over 2 targets is 150 per target, not a multiple of 2 workers; want an error")
+	}
+}
