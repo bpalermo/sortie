@@ -1406,9 +1406,8 @@ CommandLineOptionsPtr OptionsImpl::toCommandLineOptionsInternal() const {
         rate_limiter_plugin_config_.value();
   }
 
-  // Only set the tls context if needed, to avoid a warning being logged about field deprecation.
-  // Ideally this would follow the way transport_socket uses std::optional below.
-  // But as this field is about to get eliminated this minimal effort shortcut may be more suitable.
+  // Set only when it carries something: an empty message is the default, and leaving the field
+  // unset keeps the serialized options the same as before one was given.
   if (tls_context_.ByteSizeLong() > 0) {
     *(command_line_options->mutable_tls_context()) = tls_context_;
   }
