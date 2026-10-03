@@ -239,7 +239,9 @@ defaults:
 
 Paths are relative to the plan file. sortie reads the files and sends them to
 the backends inline, so a backend needs no access to them -- which also means
-the plaintext channel to a backend (see Pools) carries the client key. SNI
+the plaintext channel to a backend (see Pools) carries the client key. What
+sortie prints (`sortie compile`) and what the engine logs replace the key
+with a note of its size; the options proto itself carries it. SNI
 follows the target's host, or a `Host` header; ALPN follows `protocol`.
 Anything beyond this -- cipher suites, a SPIFFE validator, a different
 transport socket altogether -- goes through `nighthawk_template`: its

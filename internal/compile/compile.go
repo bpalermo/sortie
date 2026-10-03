@@ -518,3 +518,18 @@ func requestMethod(name string) (corev3.RequestMethod, error) {
 	}
 	return corev3.RequestMethod(v), nil
 }
+
+// Redacted returns a copy of the options fit to print: a client private key
+// carried inline by a tls block is replaced with a note of its size. The copy
+// is for showing, never for sending.
+func Redacted(o *client.CommandLineOptions) *client.CommandLineOptions {
+	c := proto.Clone(o).(*client.CommandLineOptions)
+	for _, cert := range c.GetTlsContext().GetCommonTlsContext().GetTlsCertificates() {
+		if key := cert.GetPrivateKey(); key != nil && len(key.GetInlineBytes()) > 0 {
+			cert.PrivateKey = &corev3.DataSource{Specifier: &corev3.DataSource_InlineString{
+				InlineString: fmt.Sprintf("<redacted: %d bytes>", len(key.GetInlineBytes())),
+			}}
+		}
+	}
+	return c
+}

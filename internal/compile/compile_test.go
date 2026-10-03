@@ -9,6 +9,7 @@ import (
 	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -722,5 +723,27 @@ func TestTlsBlockBecomesAnInlineTlsContext(t *testing.T) {
 	s.Tls = &plan.Tls{CaFile: filepath.Join(dir, "missing.pem")}
 	if _, err := Expand(s); err == nil || !strings.Contains(err.Error(), "tls.ca_file") {
 		t.Errorf("err = %v, want the missing ca_file named", err)
+	}
+}
+
+// What sortie compile prints never carries the client key.
+func TestRedactedHidesTheClientKeyOnly(t *testing.T) {
+	o := &client.CommandLineOptions{TlsContext: &tlsv3.UpstreamTlsContext{CommonTlsContext: &tlsv3.CommonTlsContext{
+		TlsCertificates: []*tlsv3.TlsCertificate{{
+			CertificateChain: &corev3.DataSource{Specifier: &corev3.DataSource_InlineBytes{InlineBytes: []byte("CERT")}},
+			PrivateKey:       &corev3.DataSource{Specifier: &corev3.DataSource_InlineBytes{InlineBytes: []byte("SECRET")}},
+		}},
+	}}}
+	r := Redacted(o)
+	cert := r.GetTlsContext().GetCommonTlsContext().GetTlsCertificates()[0]
+	if string(cert.GetCertificateChain().GetInlineBytes()) != "CERT" {
+		t.Errorf("certificate chain = %q, want it kept", cert.GetCertificateChain().GetInlineBytes())
+	}
+	if got := cert.GetPrivateKey().GetInlineString(); got != "<redacted: 6 bytes>" {
+		t.Errorf("private key = %q, want redacted", got)
+	}
+	// The original is untouched: it is what gets sent.
+	if string(o.GetTlsContext().GetCommonTlsContext().GetTlsCertificates()[0].GetPrivateKey().GetInlineBytes()) != "SECRET" {
+		t.Error("the original options were modified")
 	}
 }
