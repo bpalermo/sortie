@@ -14,7 +14,7 @@ Nighthawk comes with a [small framework and experimental benchmark suite](/bench
 will write `.prof` files to `/tmp/`. Currently it contains a single simple high rps test.
 
 ```bash
-bazel test --test_env=ENVOY_IP_TEST_VERSIONS=v4only --test_env=HEAPPROFILE= --test_env=HEAPCHECK= --cache_test_results=no --compilation_mode=opt --cxxopt=-g --cxxopt=-ggdb3 //benchmarks:*
+bazel test --test_env=ENVOY_IP_TEST_VERSIONS=v4only --test_env=HEAPPROFILE= --test_env=HEAPCHECK= --cache_test_results=no --compilation_mode=opt --cxxopt=-g --cxxopt=-ggdb3 //engine/benchmarks:*
 ```
 
 Note that it is possible to override Nighthawk's Envoy dependency
@@ -46,7 +46,7 @@ See [building Envoy with Bazel](https://github.com/envoyproxy/envoy/tree/main/ba
 Envoy’s static build is set up for profiling and can be build with:
 
 ```
-bazel build //source/exe:envoy-static
+bazel build //engine/source/exe:envoy-static
 ```
 
 More context: https://github.com/envoyproxy/envoy/blob/main/bazel/PPROF.md

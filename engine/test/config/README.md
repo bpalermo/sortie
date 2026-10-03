@@ -15,19 +15,19 @@ We now use Bazel's modern build setting mechanism to control stress test executi
 
 ```bash
 # Run with stress tests enabled
-bazel test --//test/config:run_stress_tests=True //test/...
+bazel test --//engine/test/config:run_stress_tests=True //engine/test/...
 
 # Run without stress tests (default)
-bazel test --//test/config:run_stress_tests=False //test/...
+bazel test --//engine/test/config:run_stress_tests=False //engine/test/...
 # or simply
-bazel test //test/...
+bazel test //engine/test/...
 ```
 
 ## How It Works
 
-1. **Build Setting**: `//test/config:run_stress_tests` is a `bool_flag` build setting (default: False)
+1. **Build Setting**: `//engine/test/config:run_stress_tests` is a `bool_flag` build setting (default: False)
 
-2. **Config Setting**: `//test/config:stress_tests_enabled` matches when the flag is set to True
+2. **Config Setting**: `//engine/test/config:stress_tests_enabled` matches when the flag is set to True
 
 3. **Test Environment**: The Python test binary uses `select()` to conditionally set environment variables based on the config_setting
 
@@ -44,11 +44,11 @@ bazel test //test/...
 ## CI Usage
 
 The CI automatically enables stress tests when running on branches:
-- Pull requests and branch builds: `--//test/config:run_stress_tests=True`
-- Local development (no GH_BRANCH): `--//test/config:run_stress_tests=False`
+- Pull requests and branch builds: `--//engine/test/config:run_stress_tests=True`
+- Local development (no GH_BRANCH): `--//engine/test/config:run_stress_tests=False`
 
 ## Using .bazelrc config
 
 ```bash
-bazel test --config=stress //test/...
+bazel test --config=stress //engine/test/...
 ```

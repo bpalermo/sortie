@@ -16,14 +16,14 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 fi
 
 pushd $("${BAZEL}" info workspace)
-"${BAZEL}" build `bazel query "kind('py_binary', '//benchmarks/...')"`
+"${BAZEL}" build `bazel query "kind('py_binary', '//engine/benchmarks/...')"`
 
 export ENVOY_IP_TEST_VERSIONS=v4only
 export ENVOY_PATH="envoy"
-export TMPDIR="$(pwd)/benchmarks/tmp"
+export TMPDIR="$(pwd)/engine/benchmarks/tmp"
 export NH_DOCKER_IMAGE="envoyproxy/nighthawk-dev:latest"
 export ENVOY_DOCKER_IMAGE_TO_TEST="envoyproxy/envoy-dev:latest"
 
 # run all tests
-bazel-bin/benchmarks/benchmarks --log-cli-level=info benchmarks/test/
-bazel-bin/benchmarks/dynamic_benchmarks --log-cli-level=info benchmarks/dynamic_test/
+bazel-bin/engine/benchmarks/benchmarks --log-cli-level=info engine/benchmarks/test/
+bazel-bin/engine/benchmarks/dynamic_benchmarks --log-cli-level=info engine/benchmarks/dynamic_test/

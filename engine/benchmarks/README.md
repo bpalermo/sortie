@@ -31,7 +31,7 @@ configuration of the Envoy.
 ```bash
 git clone https://github.com/envoyproxy/nighthawk.git benchmark-test
 cd benchmark-test
-bazel build //benchmarks:*
+bazel build //engine/benchmarks:*
 
 # Specify the ip address family we'll be using. [v4only|v6only|all]
 export ENVOY_IP_TEST_VERSIONS=v4only
@@ -45,9 +45,9 @@ export ENVOY_DOCKER_IMAGE_TO_TEST="envoyproxy/envoy-dev:74290ef76a76fbbf50f072dc
 export ENVOY_PATH="envoy"
 
 # run all static configuration benchmark tests starting with test_http_h1_small in benchmarks/
-bazel-bin/benchmarks/static_benchmarks --log-cli-level=info -vvvv -k test_http_h1_small benchmarks/test/
+bazel-bin/engine/benchmarks/static_benchmarks --log-cli-level=info -vvvv -k test_http_h1_small benchmarks/test/
 # run all dynamic configuration benchmark tests
-bazel-bin/benchmarks/dynamic_benchmarks --log-cli-level=info -vvvv  benchmarks/dynamic_test/
+bazel-bin/engine/benchmarks/dynamic_benchmarks --log-cli-level=info -vvvv  benchmarks/dynamic_test/
 ```
 
 ## Example: running with binaries
@@ -73,7 +73,7 @@ bazel test \
   --cxxopt=-g \
   --cxxopt=-ggdb3 \
   --define tcmalloc=gperftools \
-  //benchmarks:*
+  //engine/benchmarks:*
 ```
 
 ## Example: fully dockerized flow

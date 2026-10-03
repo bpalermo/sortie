@@ -15,14 +15,14 @@ DOCKER_NAME="benchmark"
 DOCKER_IMAGE_PREFIX="${USER}/${DOCKER_NAME}"
 BAZEL_BIN="$(bazel info bazel-bin)"
 WORKSPACE="$(bazel info workspace)"
-bazel build //benchmarks:benchmarks
+bazel build //engine/benchmarks:benchmarks
 TMP_DIR="$(mktemp -d)"
 PUSH=${PUSH:-0}  
 
 echo "Preparing docker build context in ${TMP_DIR}"
 # We flatten any symlinks to make this work on Linux (OSX doesn't need this)
-cp -Lr "${WORKSPACE}/benchmarks/docker/" "${TMP_DIR}/"
-cp -Lr "${BAZEL_BIN}/benchmarks" "${TMP_DIR}/"
+cp -Lr "${WORKSPACE}/engine/benchmarks/docker/" "${TMP_DIR}/"
+cp -Lr "${BAZEL_BIN}/engine/benchmarks" "${TMP_DIR}/"
 
 
 cd "${TMP_DIR}"

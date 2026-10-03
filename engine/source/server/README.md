@@ -5,7 +5,7 @@ A test-server filter which is capable of generating test responses.
 ## Testing
 
 ```bash
-bazel test -c dbg //test/server:http_test_server_filter_integration_test
+bazel test -c dbg //engine/test/server:http_test_server_filter_integration_test
 ```
 
 ## Building

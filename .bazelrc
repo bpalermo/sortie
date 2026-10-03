@@ -45,7 +45,7 @@ build:macos --copt -UDEBUG
 
 # Test configuration flags
 # Enable stress tests (expensive tests that are skipped by default)
-test:stress --//test/config:run_stress_tests=True
+test:stress --//engine/test/config:run_stress_tests=True
 
 # CI configuration
 build:download-toplevel --remote_download_outputs=toplevel

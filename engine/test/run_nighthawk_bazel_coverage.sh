@@ -27,7 +27,7 @@ if [[ $# -gt 0 ]]; then
 elif [[ -n "${COVERAGE_TARGET}" ]]; then
   COVERAGE_TARGETS=${COVERAGE_TARGET}
 else
-  COVERAGE_TARGETS=//test/...
+  COVERAGE_TARGETS=//engine/test/...
 fi
 
 
