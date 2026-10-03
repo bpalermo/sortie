@@ -61,13 +61,18 @@ services. The engine's `BenchmarkClient` is built on Envoy's HTTP connection
 pools; a TCP mode is a second implementation of that interface rather than a
 new mode of the existing one:
 
-- `TcpBenchmarkClient` keeps `connections` `Network::ClientConnection`s per
-  worker (with the transport socket the `tls` block configures, so TLS
-  termination is covered) and, on each `tryStartRequest`, writes `body` on the
-  next connection and times the echo -- correlated by a sequence prefix, like
-  WebSocket -- or, with `expect_echo: false`, times the write alone.
-- Plan: `tcp: {expect_echo}`; `target` becomes `tcp://host:port`; `method`,
-  `headers`, `grpc`, `websocket` are errors with it. Counters:
+- `TcpBenchmarkClient` keeps a fixed pool of `tcp.connections`
+  `Network::ClientConnection`s per worker, opened in `prepare()` (with the
+  transport socket the `tls` block configures, so TLS termination is covered)
+  and, on each `tryStartRequest`, writes `body` on the next connection and
+  times the echo -- correlated by a sequence prefix, like WebSocket -- or,
+  with `expect_echo: false`, times the write alone. This is its own field, not
+  `Scenario.connections`: that one is the HTTP pool's circuit-breaker cap
+  (default 100), and a TCP mode wants a small, exact, eagerly opened pool --
+  default 1 per worker, the way `websocket.streams` is exact.
+- Plan: `tcp: {connections, expect_echo}`; `target` becomes `tcp://host:port`;
+  `method`, `headers`, `grpc`, `websocket` and `connections` are errors with
+  it. Counters:
   `benchmark.tcp_connect_failure`, `benchmark.tcp_messages`,
   `benchmark.tcp_echo_mismatch`.
 - `nighthawk_test_server` already links Envoy's `echo` network filter, which
