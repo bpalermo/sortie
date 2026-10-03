@@ -17,7 +17,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	client "github.com/envoyproxy/nighthawk/api/client"
+	client "github.com/bpalermo/sortie/engine/api/client"
 	"github.com/bpalermo/sortie/internal/metric"
 	"github.com/bpalermo/sortie/internal/threshold"
 )

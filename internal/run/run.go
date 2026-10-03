@@ -14,7 +14,7 @@ import (
 	"github.com/bpalermo/sortie/internal/plan"
 	"github.com/bpalermo/sortie/internal/result"
 	"github.com/bpalermo/sortie/internal/threshold"
-	client "github.com/envoyproxy/nighthawk/api/client"
+	client "github.com/bpalermo/sortie/engine/api/client"
 )
 
 // ExecutionReport is the verdict for one Nighthawk execution.

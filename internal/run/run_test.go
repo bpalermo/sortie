@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	client "github.com/envoyproxy/nighthawk/api/client"
+	client "github.com/bpalermo/sortie/engine/api/client"
 	"google.golang.org/genproto/googleapis/rpc/status"
 
 	"github.com/bpalermo/sortie/internal/plan"

@@ -8,7 +8,7 @@ syntax = "proto3";
 // than checked in Go, which keeps the rule next to the field it governs.
 package sortie.plan.v1;
 
-import "api/client/options.proto";
+import "engine/api/client/options.proto";
 import "buf/validate/validate.proto";
 import "google/protobuf/duration.proto";
 

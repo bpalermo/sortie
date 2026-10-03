@@ -16,8 +16,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	client "github.com/envoyproxy/nighthawk/api/client"
-	distributorpb "github.com/envoyproxy/nighthawk/api/distributor"
+	client "github.com/bpalermo/sortie/engine/api/client"
+	distributorpb "github.com/bpalermo/sortie/engine/api/distributor"
 
 	"github.com/bpalermo/sortie/internal/nh"
 )

@@ -6,7 +6,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/bpalermo/sortie/internal/metric"
-	client "github.com/envoyproxy/nighthawk/api/client"
+	client "github.com/bpalermo/sortie/engine/api/client"
 )
 
 func TestParse(t *testing.T) {
