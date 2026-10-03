@@ -21,6 +21,9 @@
 #include "engine/source/client/output_formatter_impl.h"
 #include "engine/source/client/tcp_benchmark_client_impl.h"
 #include "engine/source/client/websocket_stream_client_impl.h"
+#include "engine/source/client/tcp_benchmark_client_impl.h"
+#include "engine/source/client/udp_benchmark_client_impl.h"
+#include "engine/source/client/websocket_stream_client_impl.h"
 #include "engine/source/common/platform_util_impl.h"
 #include "engine/source/common/rate_limiter_impl.h"
 #include "engine/source/common/request_impl.h"
@@ -62,14 +65,15 @@ BenchmarkClientPtr BenchmarkClientFactoryImpl::create(
   if (options_.udp()) {
     return std::make_unique<UdpBenchmarkClientImpl>(
         api, dispatcher, scope, std::make_unique<SinkableHdrStatistic>(scope, worker_id),
-        cluster_manager, cluster_name, request_generator.get(), options_.udpMaxInflight(),
-        options_.udpTimeout(), options_.streamDrainDuration());
+        cluster_manager, cluster_name, rawMessageGenerator(request_generator),
+        options_.udpMaxInflight(), options_.udpTimeout(), options_.streamDrainDuration());
   }
   if (options_.tcp()) {
     return std::make_unique<TcpBenchmarkClientImpl>(
         api, dispatcher, scope, std::make_unique<SinkableHdrStatistic>(scope, worker_id),
         cluster_manager, cluster_name,
         rawMessageGenerator(request_generator, options_.requestBodySize()),
+        options_.tcpConnections(), options_.tcpMaxInflightPerConnection(), options_.tcpExpectEcho(),
         options_.tcpConnections(), options_.tcpMaxInflightPerConnection(), options_.tcpExpectEcho(),
         options_.streamDrainDuration(), options_.timeout());
   }

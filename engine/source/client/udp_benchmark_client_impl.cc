@@ -199,8 +199,8 @@ void UdpBenchmarkClientImpl::finish() {
     // Echoes still in flight are worth the shorter of the drain window and the timeout; the
     // sweep keeps running and exits the loop when nothing is outstanding.
     drain_timer_ = dispatcher_.createTimer([this]() { dispatcher_.exit(); });
-    drain_timer_->enableTimer(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::min(drain_duration_, timeout_) + 999ns));
+    drain_timer_->enableTimer(
+        std::chrono::ceil<std::chrono::milliseconds>(std::min(drain_duration_, timeout_)));
     dispatcher_.run(Envoy::Event::Dispatcher::RunType::RunUntilExit);
     drain_timer_.reset();
   }
