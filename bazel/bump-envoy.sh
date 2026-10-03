@@ -55,6 +55,16 @@ while read -r dep; do
   fi
 done < <(grep -oP '^bazel_dep\(name = "\K[^"]+' MODULE.bazel)
 
+# The Go SDK follows Envoy's go_sdk.download too; it is pinned outside the
+# bazel_dep list, in MODULE.bazel and go.mod both.
+envoy_go="$(sed -n '/^go_sdk.download(/,/^)/p' "${tmp}/MODULE.bazel" | sed -n 's/^ *version = "\([^"]*\)".*/\1/p' | head -1)"
+our_go="$(sed -n 's/^go_sdk.download(version = "\([^"]*\)")/\1/p' MODULE.bazel)"
+if [ -n "${envoy_go}" ] && [ -n "${our_go}" ] && [ "${envoy_go}" != "${our_go}" ]; then
+  sed -i "s/^go_sdk.download(version = \"${our_go}\")/go_sdk.download(version = \"${envoy_go}\")/" MODULE.bazel
+  sed -i "s/^go ${our_go}\$/go ${envoy_go}/" go.mod
+  echo "go_sdk: ${our_go} -> ${envoy_go} (MODULE.bazel and go.mod)"
+fi
+
 if [ "$(cat .bazelversion)" != "$(cat "${tmp}/.bazelversion")" ]; then
   echo "NOTE: Envoy now pins Bazel $(cat "${tmp}/.bazelversion"); .bazelversion is $(cat .bazelversion). Move it in the same change."
 fi
