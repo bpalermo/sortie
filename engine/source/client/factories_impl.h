@@ -36,6 +36,10 @@ public:
          Envoy::Tracing::TracerSharedPtr& tracer, absl::string_view cluster_name, int worker_id,
          RequestSource& request_generator,
          std::vector<UserDefinedOutputNamePluginPair> user_defined_output_plugins) const override;
+
+private:
+  // The request generator the raw (TCP, UDP) clients get: a sized body is materialized.
+  RequestGenerator rawMessageGenerator(RequestSource& request_generator) const;
 };
 
 class SequencerFactoryImpl : public OptionBasedFactoryImpl, public SequencerFactory {

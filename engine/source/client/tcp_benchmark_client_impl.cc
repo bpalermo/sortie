@@ -259,7 +259,7 @@ void TcpBenchmarkClientImpl::finish() {
     waiting_for_ = WaitingFor::Echoes;
     wait_timer_ = dispatcher_.createTimer([this]() { dispatcher_.exit(); });
     wait_timer_->enableTimer(
-        std::chrono::duration_cast<std::chrono::milliseconds>(drain_duration_ + 999ns));
+        std::chrono::ceil<std::chrono::milliseconds>(drain_duration_));
     dispatcher_.run(Envoy::Event::Dispatcher::RunType::RunUntilExit);
     wait_timer_.reset();
     waiting_for_ = WaitingFor::Nothing;

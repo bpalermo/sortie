@@ -17,6 +17,7 @@
 #include "engine/source/client/benchmark_client_impl.h"
 #include "engine/source/client/grpc_stream_client_impl.h"
 #include "engine/source/client/tcp_benchmark_client_impl.h"
+#include "engine/source/common/request_impl.h"
 #include "engine/source/client/websocket_stream_client_impl.h"
 #include "engine/source/client/output_collector_impl.h"
 #include "engine/source/client/output_formatter_impl.h"
@@ -40,6 +41,20 @@ OptionBasedFactoryImpl::OptionBasedFactoryImpl(const Options& options) : options
 BenchmarkClientFactoryImpl::BenchmarkClientFactoryImpl(const Options& options)
     : OptionBasedFactoryImpl(options) {}
 
+// The request source yields --request-body-file as the body but only notes --request-body-size
+// (the HTTP client generates those bytes on the wire). The raw clients send the body as is, so
+// a sized body is materialized for them here: that many 'a's.
+RequestGenerator
+BenchmarkClientFactoryImpl::rawMessageGenerator(RequestSource& request_generator) const {
+  return [generator = request_generator.get(), size = options_.requestBodySize()]() -> RequestPtr {
+    RequestPtr request = generator();
+    if (request != nullptr && request->body().empty() && size > 0) {
+      return std::make_unique<RequestImpl>(request->header(), std::string(size, 'a'));
+    }
+    return request;
+  };
+}
+
 BenchmarkClientPtr BenchmarkClientFactoryImpl::create(
     Envoy::Api::Api& api, Envoy::Event::Dispatcher& dispatcher, Envoy::Stats::Scope& scope,
     Envoy::Upstream::ClusterManagerPtr& cluster_manager, Envoy::Tracing::TracerSharedPtr& tracer,
@@ -49,7 +64,8 @@ BenchmarkClientPtr BenchmarkClientFactoryImpl::create(
   if (options_.tcp()) {
     return std::make_unique<TcpBenchmarkClientImpl>(
         api, dispatcher, scope, std::make_unique<SinkableHdrStatistic>(scope, worker_id),
-        cluster_manager, cluster_name, request_generator.get(), options_.tcpConnections(),
+        cluster_manager, cluster_name, rawMessageGenerator(request_generator),
+        options_.tcpConnections(),
         options_.tcpMaxInflightPerConnection(), options_.tcpExpectEcho(),
         options_.streamDrainDuration(), options_.timeout());
   }

@@ -102,6 +102,7 @@ envoy_cc_library(
         "//engine/include/nighthawk/common:base_includes",
         "//engine/include/nighthawk/user_defined_output:user_defined_output_plugin",
         "//engine/source/common:nighthawk_common_lib",
+        "//engine/source/common:request_impl_lib",
         "//engine/source/common:nighthawk_service_client_impl",
         "//engine/source/common:request_source_impl_lib",
         "//engine/source/request_source:llm_request_source_plugin_cc_proto",
