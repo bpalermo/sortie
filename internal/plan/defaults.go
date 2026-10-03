@@ -37,6 +37,9 @@ func applyDefaults(p *Plan) {
 		if s.GetWebsocket() == nil && d.GetWebsocket() != nil {
 			s.Websocket = proto.Clone(d.GetWebsocket()).(*WebSocket)
 		}
+		if s.GetTls() == nil && d.GetTls() != nil {
+			s.Tls = proto.Clone(d.GetTls()).(*Tls)
+		}
 		if s.GetProtocol() == "" {
 			s.Protocol = d.GetProtocol()
 		}

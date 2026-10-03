@@ -262,9 +262,10 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
 
   TCLAP::ValueArg<std::string> tls_context(
       "", "tls-context",
-      "DEPRECATED, use --transport-socket instead. "
-      "TlS context configuration in json. "
-      "Mutually exclusive with --transport-socket. Example (json): "
+      "TLS context configuration in json, the base of the transport socket the client "
+      "generates for an https target: SNI and ALPN are added to it. "
+      "Mutually exclusive with --transport-socket, which replaces the whole socket. Example "
+      "(json): "
       "{common_tls_context:{tls_params:{cipher_suites:[\"-ALL:ECDHE-RSA-AES128-SHA\"]}}}",
       false, "", "string", cmd);
 

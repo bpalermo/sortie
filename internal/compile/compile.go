@@ -10,6 +10,7 @@ import (
 	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -347,6 +348,13 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 		}
 	}
 	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil || s.GetWebsocket() != nil {
+	if t := s.GetTls(); t != nil {
+		tlsCtx, err := tlsContext(t)
+		if err != nil {
+			return nil, fmt.Errorf("scenario %q: %w", s.GetName(), err)
+		}
+		o.TlsContext = tlsCtx
+	}
 		reqOpts, err := requestOptions(s, o.GetRequestOptions())
 		if err != nil {
 			return nil, err
@@ -389,6 +397,37 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 		}
 	}
 	return o, nil
+}
+
+// tlsContext builds the engine's tls_context from a scenario's tls block,
+// with the files inline so the backend needs no access to them. The engine
+// adds SNI (from the target, or a Host header) and ALPN for the protocol.
+func tlsContext(t *plan.Tls) (*tlsv3.UpstreamTlsContext, error) {
+	inline := func(b []byte) *corev3.DataSource {
+		return &corev3.DataSource{Specifier: &corev3.DataSource_InlineBytes{InlineBytes: b}}
+	}
+	common := &tlsv3.CommonTlsContext{}
+	if t.GetCaFile() != "" {
+		ca, err := os.ReadFile(t.GetCaFile())
+		if err != nil {
+			return nil, fmt.Errorf("tls.ca_file: %w", err)
+		}
+		common.ValidationContextType = &tlsv3.CommonTlsContext_ValidationContext{
+			ValidationContext: &tlsv3.CertificateValidationContext{TrustedCa: inline(ca)},
+		}
+	}
+	if t.GetCertFile() != "" {
+		cert, err := os.ReadFile(t.GetCertFile())
+		if err != nil {
+			return nil, fmt.Errorf("tls.cert_file: %w", err)
+		}
+		key, err := os.ReadFile(t.GetKeyFile())
+		if err != nil {
+			return nil, fmt.Errorf("tls.key_file: %w", err)
+		}
+		common.TlsCertificates = []*tlsv3.TlsCertificate{{CertificateChain: inline(cert), PrivateKey: inline(key)}}
+	}
+	return &tlsv3.UpstreamTlsContext{CommonTlsContext: common}, nil
 }
 
 func protocol(name string) (client.Protocol_ProtocolOptions, error) {

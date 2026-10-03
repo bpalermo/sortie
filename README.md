@@ -222,6 +222,30 @@ unless the plan sets `connections`. Implies `protocol: http1` and `method:
 GET`; mutually exclusive with `grpc`. `nighthawk_test_server`'s
 `websocket-echo` filter is the target the e2e test uses.
 
+## TLS
+
+An `https://` target needs nothing more than that: the engine verifies
+nothing and presents no certificate, so a self-signed target works out of the
+box. `tls` turns on what a real one needs:
+
+```yaml
+defaults:
+  target: https://gateway.example.test/
+  tls:
+    ca_file: certs/ca.pem           # verify the target against these roots
+    cert_file: certs/client.pem     # present this certificate when asked (mTLS)
+    key_file: certs/client-key.pem
+```
+
+Paths are relative to the plan file. sortie reads the files and sends them to
+the backends inline, so a backend needs no access to them -- which also means
+the plaintext channel to a backend (see Pools) carries the client key. SNI
+follows the target's host, or a `Host` header; ALPN follows `protocol`.
+Anything beyond this -- cipher suites, a SPIFFE validator, a different
+transport socket altogether -- goes through `nighthawk_template`: its
+`tls_context` gets the same SNI and ALPN treatment, its `transport_socket`
+replaces the whole socket.
+
 ## Anything this schema does not model
 
 `nighthawk_template` on a scenario carries Nighthawk options straight through.

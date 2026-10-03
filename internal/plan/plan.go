@@ -53,6 +53,8 @@ type (
 	Grpc     = planv1.Grpc
 
 	WebSocket = planv1.WebSocket
+
+	Tls      = planv1.Tls
 	Executor  = planv1.Executor
 	Stage     = planv1.Stage
 )
@@ -102,8 +104,18 @@ func resolveBodyFiles(p *Plan, path string) {
 	}
 	dir := filepath.Dir(path)
 	resolve := func(s *Scenario) {
-		if s != nil && s.GetBodyFile() != "" && !filepath.IsAbs(s.GetBodyFile()) {
+		if s == nil {
+			return
+		}
+		if s.GetBodyFile() != "" && !filepath.IsAbs(s.GetBodyFile()) {
 			s.BodyFile = filepath.Join(dir, s.GetBodyFile())
+		}
+		if t := s.GetTls(); t != nil {
+			for _, f := range []*string{&t.CaFile, &t.CertFile, &t.KeyFile} {
+				if *f != "" && !filepath.IsAbs(*f) {
+					*f = filepath.Join(dir, *f)
+				}
+			}
 		}
 	}
 	resolve(p.GetDefaults())

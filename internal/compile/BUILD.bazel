@@ -13,6 +13,7 @@ go_library(
         "//engine/api/rate_limiter:rate_limiter_plugin_go_proto",
         "//internal/plan",
         "@envoy_api//envoy/config/core/v3:pkg_go_proto",
+        "@envoy_api//envoy/extensions/transport_sockets/tls/v3:pkg_go_proto",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//types/known/anypb",
         "@org_golang_google_protobuf//types/known/durationpb",

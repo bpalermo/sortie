@@ -281,8 +281,10 @@ address, port and socket options used when sending requests. Example
 (json): {source_address:{address:"127.0.0.1",port_value:0}}
 
 --tls-context <string>
-DEPRECATED, use --transport-socket instead. TlS context configuration
-in json. Mutually exclusive with --transport-socket. Example (json):
+TLS context configuration in json, the base of the transport socket
+the client generates for an https target: SNI and ALPN are added to
+it. Mutually exclusive with --transport-socket, which replaces the
+whole socket. Example (json):
 {common_tls_context:{tls_params:{cipher_suites:["-ALL:ECDHE-RSA-AES128
 -SHA"]}}}
 

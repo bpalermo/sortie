@@ -154,6 +154,14 @@ func TestValidationErrors(t *testing.T) {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"3\"\n    websocket: {}", 1),
 			want: "websocket.streams (20, the engine's default) must be a multiple of concurrency (3)",
 		},
+		"tls on an http target": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    tls: {ca_file: ca.pem}", 1),
+			want: "tls needs an https target",
+		},
+		"tls cert without key": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: https://127.0.0.1:8443/\n    tls: {cert_file: c.pem}", 1),
+			want: "cert_file and key_file go together",
+		},
 		"bidi default streams not a multiple of concurrency": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"3\"\n    grpc: {mode: bidi-stream}", 1),
 			want: "the engine's default",
