@@ -1,6 +1,7 @@
 package compile
 
 import (
+	"google.golang.org/protobuf/proto"
 	"testing"
 	"time"
 
@@ -9,9 +10,9 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"github.com/bpalermo/sortie/internal/plan"
 	client "github.com/bpalermo/sortie/engine/api/client"
 	ratelimiter "github.com/bpalermo/sortie/engine/api/rate_limiter"
+	"github.com/bpalermo/sortie/internal/plan"
 )
 
 func dur(d time.Duration) *durationpb.Duration { return durationpb.New(d) }
@@ -455,5 +456,82 @@ func TestConcurrencyAtTheUint32LimitIsAccepted(t *testing.T) {
 	}
 	if got := perBackend[0].GetRequestsPerSecond().GetValue(); got != 1 {
 		t.Errorf("--rps = %d, want 1", got)
+	}
+}
+
+func TestGrpcUnaryImpliesHttp2Post(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 10, Duration: dur(time.Second)})
+	s.Body = "msg"
+	s.Grpc = &plan.Grpc{Mode: "unary"}
+
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := execs[0].Options
+	if o.GetGrpcMode().GetValue() != client.GrpcMode_UNARY {
+		t.Errorf("grpc_mode = %v, want UNARY", o.GetGrpcMode().GetValue())
+	}
+	if o.GetProtocol().GetValue() != client.Protocol_HTTP2 {
+		t.Errorf("protocol = %v, want HTTP2", o.GetProtocol().GetValue())
+	}
+	if o.GetRequestOptions().GetRequestMethod().String() != "POST" {
+		t.Errorf("method = %v, want POST", o.GetRequestOptions().GetRequestMethod())
+	}
+	if o.GetGrpcStream() != nil {
+		t.Errorf("unary must not set grpc_stream, got %v", o.GetGrpcStream())
+	}
+}
+
+func TestGrpcBidiStreamOptions(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 10, Duration: dur(time.Second)})
+	s.Grpc = &plan.Grpc{Mode: "bidi-stream", Streams: proto.Uint32(40), MaxInflightPerStream: proto.Uint32(8)}
+
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := execs[0].Options
+	if o.GetGrpcMode().GetValue() != client.GrpcMode_BIDI_STREAM {
+		t.Errorf("grpc_mode = %v, want BIDI_STREAM", o.GetGrpcMode().GetValue())
+	}
+	if o.GetGrpcStream().GetStreams().GetValue() != 40 || o.GetGrpcStream().GetMaxInflightPerStream().GetValue() != 8 {
+		t.Errorf("grpc_stream = %v", o.GetGrpcStream())
+	}
+}
+
+// In bidi-stream the engine takes a backend's aggregate rate and spreads it
+// over its workers itself, so the plan's rate is divided between backends
+// only. Forwarding a per-worker share, as every other mode needs, would
+// generate 1/workers of the load.
+func TestDivideBidiStreamKeepsTheRatePerBackend(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 400, Duration: dur(time.Second)})
+	s.Concurrency = "2"
+	s.Grpc = &plan.Grpc{Mode: "bidi-stream"}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := Divide(execs[0], 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, o := range opts {
+		if got := o.GetRequestsPerSecond().GetValue(); got != 200 {
+			t.Errorf("backend %d: rps = %d, want 200 (400 over 2 backends, not divided by 2 workers)", i, got)
+		}
+	}
+}
+
+func TestDivideBidiStreamRejectsAShareNotDivisibleByWorkers(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 300, Duration: dur(time.Second)})
+	s.Concurrency = "4"
+	s.Grpc = &plan.Grpc{Mode: "bidi-stream"}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Divide(execs[0], 2); err == nil {
+		t.Fatal("300 over 2 backends is 150 per backend, not a multiple of 4 workers; want an error")
 	}
 }

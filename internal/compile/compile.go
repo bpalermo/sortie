@@ -4,6 +4,7 @@ package compile
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,9 +15,9 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"github.com/bpalermo/sortie/internal/plan"
 	client "github.com/bpalermo/sortie/engine/api/client"
 	ratelimiter "github.com/bpalermo/sortie/engine/api/rate_limiter"
+	"github.com/bpalermo/sortie/internal/plan"
 )
 
 // LinearRampingRateLimiterPlugin is the name Nighthawk registers its linear
@@ -167,13 +168,22 @@ func Divide(e Execution, backends int) ([]*client.CommandLineOptions, error) {
 		return nil, fmt.Errorf("execution %q: %w", e.Label, err)
 	}
 
-	if e.Rate%uint32(workers) != 0 {
-		return nil, fmt.Errorf(
-			"execution %q: rate %d is not divisible by %d workers per backend; "+
-				"use a rate that is a multiple of %d, or set a different concurrency",
-			e.Label, e.Rate, workers, workers)
+	// In bidi-stream mode the engine's rate is the backend's aggregate -- it
+	// spreads messages over its own workers -- so the plan's rate is divided
+	// between backends only, and each backend's share has to be a multiple of
+	// its workers, which the engine requires. Everywhere else the engine's rate
+	// is per worker, so the division is by backends x workers.
+	bidi := e.Scenario.GetGrpc().GetMode() == "bidi-stream"
+	perBackendTotal := e.Rate
+	if !bidi {
+		if e.Rate%uint32(workers) != 0 {
+			return nil, fmt.Errorf(
+				"execution %q: rate %d is not divisible by %d workers per backend; "+
+					"use a rate that is a multiple of %d, or set a different concurrency",
+				e.Label, e.Rate, workers, workers)
+		}
+		perBackendTotal = e.Rate / uint32(workers)
 	}
-	perBackendTotal := e.Rate / uint32(workers)
 
 	if uint32(backends) > perBackendTotal {
 		return nil, fmt.Errorf(
@@ -183,6 +193,12 @@ func Divide(e Execution, backends int) ([]*client.CommandLineOptions, error) {
 
 	base := perBackendTotal / uint32(backends)
 	remainder := perBackendTotal % uint32(backends)
+	if bidi && (base%uint32(workers) != 0 || remainder != 0) {
+		return nil, fmt.Errorf(
+			"execution %q: grpc bidi-stream needs each backend's share of rate %d over %d backends "+
+				"to be a multiple of its %d workers; use a rate that is a multiple of %d",
+			e.Label, e.Rate, backends, workers, backends*workers)
+	}
 
 	out := make([]*client.CommandLineOptions, 0, backends)
 	for i := range backends {
@@ -256,7 +272,33 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 			Protocol: &client.Protocol{Value: value},
 		}
 	}
-	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" {
+	if g := s.GetGrpc(); g != nil {
+		// gRPC is HTTP/2 POST; the loader already rejected anything else, so
+		// setting both here is what makes an unset protocol and method mean the
+		// right thing rather than http1 GET.
+		o.OneofProtocol = &client.CommandLineOptions_Protocol{
+			Protocol: &client.Protocol{Value: client.Protocol_HTTP2},
+		}
+		mode := client.GrpcMode_UNARY
+		if g.GetMode() == "bidi-stream" {
+			mode = client.GrpcMode_BIDI_STREAM
+		}
+		o.GrpcMode = &client.GrpcMode{Value: mode}
+		if g.Streams != nil || g.MaxInflightPerStream != nil || g.GetDrainDuration() != nil {
+			so := &client.CommandLineOptions_GrpcStreamOptions{}
+			if g.Streams != nil {
+				so.Streams = wrapperspb.UInt32(g.GetStreams())
+			}
+			if g.MaxInflightPerStream != nil {
+				so.MaxInflightPerStream = wrapperspb.UInt32(g.GetMaxInflightPerStream())
+			}
+			if g.GetDrainDuration() != nil {
+				so.DrainDuration = g.GetDrainDuration()
+			}
+			o.GrpcStream = so
+		}
+	}
+	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil {
 		reqOpts, err := requestOptions(s)
 		if err != nil {
 			return nil, err
@@ -316,7 +358,11 @@ func protocol(name string) (client.Protocol_ProtocolOptions, error) {
 func requestOptions(s *plan.Scenario) (*client.RequestOptions, error) {
 	ro := &client.RequestOptions{}
 
-	method, err := requestMethod(s.Method)
+	methodName := s.GetMethod()
+	if methodName == "" && s.GetGrpc() != nil {
+		methodName = "POST"
+	}
+	method, err := requestMethod(methodName)
 	if err != nil {
 		return nil, fmt.Errorf("scenario %q: %w", s.Name, err)
 	}
@@ -338,6 +384,14 @@ func requestOptions(s *plan.Scenario) (*client.RequestOptions, error) {
 		// RequestBody is sent verbatim and sets no Content-Type, leaving the
 		// header entirely under the plan's control.
 		ro.RequestBody = []byte(s.Body)
+	}
+	if s.GetBodyFile() != "" {
+		// Resolved against the plan's directory by the loader.
+		body, err := os.ReadFile(s.GetBodyFile())
+		if err != nil {
+			return nil, fmt.Errorf("scenario %q: body_file: %w", s.Name, err)
+		}
+		ro.RequestBody = body
 	}
 	return ro, nil
 }

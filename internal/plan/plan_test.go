@@ -1,6 +1,8 @@
 package plan
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +122,34 @@ func TestValidationErrors(t *testing.T) {
 			src:  minimal + "thresholds: [\"latency_2xx.p95 500ms\"]\n",
 			want: "no comparison operator",
 		},
+		"grpc with http1": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    protocol: http1\n    grpc: {mode: unary}", 1),
+			want: "grpc requires protocol http2",
+		},
+		"grpc with GET": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    method: GET\n    grpc: {mode: unary}", 1),
+			want: "grpc requires method POST",
+		},
+		"unknown grpc mode": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    grpc: {mode: fast}", 1),
+			want: "grpc.mode must be unary or bidi-stream",
+		},
+		"bidi streams not a multiple of concurrency": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"4\"\n    grpc: {mode: bidi-stream, streams: 10}", 1),
+			want: "must be a multiple of concurrency",
+		},
+		"bidi with auto concurrency": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: auto\n    grpc: {mode: bidi-stream}", 1),
+			want: "numeric concurrency",
+		},
+		"stream options on unary": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    grpc: {mode: unary, streams: 4}", 1),
+			want: "apply to mode bidi-stream only",
+		},
+		"body and body_file": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    body: x\n    body_file: x.bin", 1),
+			want: "mutually exclusive",
+		},
 		"pool with neither services nor distributor": {
 			src:  strings.Replace(minimal, `    services: ["127.0.0.1:8443"]`, "    targets: []", 1),
 			want: "set one of services or distributor",
@@ -153,5 +183,25 @@ scenarios:
 	_, err := Parse([]byte(src))
 	if err == nil || !strings.Contains(err.Error(), "must be shorter than duration") {
 		t.Fatalf("error = %v, want a ramp_time/duration complaint", err)
+	}
+}
+
+// body_file is resolved against the plan's directory, so a plan and the
+// message it sends can be moved together and run from anywhere.
+func TestBodyFileIsRelativeToThePlan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plan.yaml")
+	src := strings.Replace(minimal, "    target: http://127.0.0.1:8080/",
+		"    target: http://127.0.0.1:8080/\n    body_file: msgs/hello.bin\n    grpc: {mode: unary}", 1)
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "msgs", "hello.bin")
+	if got := p.GetScenarios()[0].GetBodyFile(); got != want {
+		t.Errorf("body_file = %q, want %q", got, want)
 	}
 }
