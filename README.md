@@ -208,8 +208,11 @@ to hold. For a single-backend pool this is exactly the obvious behaviour.
 
 - **No mid-run updates.** A run's rate cannot be changed once started
   (`UpdateRequest` is declared in the engine's API and rejected). It can be
-  stopped: interrupting `sortie run` cancels every backend's execution and the
-  run is reported as cancelled, not evaluated.
+  stopped: interrupting `sortie run` cancels every backend's execution in a
+  `services:` pool and the run is reported as cancelled, not evaluated. A
+  distributor pool is the exception: the distributor RPC is abandoned and its
+  targets run to their configured duration, because nothing here hosts a
+  distributor that forwards cancellations.
 - **No progress during a run.** A Nighthawk execution returns nothing until it
   finishes, so sortie reports per execution, not continuously.
 - **No scripting.** Nighthawk's `RequestSource` yields independent requests and
@@ -257,11 +260,13 @@ deletes them.
 
 Upgrading a release while a run is in flight replaces the Job. The old pod is
 sent SIGTERM, on which sortie cancels its backends' executions and waits for
-their partial responses, so the backends are free again before the replacement
-Job's pod reaches them; the old run is reported as cancelled, not evaluated.
-Keep the pod's termination grace period above the time a backend takes to
-answer a cancellation (seconds), or the backend is still busy when the new Job
-arrives and that Job fails -- with `backoffLimit: 0` it does not retry.
+their partial responses (seconds), and the old run is reported as cancelled,
+not evaluated. Nothing orders the replacement after that, though: Kubernetes
+can schedule the new pod while the old one is still cancelling, and a backend
+runs one execution at a time, so the new Job can find it busy and fail --
+with `backoffLimit: 0` it does not retry. Upgrading between runs avoids the
+race; so does a `backoffLimit` of 1 or 2, at the cost of re-running a plan
+that failed for a real reason.
 
 The ConfigMap is named after the plan's digest for the same reason in reverse.
 A stable name would be updated in place, and a CronJob's Job that was created

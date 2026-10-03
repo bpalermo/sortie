@@ -25,6 +25,11 @@ import (
 //
 // Marked experimental upstream (envoyproxy/nighthawk#369), and no released
 // Nighthawk binary hosts this service.
+//
+// Cancelling ctx abandons the distributor RPC and nothing more: the
+// distributor API carries one ExecutionRequest and no distributor hosted here
+// forwards a CancellationRequest to its targets, so they run to their
+// configured duration. Compare Execute, which does cancel a service backend.
 func Distribute(
 	ctx context.Context,
 	conn *grpc.ClientConn,
