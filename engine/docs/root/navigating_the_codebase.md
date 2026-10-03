@@ -6,7 +6,6 @@ directory structure of Nighthawk's repository looks as follows:
 ```
 .
 ├── api
-├── benchmarks
 ├── ci
 ├── docs
 ├── extensions_build_config.bzl
@@ -23,11 +22,6 @@ directory structure of Nighthawk's repository looks as follows:
 The [api](../../api) directory contains the public protocol buffer APIs of
 Nighthawk and its components. See [the API](#the-apis) section for more details
 on the exposed APIs.
-
-The [benchmarks](../../benchmarks) directory contains a test suite built on top
-of Nighthawk's integration tests that allows users to develop their own
-benchmarks. See the [benchmarks documentation](../../benchmarks/README.md) for
-more details.
 
 The [ci](../../ci) directory contains configuration and scripts used when
 executing continuous integration pipelines for Nighthawk.
