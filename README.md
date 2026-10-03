@@ -286,9 +286,9 @@ to hold. For a single-backend pool this is exactly the obvious behaviour.
 
 ## Limitations
 
-What sortie can and cannot yet drive, against what Envoy does, is in
-[docs/parity.md](docs/parity.md): WebSocket, TCP and UDP are the open items,
-in that order.
+What sortie drives, against what Envoy does, and how each piece was designed
+is in [docs/parity.md](docs/parity.md). HTTP/1-3, gRPC, TLS and WebSocket are
+in; raw TCP and UDP are in review.
 
 
 - **No mid-run updates.** A run's rate cannot be changed once started

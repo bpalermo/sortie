@@ -13,19 +13,20 @@ the order the gaps get closed in.
 | TLS, mTLS termination | `tls: {ca_file, cert_file, key_file}`; anything further through `nighthawk_template` (`tls_context`, `transport_socket`) | #30 |
 | gRPC unary | `grpc: {mode: unary}` + a serialized `body_file` | engine fork |
 | gRPC bidirectional streaming | `grpc: {mode: bidi-stream, streams, max_inflight_per_stream, drain_duration}`, `benchmark_stream.message_latency` | engine fork |
+| WebSocket (Envoy's upgrade path) | `websocket: {streams, max_inflight_per_stream, drain_duration, binary}`; the bidi-stream client's twin, same `benchmark.stream_*` counters and `benchmark_stream.message_latency` | #32 |
 | Request routing on headers, bodies | `headers`, `body`, `body_file`, `method` | sortie |
 | Rate shaping: constant, ramp, staircase; open and closed loop | `executor` | sortie |
 | Stats sinks (statsd, OTLP) from the client's own counters | `nighthawk.envoy_stats_sink_adapter` via `nighthawk_template` | engine fork |
 
-## Not yet, in order
+## The designs, in the order they were built
 
-### 1. WebSocket
+### 1. WebSocket -- done (#32)
 
 Envoy's upgrade path (`upgrade_configs: [{upgrade_type: websocket}]`) is one of
 the things people specifically run Envoy for, and no load tool in this space
-drives it with per-message latency.
+drives it with per-message latency. Built as designed here.
 
-Design, mirroring the gRPC bidi-stream client (`engine/source/client/
+The design mirrors the gRPC bidi-stream client (`engine/source/client/
 grpc_stream_client_impl.*`), which is the same shape -- long-lived streams per
 worker, messages sent round-robin at the executor's rate, each timed against
 its echo:
@@ -54,7 +55,10 @@ its echo:
 Size: comparable to the gRPC bidi-stream work -- the client, the test-server
 filter, options and plan schema, validation, e2e.
 
-### 2. TCP
+### 2. TCP -- in review (#33)
+
+Built as designed below; `tcp://` / `tcps://` targets, `Scenario.tcp`,
+`benchmark.tcp_*` counters, `benchmark_tcp.message_latency`.
 
 For Envoy's `tcp_proxy` and TLS-terminating listeners in front of non-HTTP
 services. The engine's `BenchmarkClient` is built on Envoy's HTTP connection
@@ -88,7 +92,10 @@ new mode of the existing one:
 Size: smaller than WebSocket -- no framing, no handshake -- but it touches the
 engine's factories, since today they assume HTTP.
 
-### 3. UDP
+### 3. UDP -- in review (#34)
+
+Built as designed below; `udp://` targets, `Scenario.udp`, `benchmark.udp_*`
+counters with loss as `benchmark.udp_lost`, `benchmark_udp.message_latency`.
 
 For Envoy's `udp_proxy`. Same shape as TCP without connections: a
 `Network::UdpListener`-backed client sends datagrams at rate and correlates
