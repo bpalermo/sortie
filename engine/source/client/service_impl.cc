@@ -55,7 +55,8 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
       writeResponse(stream, response);
       return;
     }
-    progress_interval = std::chrono::milliseconds(nanos / 1000000);
+    // Rounded up: a snapshot never comes more often than asked for.
+    progress_interval = std::chrono::milliseconds((nanos + 999999) / 1000000);
   }
   envoy::config::core::v3::TypedExtensionConfig typed_dns_resolver_config;
   Envoy::Network::DnsResolverFactory& dns_resolver_factory =
