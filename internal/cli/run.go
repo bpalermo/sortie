@@ -40,6 +40,9 @@ func newRunCmd() *cobra.Command {
 }
 
 func runPlan(parent context.Context, path string, asJSON bool, out string, progress time.Duration, stdout, stderr io.Writer) error {
+	if progress < 0 {
+		return &usageError{fmt.Errorf("--progress must not be negative (got %s)", progress)}
+	}
 	p, err := plan.Load(path)
 	if err != nil {
 		return &usageError{err}

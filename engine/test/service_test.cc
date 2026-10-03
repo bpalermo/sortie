@@ -347,6 +347,20 @@ TEST_P(ServiceTest, ProgressIsStreamedWhenRequested) {
   EXPECT_TRUE(r->Finish().ok());
 }
 
+// An interval that cannot be honoured is refused rather than silently ignored.
+TEST_P(ServiceTest, ProgressIntervalBelowAMillisecondIsAnError) {
+  request_.mutable_start_request()->mutable_progress_interval()->set_nanos(-1);
+  auto r = stub_->ExecutionStream(&context_);
+  EXPECT_TRUE(r->Write(request_, {}));
+  EXPECT_TRUE(r->WritesDone());
+  EXPECT_TRUE(r->Read(&response_));
+  EXPECT_TRUE(response_.has_error_detail());
+  EXPECT_EQ(grpc::StatusCode::INVALID_ARGUMENT, response_.error_detail().code());
+  EXPECT_THAT(response_.error_detail().message(), HasSubstr("at least 1ms"));
+  EXPECT_FALSE(r->Read(&response_));
+  EXPECT_TRUE(r->Finish().ok());
+}
+
 // Without progress_interval nothing precedes the final response, as before.
 TEST_P(ServiceTest, NoProgressUnlessRequested) {
   auto options = request_.mutable_start_request()->mutable_options();

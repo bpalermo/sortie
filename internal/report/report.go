@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -191,10 +190,19 @@ func snapshotSummary(out *client.Output) string {
 		if st.GetId() != "benchmark_http_client.request_to_response" && st.GetId() != "benchmark_stream.message_latency" {
 			continue
 		}
+		// Nighthawk reports its histogram's own buckets, so p99 is the first
+		// bucket at or above 0.99 -- the rule the threshold resolver applies.
+		var best *client.Percentile
 		for _, pc := range st.GetPercentiles() {
-			if math.Abs(pc.GetPercentile()-0.99) < 1e-9 && pc.GetDuration() != nil {
-				parts = append(parts, fmt.Sprintf("p99 %s", pc.GetDuration().AsDuration()))
+			if pc.GetPercentile() < 0.99 || pc.GetDuration() == nil {
+				continue
 			}
+			if best == nil || pc.GetPercentile() < best.GetPercentile() {
+				best = pc
+			}
+		}
+		if best != nil {
+			parts = append(parts, fmt.Sprintf("p99 %s", best.GetDuration().AsDuration()))
 		}
 	}
 	if len(parts) == 0 {

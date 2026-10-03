@@ -16,9 +16,12 @@ go_library(
 go_test(
     name = "report_test",
     size = "small",
-    srcs = ["report_test.go"],
+    srcs = [
+        "report_test.go",
+        "summary_internal_test.go",
+    ],
+    embed = [":report"],
     deps = [
-        ":report",
         "//engine/api/client:base_go_proto",
         "//internal/result",
         "//internal/run",

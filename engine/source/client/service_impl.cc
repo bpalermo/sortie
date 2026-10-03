@@ -41,6 +41,22 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
     writeResponse(stream, response);
     return;
   }
+  // A set interval asks for progress; one that cannot be honoured -- not positive, or below
+  // the millisecond the timer runs at -- is an error rather than silently no progress. Checked
+  // before anything is created, so there is nothing to tear down on the way out.
+  std::chrono::milliseconds progress_interval(0);
+  if (request.start_request().has_progress_interval()) {
+    const auto& interval = request.start_request().progress_interval();
+    const int64_t nanos = interval.seconds() * 1000000000LL + interval.nanos();
+    if (nanos < 1000000) {
+      response.mutable_error_detail()->set_code(grpc::StatusCode::INVALID_ARGUMENT);
+      response.mutable_error_detail()->set_message(
+          "progress_interval must be at least 1ms (it is the period of the progress timer)");
+      writeResponse(stream, response);
+      return;
+    }
+    progress_interval = std::chrono::milliseconds(nanos / 1000000);
+  }
   envoy::config::core::v3::TypedExtensionConfig typed_dns_resolver_config;
   Envoy::Network::DnsResolverFactory& dns_resolver_factory =
       Envoy::Network::createDefaultDnsResolverFactory(typed_dns_resolver_config);
@@ -77,19 +93,6 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   // and writes the snapshot as an interim response. Writes on a gRPC stream must not overlap,
   // so this thread is stopped and joined before the final response is written below (the
   // stream's own thread only ever reads).
-  std::chrono::milliseconds progress_interval(0);
-  if (request.start_request().has_progress_interval()) {
-    try {
-      progress_interval = std::chrono::milliseconds(
-          Envoy::DurationUtil::durationToMilliseconds(request.start_request().progress_interval()));
-    } catch (const Envoy::EnvoyException& e) {
-      response.mutable_error_detail()->set_code(grpc::StatusCode::INVALID_ARGUMENT);
-      response.mutable_error_detail()->set_message(
-          fmt::format("Invalid progress_interval: {}", e.what()));
-      writeResponse(stream, response);
-      return;
-    }
-  }
   Envoy::Thread::MutexBasicLockable progress_lock;
   Envoy::Thread::CondVar progress_stop;
   bool stop_progress = false;

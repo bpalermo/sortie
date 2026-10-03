@@ -55,14 +55,19 @@ type Runner struct {
 	// snapshot of its run this often and passes each to the Observer. Backends
 	// behind a distributor report nothing until they finish.
 	ProgressInterval time.Duration
+
+	// Serializes the backends' progress callbacks into the Observer.
+	observerMu sync.Mutex
 }
 
-// Observer receives progress callbacks.
+// Observer receives progress callbacks. The Runner never calls it from two
+// goroutines at once: the backends' progress arrives concurrently and is
+// serialized before it reaches ExecutionProgress, so an observer needs no
+// locking of its own.
 type Observer interface {
 	ExecutionStarted(e compile.Execution, backends []string)
 	// ExecutionProgress carries one backend's interim snapshot; elapsed is the
-	// time since that backend's workers started. Called from the goroutine
-	// reading the backend's stream.
+	// time since that backend's workers started.
 	ExecutionProgress(e compile.Execution, backend string, elapsed time.Duration, out *client.Output)
 	ExecutionFinished(r ExecutionReport)
 }
@@ -181,6 +186,8 @@ func (r *Runner) dispatch(
 				progress = &nh.Progress{
 					Interval: r.ProgressInterval,
 					Fn: func(elapsed time.Duration, out *client.Output) {
+						r.observerMu.Lock()
+						defer r.observerMu.Unlock()
 						r.Observer.ExecutionProgress(e, addr, elapsed, out)
 					},
 				}
