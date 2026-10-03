@@ -84,10 +84,13 @@ The **api** directory has the following subdirectories:
 .
 └── api
     ├── client
+    ├── configuration
     ├── distributor
+    ├── rate_limiter
     ├── request_source
     ├── server
-    └── stats_sink
+    ├── stats_sink
+    └── user_defined_output
 ```
 
 The [client](../../api/client) directory contains the main API for Nighthawk's
