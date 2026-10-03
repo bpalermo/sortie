@@ -124,6 +124,8 @@ README's Limitations section; keep the two in sync.
   framing in `engine/source/common/websocket.*`, shared with the test server's
   `websocket-echo` filter). The rate rule is bidi-stream's (`aggregateRate` in
   `internal/compile`); `protocol` http1 and `method` GET are forced.
+- Protocol gaps and the designs for closing them (WebSocket, TCP, UDP) are in
+  `docs/parity.md`; follow those designs rather than inventing a shape.
 - One execution per backend at a time; `nighthawk_service` refuses a second.
 - `RequestSource` never sees responses, so there is no session flow and no
   response correlation.
