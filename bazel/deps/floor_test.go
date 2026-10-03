@@ -185,7 +185,7 @@ func readStarlarkFiles(t *testing.T) []string {
 				return nil
 			}
 			if !strings.HasSuffix(name, ".bzl") &&
-				!strings.HasSuffix(name, ".BUILD") && name != "BUILD.bazel" {
+				!strings.HasSuffix(name, ".BUILD") && name != "BUILD.bazel" && name != "BUILD" {
 				return nil
 			}
 			if raw, err := os.ReadFile(path); err == nil {

@@ -25,7 +25,7 @@ go_test(
     srcs = ["cli_test.go"],
     embed = [":cli"],
     deps = [
-        "@nighthawk_api//:client_go_proto",
+        "//engine/api/client:base_go_proto",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_protobuf//types/known/durationpb",
     ],

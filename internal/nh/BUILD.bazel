@@ -9,9 +9,9 @@ go_library(
     importpath = "github.com/bpalermo/sortie/internal/nh",
     visibility = ["//:__subpackages__"],
     deps = [
+        "//engine/api/client:base_go_proto",
+        "//engine/api/distributor:distributor_go_proto",
         "@envoy_api//envoy/config/core/v3:pkg_go_proto",
-        "@nighthawk_api//:client_go_proto",
-        "@nighthawk_api//:distributor_go_proto",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials/insecure",
     ],
@@ -22,9 +22,9 @@ go_test(
     srcs = ["distributor_test.go"],
     deps = [
         ":nh",
+        "//engine/api/client:base_go_proto",
+        "//engine/api/distributor:distributor_go_proto",
         "@envoy_api//envoy/config/core/v3:pkg_go_proto",
-        "@nighthawk_api//:client_go_proto",
-        "@nighthawk_api//:distributor_go_proto",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",

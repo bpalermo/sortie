@@ -11,10 +11,10 @@ go_library(
     visibility = ["//:__subpackages__"],
     deps = [
         "//api/sortie/plan/v1:plan",
+        "//engine/api/client:base_go_proto",
         "//internal/threshold",
         "@build_buf_go_protovalidate//:protovalidate",
         "@build_buf_go_protoyaml//:protoyaml",
-        "@nighthawk_api//:client_go_proto",
         "@org_golang_google_protobuf//proto",
     ],
 )

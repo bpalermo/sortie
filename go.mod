@@ -9,11 +9,11 @@ module github.com/bpalermo/sortie
 go 1.27.1
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.1 // bazel-only: referenced from BUILD/.bzl, no Go import
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.1 // bazel-only: referenced from api/sortie/plan/v1/BUILD.bazel via the gazelle resolve in BUILD.bazel, no Go import
 	github.com/envoyproxy/go-control-plane/envoy v1.39.0
 	github.com/spf13/cobra v1.10.1
 	golang.org/x/sync v0.22.0
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260918162117-cecb64721679 // bazel-only: referenced from BUILD/.bzl, no Go import
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260918162117-cecb64721679 // bazel-only: referenced from engine/api/*/BUILD, no Go import
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
