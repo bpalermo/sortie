@@ -158,14 +158,14 @@ same time.
 
 ```
 # If you already have Envoy running, you might need to set --base-id to allow the test-server to start.
-➜ /bazel-bin/nighthawk/source/server/server --config-path /path/to/test-server.yaml
+➜ /bazel-bin/engine/nighthawk/source/server/server --config-path /path/to/test-server.yaml
 
 # Verify the test server with a curl command similar to:
 ➜ curl -H "x-nighthawk-test-server-config: {response_body_size:20, static_delay: \"0s\"}" -vv 127.0.0.1:10000
 ```
 
 ```bash
-➜ bazel-bin/nighthawk_test_server --help
+➜ bazel-bin/engine/nighthawk_test_server --help
 ```
 
 <!-- BEGIN USAGE -->
@@ -173,7 +173,7 @@ same time.
 
 USAGE:
 
-bazel-bin/nighthawk_test_server  [--stats-tag <string>] ...
+bazel-bin/engine/nighthawk_test_server  [--stats-tag <string>] ...
 [--enable-core-dump] [--socket-mode
 <string>] [--socket-path <string>]
 [--disable-extensions <string>]

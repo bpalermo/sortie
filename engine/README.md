@@ -159,7 +159,7 @@ Note that after building completes, the Nighthawk binaries are located in the
 For using the Nighthawk test server, see [here](source/server/README.md).
 
 ```bash
-➜ bazel-bin/nighthawk_client --help
+➜ bazel-bin/engine/nighthawk_client --help
 ```
 
 <!-- BEGIN USAGE -->
@@ -167,7 +167,7 @@ For using the Nighthawk test server, see [here](source/server/README.md).
 
 USAGE:
 
-bazel-bin/nighthawk_client  [--user-defined-plugin-config <string>] ...
+bazel-bin/engine/nighthawk_client  [--user-defined-plugin-config <string>] ...
 [--latency-response-header-name <string>]
 [--stats-flush-interval-duration <duration>]
 [--stats-flush-interval <uint32_t>]
@@ -549,7 +549,7 @@ The gRPC service can be used to start a server which is able to perform back-to-
 
 
 ```bash
-➜ bazel-bin/nighthawk_service --help
+➜ bazel-bin/engine/nighthawk_service --help
 ```
 
 <!-- BEGIN USAGE -->
@@ -557,7 +557,7 @@ The gRPC service can be used to start a server which is able to perform back-to-
 
 USAGE:
 
-bazel-bin/nighthawk_service  [--service <traffic-generator-service
+bazel-bin/engine/nighthawk_service  [--service <traffic-generator-service
 |dummy-request-source>]
 [--listener-address-file <>] [--listen
 <address:port>] [--] [--version] [-h]
@@ -597,7 +597,7 @@ Nighthawk comes with a tool to transform its json output to its other supported 
 
 
 ```bash
-➜ bazel-bin/nighthawk_output_transform --help
+➜ bazel-bin/engine/nighthawk_output_transform --help
 ```
 
 <!-- BEGIN USAGE -->
@@ -605,7 +605,7 @@ Nighthawk comes with a tool to transform its json output to its other supported 
 
 USAGE:
 
-bazel-bin/nighthawk_output_transform  --output-format <json|human|yaml
+bazel-bin/engine/nighthawk_output_transform  --output-format <json|human|yaml
 |dotted|fortio
 |experimental_fortio_pedantic|csv
 |prometheus> [--] [--version] [-h]
@@ -639,7 +639,7 @@ L7 (HTTP/HTTPS/HTTP2) performance characterization transformation tool.
 > Notice that the default output format for `nighthawk_client` is "human", therefore to produce a json output you must run `nighthawk_client` with `--output-format json`. This json output is the one that can be transformed to the different formats as shown in the example below.
 
 ```
-➜ /your/json/output/file.json | bazel-bin/nighthawk_output_transform --output-format fortio
+➜ /your/json/output/file.json | bazel-bin/engine/nighthawk_output_transform --output-format fortio
 ```
 
 ## A sample benchmark run
@@ -649,7 +649,7 @@ L7 (HTTP/HTTPS/HTTP2) performance characterization transformation tool.
 ➜ taskset -c 3 envoy --concurrency 1 --config-path ~/envoy.yaml
 
 # run a quick benchmark using cpu-cores 4 and 5.
-➜ taskset -c 4-5 bazel-bin/nighthawk_client --rps 1000 --connections 4 --concurrency auto --prefetch-connections -v info http://127.0.0.1:10000/
+➜ taskset -c 4-5 bazel-bin/engine/nighthawk_client --rps 1000 --connections 4 --concurrency auto --prefetch-connections -v info http://127.0.0.1:10000/
 [21:28:12.690578][27849][I] [source/client/client.cc:71] Detected 2 (v)CPUs with affinity..
 [21:28:12.690621][27849][I] [source/client/client.cc:75] Starting 2 threads / event loops. Test duration: 5 seconds.
 [21:28:12.690627][27849][I] [source/client/client.cc:77] Global targets: 8 connections and 2000 calls per second.

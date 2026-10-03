@@ -38,7 +38,7 @@ _END_MARKER = "<!-- END USAGE -->"
 #
 # USAGE:
 #
-# bazel-bin/nighthawk_test_server ...
+# bazel-bin/engine/nighthawk_test_server ...
 #
 # ```
 # <!-- END USAGE -->
@@ -55,7 +55,7 @@ if __name__ == "__main__":
   parser.add_argument(
       "--binary",
       required=True,
-      help="Relative path to the target binary, for example: \"bazel-bin/nighthawk_client\".")
+      help="Relative path to the target binary, for example: \"bazel-bin/engine/nighthawk_client\".")
   parser.add_argument(
       "--readme",
       required=True,

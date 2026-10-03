@@ -56,7 +56,7 @@ More context: https://github.com/envoyproxy/envoy/blob/main/bazel/PPROF.md
 See [building Nighthawk](https://github.com/envoyproxy/nighthawk#nighthawk).
 
 ```
-bazel build -c opt //:nighthawk
+bazel build -c opt //engine:nighthawk
 ```
 
 ### Envoy configuration
@@ -96,5 +96,5 @@ curl -X POST http://your-envoy-instance:admin-port/cpuprofiler?enable=y
 For example:
 
 ```bash
-/path/to/nighthawk-repo/bazel-bin/nighthawk_client --concurrency 5 --rps 10000 --duration 30 http://envoy-cluster-host:envoy-cluster-port
+/path/to/nighthawk-repo/bazel-bin/engine/nighthawk_client --concurrency 5 --rps 10000 --duration 30 http://envoy-cluster-host:envoy-cluster-port
 ```

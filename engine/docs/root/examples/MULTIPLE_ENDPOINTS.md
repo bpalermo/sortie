@@ -39,5 +39,5 @@ options:
 Below is a minimal CLI example which will consume the file based request source configuration created above, and hit multiple endpoints.
 
 ```bash
-bazel-bin/nighthawk_client --request-source-plugin-config "{name:\"nighthawk.file-based-request-source-plugin\",typed_config:{\"@type\":\"type.googleapis.com/nighthawk.request_source.FileBasedOptionsListRequestSourceConfig\",file_path:\"traffic-profile.yaml\",}}" --multi-target-endpoint 127.0.0.1:80 --multi-target-endpoint 127.0.0.2:80 --multi-target-path /
+bazel-bin/engine/nighthawk_client --request-source-plugin-config "{name:\"nighthawk.file-based-request-source-plugin\",typed_config:{\"@type\":\"type.googleapis.com/nighthawk.request_source.FileBasedOptionsListRequestSourceConfig\",file_path:\"traffic-profile.yaml\",}}" --multi-target-endpoint 127.0.0.1:80 --multi-target-endpoint 127.0.0.2:80 --multi-target-path /
 ```
