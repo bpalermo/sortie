@@ -83,26 +83,28 @@ The **api** directory has the following subdirectories:
 ```
 .
 └── api
-    ├── adaptive_load
     ├── client
+    ├── configuration
     ├── distributor
+    ├── rate_limiter
     ├── request_source
     ├── server
-    └── sink
+    ├── stats_sink
+    └── user_defined_output
 ```
-
-The [adaptive_load](../../api/adaptive_load) directory contains protocol buffer
-messages that are used to configure the [adaptive load
-controller](adaptive_load_controller.md).
 
 The [client](../../api/client) directory contains the main API for Nighthawk's
 traffic/load generation - both the CLI and the gRPC service definition. The CLI
 is used when Nighthawk runs locally and the gRPC service definition is used when
 Nighthawk runs as a gRPC server. See [overview](overview.md) for more details.
 
-The [distributor](../../api/distributor) and [sink](../../api/sink) directories
-are related to an ongoing effort to allow Nighthawk to scale horizontally. See
-[#369](https://github.com/envoyproxy/nighthawk/issues/369) for more details.
+The [distributor](../../api/distributor) directory holds the API of a
+distributor, a service that fans one execution out to several backends. Only
+the API is kept: sortie can address a distributor pool, but no binary here
+hosts the service.
+
+The [stats_sink](../../api/stats_sink) directory holds the configuration of the
+Envoy stats sink adapter.
 
 The [request_source](../../api/request_source) directory contains the APIs of
 the request source when using its plugin or gRPC service implementation. See the
@@ -120,12 +122,10 @@ The **include** directory has the following subdirectories:
 .
 └── include
     └── nighthawk
-        ├── adaptive_load
         ├── client
         ├── common
-        ├── distributor
         ├── request_source
-        └── sink
+        └── user_defined_output
 ```
 
 The **source** directory has the following subdirectories:
@@ -133,21 +133,14 @@ The **source** directory has the following subdirectories:
 ```
 .
 └── source
-    ├── adaptive_load
     ├── client
     ├── common
-    ├── distributor
     ├── exe
     ├── request_source
     ├── server
-    └── sink
+    ├── stats_sink
+    └── user_defined_output
 ```
-The **adaptive_load** directories
-([include](../../include/nighthawk/adaptive_load),
-[source](../../source/adaptive_load)) contain the declarations and definitions
-of components belonging to the [adaptive load
-controller](adaptive_load_controller.md).
-
 The **client** directories ([include](../../include/nighthawk/client),
 [source](../../source/client)) contain the declarations and definitions of the
 main Nighthawk components as outlined in the [overview](overview.md).
@@ -157,12 +150,9 @@ The **common** directories ([include](../../include/nighthawk/common),
 client and at least one other component, e.g. the Nighthawk test server, the
 request source, etc.
 
-The **distributor** ([include](../../include/nighthawk/distributor),
-[source](../../source/distributor)) and **sink**
-([include](../../include/nighthawk/sink), [source](../../source/sink))
-directories are related to an ongoing effort to allow Nighthawk to scale
-horizontally. See [#369](https://github.com/envoyproxy/nighthawk/issues/369) for
-more details.
+The **stats_sink** directory ([source](../../source/stats_sink)) holds the
+adapter that forwards Nighthawk's statistics to a stats sink implemented as an
+Envoy extension.
 
 The [exe](../../source/exe) directory contains build targets for the main
 [Nighthawk binaries](overview.md#nighthawk-binaries).
