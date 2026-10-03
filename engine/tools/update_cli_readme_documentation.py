@@ -55,7 +55,8 @@ if __name__ == "__main__":
   parser.add_argument(
       "--binary",
       required=True,
-      help="Relative path to the target binary, for example: \"bazel-bin/engine/nighthawk_client\".")
+      help="Relative path to the target binary, for example: \"bazel-bin/engine/nighthawk_client\"."
+  )
   parser.add_argument(
       "--readme",
       required=True,

@@ -341,8 +341,8 @@ def test_http_concurrency(http_test_server_fixture):
   asserts.assertCounterGreaterEqual(counters, "upstream_cx_http1_total", 4)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_https_h1(https_test_server_fixture):
   """Test h1 over https.
 
@@ -377,8 +377,8 @@ def test_https_h1(https_test_server_fixture):
                                                       "http.ingress_http.downstream_rq_2xx"), 25)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_https_h2(https_test_server_fixture):
   """Test http2 over https.
 
@@ -410,8 +410,8 @@ def test_https_h2(https_test_server_fixture):
   asserts.assertEqual(len(counters), 18)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_https_h2_multiple_connections(https_test_server_fixture):
   """Test that the experimental h2 pool uses multiple connections.
 
@@ -532,8 +532,8 @@ def _do_tls_configuration_test(https_test_server_fixture, cli_parameter, use_h2,
     asserts.assertCounterGreaterEqual(counters, "ssl.ciphers.%s" % cipher, 1)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_https_h1_tls_context_configuration_rsa(https_test_server_fixture):
   """Test that specifying RSA compatible tls cipher suites works with the h1 pool."""
   _do_tls_configuration_test(https_test_server_fixture,
@@ -543,8 +543,8 @@ def test_https_h1_tls_context_configuration_rsa(https_test_server_fixture):
                              ciphers=["ECDHE-RSA-AES256-GCM-SHA384"])
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_https_h1_transport_socket_configuration_rsa(https_test_server_fixture):
   """Test that specifying RSA compatible tls cipher suites via transport socket works with the h1 pool."""
   _do_tls_configuration_test(https_test_server_fixture,
@@ -554,8 +554,8 @@ def test_https_h1_transport_socket_configuration_rsa(https_test_server_fixture):
                              ciphers=["ECDHE-RSA-AES256-GCM-SHA384"])
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_https_h2_tls_context_configuration_rsa(https_test_server_fixture):
   """Test that specifying RSA compatible tls cipher suites works with the h2 pool."""
   _do_tls_configuration_test(https_test_server_fixture,
@@ -565,8 +565,8 @@ def test_https_h2_tls_context_configuration_rsa(https_test_server_fixture):
                              ciphers=["ECDHE-RSA-AES256-GCM-SHA384"])
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_https_h2_transport_socket_configuration_rsa(https_test_server_fixture):
   """Test that specifying RSA compatible tls cipher suites via transport socket works with the h2 pool."""
   _do_tls_configuration_test(https_test_server_fixture,
@@ -577,7 +577,8 @@ def test_https_h2_transport_socket_configuration_rsa(https_test_server_fixture):
 
 
 @pytest.mark.parametrize(
-    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin_dsa.yaml"])
+    'server_config',
+    ["_main/engine/test/integration/configurations/nighthawk_https_origin_dsa.yaml"])
 def test_https_h1_tls_context_configuration_dsa(https_test_server_fixture):
   """Test that specifying DSA comptible tls cipher suites works with the h1 pool."""
   _do_tls_configuration_test(https_test_server_fixture,
@@ -588,7 +589,8 @@ def test_https_h1_tls_context_configuration_dsa(https_test_server_fixture):
 
 
 @pytest.mark.parametrize(
-    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin_dsa.yaml"])
+    'server_config',
+    ["_main/engine/test/integration/configurations/nighthawk_https_origin_dsa.yaml"])
 def test_https_h1_transport_socket_configuration_dsa(https_test_server_fixture):
   """Test that specifying DSA comptible tls cipher suites via transport socket works with the h1 pool."""
   _do_tls_configuration_test(https_test_server_fixture,
@@ -599,7 +601,8 @@ def test_https_h1_transport_socket_configuration_dsa(https_test_server_fixture):
 
 
 @pytest.mark.parametrize(
-    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin_dsa.yaml"])
+    'server_config',
+    ["_main/engine/test/integration/configurations/nighthawk_https_origin_dsa.yaml"])
 def test_https_h2_tls_context_configuration_dsa(https_test_server_fixture):
   """Test that specifying DSA comptible tls cipher suites works with the h2 pool."""
   _do_tls_configuration_test(https_test_server_fixture,
@@ -610,7 +613,8 @@ def test_https_h2_tls_context_configuration_dsa(https_test_server_fixture):
 
 
 @pytest.mark.parametrize(
-    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin_dsa.yaml"])
+    'server_config',
+    ["_main/engine/test/integration/configurations/nighthawk_https_origin_dsa.yaml"])
 def test_https_h2_transport_socket_configuration_dsa(https_test_server_fixture):
   """Test that specifying DSA comptible tls cipher suites via transport socket works with the h2 pool."""
   _do_tls_configuration_test(https_test_server_fixture,
@@ -621,7 +625,8 @@ def test_https_h2_transport_socket_configuration_dsa(https_test_server_fixture):
 
 
 @pytest.mark.parametrize(
-    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin_dsa.yaml"])
+    'server_config',
+    ["_main/engine/test/integration/configurations/nighthawk_https_origin_dsa.yaml"])
 def test_secret_manager_regression(https_test_server_fixture):
   """Test that verifies adding a validation context doesn't crash Nighthawk.
 
@@ -634,8 +639,8 @@ def test_secret_manager_regression(https_test_server_fixture):
                              ciphers=["ECDHE-ECDSA-AES256-GCM-SHA384"])
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_https_prefetching(https_test_server_fixture):
   """Test we prefetch connections.
 
@@ -651,8 +656,8 @@ def test_https_prefetching(https_test_server_fixture):
   asserts.assertCounterEqual(counters, "upstream_cx_http1_total", 50)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_https_log_verbosity(https_test_server_fixture):
   """Test that the specified log verbosity level is respected.
 
@@ -867,8 +872,8 @@ def test_multiple_backends_http_h1(multi_http_test_server_fixture):
     asserts.assertGreaterEqual(single_2xx, 1)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_multiple_backends_https_h1(multi_https_test_server_fixture):
   """Test that we can load-test multiple backends on https.
 
@@ -1106,8 +1111,8 @@ def test_client_cli_bad_uri(http_test_server_fixture):
   assert "Invalid target URI" in err
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_drain(https_test_server_fixture):
   """Test that the pool drain timeout is effective, and we terminate in a timely fashion.
 

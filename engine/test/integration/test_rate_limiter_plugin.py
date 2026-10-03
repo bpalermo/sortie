@@ -5,8 +5,8 @@ from engine.test.integration.integration_test_fixtures import http_test_server_f
 from engine.test.integration import asserts
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
 def test_linear_ramping_rate_limiter_plugin(http_test_server_fixture):
   """Test LinearRampingRateLimiter plugin.
 

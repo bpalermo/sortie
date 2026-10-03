@@ -11,7 +11,8 @@ import time
 from threading import Thread
 
 from engine.test.integration.common import IpVersion
-from engine.test.integration.integration_test_fixtures import (http_test_server_fixture, server_config)
+from engine.test.integration.integration_test_fixtures import (http_test_server_fixture,
+                                                               server_config)
 from engine.test.integration import asserts
 from engine.test.integration import utility
 
@@ -21,8 +22,8 @@ def getUserDefinedOutputsFromJson(parsed_json):
   return {result["name"]: result["user_defined_outputs"] for result in parsed_json["results"]}
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
 def test_all_plugin_apis_called(http_test_server_fixture):
   """Checks that a User Defined Output Plugin produces correct output."""
   fake_plugin_config = (
@@ -51,8 +52,8 @@ def test_all_plugin_apis_called(http_test_server_fixture):
                                expected_count)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
 def test_multiple_plugins_succeed(http_test_server_fixture):
   """Checks that multiple User Defined Output Plugins produces correct output."""
   fake_plugin_config = (
@@ -87,8 +88,8 @@ def test_multiple_plugins_succeed(http_test_server_fixture):
                           "nighthawk.log_response_headers_plugin")
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
 def test_handle_headers_failure_increments_counter(http_test_server_fixture):
   """Checks that counters are incremented properly for handleResponseHeaders failures."""
   fake_plugin_config = (
@@ -121,8 +122,8 @@ def test_handle_headers_failure_increments_counter(http_test_server_fixture):
                              expected_failure_counter)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
 def test_handle_data_failure_increments_counter(http_test_server_fixture):
   """Checks that counters are incremented properly for handleResponseData failures."""
   fake_plugin_config = (
@@ -155,8 +156,8 @@ def test_handle_data_failure_increments_counter(http_test_server_fixture):
                              expected_failure_counter)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
 def test_output_generation_produces_errors_successfully(http_test_server_fixture):
   """Checks that errors are propagated when getPerWorkerOutput or AggregateGlobalOutput fail."""
   fake_plugin_config = (

@@ -95,8 +95,8 @@ def _config_generation_single_cluster(temp_dir: str, endpoints: list[utility.Soc
 
 @pytest.mark.parametrize('proxy_config',
                          ["_main/engine/benchmarks/configurations/dynamic_resources.yaml"])
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
 @pytest.mark.parametrize('dynamic_config_generator', [_config_generation_single_cluster])
 def test_dynamic_http_single_cluster_traffic(inject_dynamic_envoy_http_proxy_fixture,
                                              proxy_config):  # noqa

@@ -4,7 +4,8 @@ import pytest
 
 # server_config needs to be explicitly imported to avoid an error, as http_test_server_fixture
 # relies on it.
-from engine.test.integration.integration_test_fixtures import (http_test_server_fixture, server_config)
+from engine.test.integration.integration_test_fixtures import (http_test_server_fixture,
+                                                               server_config)
 from engine.test.integration import asserts
 
 

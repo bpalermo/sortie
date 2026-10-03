@@ -73,7 +73,8 @@ class EnvoyProxyServer(nighthawk_test_server.NighthawkTestServer):
 
       # Transfer static lds over
       runfiles_instance = runfiles.Create()
-      with open(runfiles_instance.Rlocation('_main/engine/benchmarks/configurations/lds.yaml')) as f:
+      with open(
+          runfiles_instance.Rlocation('_main/engine/benchmarks/configurations/lds.yaml')) as f:
         data = yaml.load(f, Loader=yaml.FullLoader)
         data = utility.substitute_yaml_values(runfiles_instance, data, self._parameters)
 

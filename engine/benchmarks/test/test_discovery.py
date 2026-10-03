@@ -7,7 +7,7 @@ integration test framework to run benchmark executions.
 
 import pytest
 from engine.test.integration.integration_test_fixtures import (http_test_server_fixture,
-                                                        https_test_server_fixture)
+                                                               https_test_server_fixture)
 from engine.test.integration import asserts
 from envoy_proxy import (inject_envoy_http_proxy_fixture, proxy_config)
 from engine.benchmarks import utilities
@@ -57,18 +57,20 @@ def _run_benchmark(fixture,
   utilities.output_benchmark_results(parsed_json, fixture)
 
 
-@pytest.mark.parametrize('proxy_config', ["_main/engine/benchmarks/configurations/envoy_proxy.yaml"])
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
+@pytest.mark.parametrize('proxy_config',
+                         ["_main/engine/benchmarks/configurations/envoy_proxy.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
 def test_http_h1_small_request_small_reply_via(inject_envoy_http_proxy_fixture,
                                                proxy_config):  # noqa
   """H1 test with small request and reply via injected Envoy."""
   _run_benchmark(inject_envoy_http_proxy_fixture)
 
 
-@pytest.mark.parametrize('proxy_config', ["_main/engine/benchmarks/configurations/envoy_proxy.yaml"])
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
+@pytest.mark.parametrize('proxy_config',
+                         ["_main/engine/benchmarks/configurations/envoy_proxy.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
 def test_http_h1_small_request_small_reply_via_multiple_workers(inject_envoy_http_proxy_fixture,
                                                                 proxy_config):  # noqa
   """H1 test with small request and reply via multiple workers.
@@ -78,15 +80,15 @@ def test_http_h1_small_request_small_reply_via_multiple_workers(inject_envoy_htt
   _run_benchmark(inject_envoy_http_proxy_fixture, rps=125, concurrency=4)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
 def test_http_h1_small_request_small_reply_direct(http_test_server_fixture):  # noqa
   """H1 test with small request and reply that tests the origin directly, using a stock fixture."""
   _run_benchmark(http_test_server_fixture)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_http_origin.yaml"])
 def test_http_h1_small_request_small_reply_direct_multiple_workers(
     http_test_server_fixture):  # noqa
   """H1 test with small request and reply that tests the origin directly.
@@ -96,7 +98,7 @@ def test_http_h1_small_request_small_reply_direct_multiple_workers(
   _run_benchmark(http_test_server_fixture, rps=125, concurrency=4)
 
 
-@pytest.mark.parametrize('server_config',
-                         ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
+@pytest.mark.parametrize(
+    'server_config', ["_main/engine/test/integration/configurations/nighthawk_https_origin.yaml"])
 def test_https_h1_small_request_small_reply_direct_s(https_test_server_fixture):  # noqa
   _run_benchmark(https_test_server_fixture)

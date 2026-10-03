@@ -46,11 +46,11 @@ def validateFormat(directory, fix=False):
   failed_update_files = set()
   successful_update_files = set()
   for python_file in collectFiles(directory):
-    reformatted_source, encoding, changed = FormatFile(python_file,
-                                                       style_config=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                                                 '.style.yapf'),
-                                                       in_place=fix,
-                                                       print_diff=not fix)
+    reformatted_source, encoding, changed = FormatFile(
+        python_file,
+        style_config=os.path.join(os.path.dirname(os.path.abspath(__file__)), '.style.yapf'),
+        in_place=fix,
+        print_diff=not fix)
     if not fix:
       fixes_required = True if changed else fixes_required
       if reformatted_source:
