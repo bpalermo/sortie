@@ -12,5 +12,10 @@ go_test(
         "//engine:nighthawk_service",
         "//engine:nighthawk_test_server",
     ],
-    deps = ["@rules_go//go/runfiles"],
+    deps = [
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_grpc//health/grpc_health_v1",
+        "@rules_go//go/runfiles",
+    ],
 )

@@ -3,6 +3,8 @@
 #include <fstream>
 #include <iostream>
 
+#include "grpcpp/health_check_service_interface.h"
+
 #include "nighthawk/common/exception.h"
 
 #include "engine/source/client/service_impl.h"
@@ -49,6 +51,11 @@ ServiceMain::ServiceMain(int argc, const char** argv) {
     listener_output_path_ = address_file_arg.getValue();
   }
   ENVOY_LOG(info, "Nighthawk grpc service listener binding to: {}", listener_bound_address_);
+  // Serve grpc.health.v1.Health alongside the service, reporting SERVING while
+  // the server runs and NOT_SERVING once it shuts down. It is what a Kubernetes
+  // gRPC probe queries, and it is answered by gRPC itself; the service does not
+  // take part. Must be enabled before the server is built.
+  grpc::EnableDefaultHealthCheckService(true);
   builder_.AddListeningPort(listener_bound_address_, grpc::InsecureServerCredentials(),
                             &listener_port_);
   builder_.RegisterService(service_.get());

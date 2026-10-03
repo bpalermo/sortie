@@ -19,6 +19,9 @@ import (
 	"time"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 // The test server's Envoy configuration: one HTTP listener with the test-server
@@ -155,6 +158,26 @@ func listenerPort(t *testing.T, adminAddr string) int {
 	return 0
 }
 
+// assertHealthy checks the service answers the gRPC health protocol with
+// SERVING, which is what a Kubernetes gRPC probe asks it.
+func assertHealthy(t *testing.T, ctx context.Context, addr string) {
+	t.Helper()
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial %s: %v", addr, err)
+	}
+	defer conn.Close()
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	resp, err := grpc_health_v1.NewHealthClient(conn).Check(checkCtx, &grpc_health_v1.HealthCheckRequest{})
+	if err != nil {
+		t.Fatalf("health check: %v", err)
+	}
+	if got := resp.GetStatus(); got != grpc_health_v1.HealthCheckResponse_SERVING {
+		t.Fatalf("health status %v, want SERVING", got)
+	}
+}
+
 func TestSmokePlanAgainstTheEngine(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -179,6 +202,7 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 	if _, _, err := net.SplitHostPort(serviceAddr); err != nil {
 		t.Fatalf("service address %q: %v", serviceAddr, err)
 	}
+	assertHealthy(t, ctx, serviceAddr)
 
 	planPath := filepath.Join(tmp, "plan.yaml")
 	if err := os.WriteFile(planPath, []byte(fmt.Sprintf(planTemplate, serviceAddr, targetPort)), 0o644); err != nil {
