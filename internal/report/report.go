@@ -60,10 +60,17 @@ func execution(w io.Writer, e run.ExecutionReport) error {
 		for _, c := range b.Global.GetCounters() {
 			counters[c.GetName()] = c.GetValue()
 		}
+		elapsed := b.Global.GetExecutionDuration().AsDuration().Round(time.Millisecond)
+		if sent, ok := counters["benchmark.stream_messages_sent"]; ok {
+			// A stream run (gRPC bidi-stream, WebSocket): messages and their echoes,
+			// not requests.
+			fmt.Fprintf(w, "       %s: %d messages sent, %d echoed in %s\n",
+				b.Addr, sent, counters["benchmark.stream_messages_received"], elapsed)
+			continue
+		}
 		fmt.Fprintf(w, "       %s: %d requests in %s\n",
 			b.Addr, counters["benchmark.http_2xx"]+counters["benchmark.http_3xx"]+
-				counters["benchmark.http_4xx"]+counters["benchmark.http_5xx"],
-			b.Global.GetExecutionDuration().AsDuration().Round(time.Millisecond))
+				counters["benchmark.http_4xx"]+counters["benchmark.http_5xx"], elapsed)
 	}
 
 	if len(e.Outcomes) == 0 {

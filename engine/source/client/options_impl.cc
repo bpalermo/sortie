@@ -230,22 +230,34 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
       "--stream-drain-duration; the grpc-status of each closed stream is counted in "
       "benchmark.stream_grpc_status.<code>.",
       false, "", &grpc_modes_allowed, cmd);
+  TCLAP::SwitchArg websocket(
+      "", "websocket",
+      "WebSocket load: upgrade --streams HTTP/1.1 connections to WebSocket (spread evenly over "
+      "the workers) and send the request body as a message on them round-robin at --rps messages "
+      "per second (aggregate), timing each against its echo -- the --grpc-mode bidi-stream "
+      "schedule and accounting, for WebSocket. The URI is the upgrade request's; use http:// or "
+      "https:// (wss). Requires HTTP/1.1, no --grpc-mode, a numeric --concurrency that divides "
+      "--streams, and --connections of at least the streams per worker. Counters: "
+      "benchmark.stream_* as for bidi-stream, plus stream_upgrade_rejected and "
+      "stream_protocol_errors.",
+      cmd, false);
+  TCLAP::SwitchArg websocket_binary("", "websocket-binary",
+                                    "With --websocket, send binary frames rather than text.", cmd,
+                                    false);
   TCLAP::ValueArg<uint32_t> streams(
       "", "streams",
-      "Total number of gRPC bidi streams to open in --grpc-mode bidi-stream "
-      "mode (default: 20).",
+      "Total number of streams to open: gRPC bidi streams in --grpc-mode bidi-stream, "
+      "connections with --websocket (default: 20).",
       false, 20, "uint32_t", cmd);
   TCLAP::ValueArg<uint32_t> max_inflight_per_stream(
       "", "max-inflight-per-stream",
-      "Maximum unanswered messages per stream in --grpc-mode bidi-stream before scheduled sends "
-      "are "
-      "deferred (default: 256).",
+      "Maximum unanswered messages per stream (--grpc-mode bidi-stream, --websocket) before "
+      "scheduled sends are deferred (default: 256).",
       false, 256, "uint32_t", cmd);
   TCLAP::ValueArg<std::string> stream_drain_duration(
       "", "stream-drain-duration",
-      "Time to wait for outstanding echoes after half-closing the streams in --grpc-mode "
-      "bidi-stream, "
-      "as a duration string (default: 0.5s).",
+      "Time to wait for outstanding echoes after half-closing the streams (--grpc-mode "
+      "bidi-stream) or sending Close (--websocket), as a duration string (default: 0.5s).",
       false, "0.5s", "string", cmd);
 
   TCLAP::ValueArg<std::string> tls_context(
@@ -527,6 +539,8 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
     grpc_mode_ = grpc_mode.getValue() == "unary" ? nighthawk::client::GrpcMode::UNARY
                                                  : nighthawk::client::GrpcMode::BIDI_STREAM;
   }
+  websocket_ = websocket.getValue();
+  websocket_binary_ = websocket_binary.getValue();
   TCLAP_SET_IF_SPECIFIED(streams, streams_);
   TCLAP_SET_IF_SPECIFIED(max_inflight_per_stream, max_inflight_per_stream_);
   if (stream_drain_duration.isSet()) {
@@ -947,6 +961,18 @@ OptionsImpl::OptionsImpl(const nighthawk::client::CommandLineOptions& options) {
           Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(stream_options.drain_duration()));
     }
   }
+  if (options.has_websocket()) {
+    const auto& websocket_options = options.websocket();
+    websocket_ = true;
+    websocket_binary_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(websocket_options, binary, false);
+    streams_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(websocket_options, streams, streams_);
+    max_inflight_per_stream_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(
+        websocket_options, max_inflight_per_stream, max_inflight_per_stream_);
+    if (websocket_options.has_drain_duration()) {
+      stream_drain_duration_ = std::chrono::nanoseconds(
+          Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(websocket_options.drain_duration()));
+    }
+  }
   if (grpcEnabled() && !options.has_protocol() && !options.has_h2()) {
     protocol_ = nighthawk::client::Protocol::HTTP2;
   }
@@ -1132,7 +1158,7 @@ std::string OptionsImpl::readRequestBodyFile(const std::string& path) {
 }
 
 void OptionsImpl::raisePendingRequestsForStreams() {
-  if (!grpcStreamEnabled()) {
+  if (!streamModeEnabled()) {
     return;
   }
   // All of a worker's streams are opened before the first connection is up, so they all sit in
@@ -1168,7 +1194,21 @@ void OptionsImpl::validate() const {
       throw MalformedArgvException("--grpc-mode is not supported together with --request-source");
     }
   }
-  if (grpcStreamEnabled()) {
+  if (websocket_) {
+    if (grpcEnabled()) {
+      throw MalformedArgvException("--websocket and --grpc-mode are mutually exclusive");
+    }
+    if (protocol_ != nighthawk::client::Protocol::HTTP1) {
+      throw MalformedArgvException("--websocket requires HTTP/1.1 (the upgrade is an HTTP/1.1 "
+                                   "request); leave --protocol unset");
+    }
+    if (request_method_ != envoy::config::core::v3::RequestMethod::GET) {
+      throw MalformedArgvException("--websocket requires --request-method GET (the upgrade "
+                                   "request); leave it unset");
+    }
+  }
+  if (streamModeEnabled()) {
+    const char* mode = websocket_ ? "--websocket" : "--grpc-mode bidi-stream";
     int parsed_concurrency = 0;
     try {
       parsed_concurrency = concurrency_ == "auto" ? 0 : std::stoi(concurrency_);
@@ -1176,17 +1216,22 @@ void OptionsImpl::validate() const {
       parsed_concurrency = 0;
     }
     if (parsed_concurrency <= 0) {
+      throw MalformedArgvException(fmt::format(
+          "{} requires a numeric --concurrency (streams and rps are divided over the workers)",
+          mode));
+    }
+    if (websocket_ && streams_ / std::max(parsed_concurrency, 1) > connections_) {
       throw MalformedArgvException(
-          "--grpc-mode bidi-stream requires a numeric --concurrency (streams and rps are divided "
-          "over the workers)");
+          fmt::format("--websocket: every stream is a connection, so --connections ({}) must be "
+                      "at least the streams per worker ({})",
+                      connections_, streams_ / parsed_concurrency));
     }
     if (streams_ == 0 || streams_ % parsed_concurrency != 0) {
       throw MalformedArgvException("--streams must be a positive multiple of --concurrency");
     }
     if (requests_per_second_ % parsed_concurrency != 0) {
-      throw MalformedArgvException(
-          "--rps (aggregate message rate in --grpc-mode bidi-stream) must be a multiple of "
-          "--concurrency");
+      throw MalformedArgvException(fmt::format(
+          "--rps (aggregate message rate in {}) must be a multiple of --concurrency", mode));
     }
     if (max_inflight_per_stream_ == 0) {
       throw MalformedArgvException("--max-inflight-per-stream must be greater than 0");
@@ -1199,16 +1244,16 @@ void OptionsImpl::validate() const {
     }
     if (request_source_plugin_config_.has_value()) {
       throw MalformedArgvException(
-          "--grpc-mode bidi-stream is not supported together with --request-source-plugin-config");
+          fmt::format("{} is not supported together with --request-source-plugin-config", mode));
     }
     if (!user_defined_output_plugin_configs_.empty()) {
       throw MalformedArgvException(
-          "--grpc-mode bidi-stream is not supported together with --user-defined-plugin-config");
+          fmt::format("{} is not supported together with --user-defined-plugin-config", mode));
     }
     if (simple_warmup_) {
       // The warmup request would be scheduled before the streams are open.
       throw MalformedArgvException(
-          "--grpc-mode bidi-stream is not supported together with --simple-warmup");
+          fmt::format("{} is not supported together with --simple-warmup", mode));
     }
   }
   if (h2_use_multiple_connections_) {
@@ -1350,6 +1395,14 @@ CommandLineOptionsPtr OptionsImpl::toCommandLineOptionsInternal() const {
     stream_options->mutable_max_inflight_per_stream()->set_value(max_inflight_per_stream_);
     *stream_options->mutable_drain_duration() =
         Envoy::Protobuf::util::TimeUtil::NanosecondsToDuration(stream_drain_duration_.count());
+  }
+  if (websocket_) {
+    auto* websocket_options = command_line_options->mutable_websocket();
+    websocket_options->mutable_streams()->set_value(streams_);
+    websocket_options->mutable_max_inflight_per_stream()->set_value(max_inflight_per_stream_);
+    *websocket_options->mutable_drain_duration() =
+        Envoy::Protobuf::util::TimeUtil::NanosecondsToDuration(stream_drain_duration_.count());
+    websocket_options->mutable_binary()->set_value(websocket_binary_);
   }
 
   if (rate_limiter_plugin_config_.has_value()) {

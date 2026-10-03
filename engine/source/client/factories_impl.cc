@@ -16,6 +16,7 @@
 
 #include "engine/source/client/benchmark_client_impl.h"
 #include "engine/source/client/grpc_stream_client_impl.h"
+#include "engine/source/client/websocket_stream_client_impl.h"
 #include "engine/source/client/output_collector_impl.h"
 #include "engine/source/client/output_formatter_impl.h"
 #include "engine/source/common/platform_util_impl.h"
@@ -44,6 +45,14 @@ BenchmarkClientPtr BenchmarkClientFactoryImpl::create(
     absl::string_view cluster_name, int worker_id, RequestSource& request_generator,
     std::vector<UserDefinedOutputNamePluginPair> user_defined_output_plugins) const {
   StatisticFactoryImpl statistic_factory(options_);
+  if (options_.websocket()) {
+    const uint32_t concurrency = std::stoi(options_.concurrency());
+    return std::make_unique<WebSocketStreamBenchmarkClientImpl>(
+        api, dispatcher, scope, std::make_unique<SinkableHdrStatistic>(scope, worker_id),
+        cluster_manager, cluster_name, request_generator.get(), options_.streams() / concurrency,
+        options_.maxInflightPerStream(), options_.streamDrainDuration(), options_.timeout(),
+        options_.websocketBinary());
+  }
   if (options_.grpcMode() == nighthawk::client::GrpcMode::BIDI_STREAM) {
     const uint32_t concurrency = std::stoi(options_.concurrency());
     auto stream_client = std::make_unique<GrpcStreamBenchmarkClientImpl>(

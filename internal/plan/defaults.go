@@ -34,6 +34,9 @@ func applyDefaults(p *Plan) {
 		if s.GetGrpc() == nil && d.GetGrpc() != nil {
 			s.Grpc = proto.Clone(d.GetGrpc()).(*Grpc)
 		}
+		if s.GetWebsocket() == nil && d.GetWebsocket() != nil {
+			s.Websocket = proto.Clone(d.GetWebsocket()).(*WebSocket)
+		}
 		if s.GetProtocol() == "" {
 			s.Protocol = d.GetProtocol()
 		}

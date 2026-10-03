@@ -51,8 +51,10 @@ type (
 	Pool     = planv1.Pool
 	Scenario = planv1.Scenario
 	Grpc     = planv1.Grpc
-	Executor = planv1.Executor
-	Stage    = planv1.Stage
+
+	WebSocket = planv1.WebSocket
+	Executor  = planv1.Executor
+	Stage     = planv1.Stage
 )
 
 // Load reads and validates a plan from path.

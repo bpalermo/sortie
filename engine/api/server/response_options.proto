@@ -57,3 +57,9 @@ message ResponseOptions {
   // responses 3 and 2>.
   string emit_previous_request_delta_in_response_header = 6;
 }
+
+// Configuration of the websocket-echo filter, which has none: it answers a WebSocket upgrade
+// and echoes every frame. The connection manager must allow the upgrade (upgrade_configs:
+// [{upgrade_type: websocket}]).
+message WebSocketEchoConfiguration {
+}

@@ -197,7 +197,7 @@ RateLimiterPtr LinearRampingRateLimiterImplFactory::createRateLimiterPlugin(
 }
 
 uint32_t perWorkerRequestsPerSecond(const Nighthawk::Client::Options& options) {
-  if (options.grpcMode() == nighthawk::client::GrpcMode::BIDI_STREAM) {
+  if (options.grpcMode() == nighthawk::client::GrpcMode::BIDI_STREAM || options.websocket()) {
     return options.requestsPerSecond() / std::stoi(options.concurrency());
   }
   return options.requestsPerSecond();

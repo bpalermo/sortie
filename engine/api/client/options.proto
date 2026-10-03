@@ -224,6 +224,25 @@ message CommandLineOptions {
     google.protobuf.Duration drain_duration = 3 [(validate.rules).duration.gte.nanos = 0];
   }
   GrpcStreamOptions grpc_stream = 122;
+  // WebSocket load (--websocket): each worker upgrades `streams / concurrency` HTTP/1.1
+  // connections to WebSocket and sends the request body as a message on them round-robin at
+  // requests_per_second (the aggregate, divided over the workers), timing each message against
+  // its echo -- the bidi-stream schedule and accounting, for WebSocket. Needs protocol HTTP1 (or
+  // unset), no grpc_mode, a numeric concurrency that divides streams, rps a multiple of
+  // concurrency, and connections of at least streams / concurrency, since every stream is a
+  // connection. Counters: benchmark.stream_* as for bidi-stream, plus stream_upgrade_rejected and
+  // stream_protocol_errors. Statistic: benchmark_stream.message_latency.
+  message WebSocketOptions {
+    // Number of connections to upgrade in total. Default: 20.
+    google.protobuf.UInt32Value streams = 1 [(validate.rules).uint32 = {gte: 1}];
+    // Maximum unanswered messages per connection before scheduled sends are dropped. Default: 256.
+    google.protobuf.UInt32Value max_inflight_per_stream = 2 [(validate.rules).uint32 = {gte: 1}];
+    // How long to wait for outstanding echoes after sending Close. Default: 500ms.
+    google.protobuf.Duration drain_duration = 3 [(validate.rules).duration.gte.nanos = 0];
+    // Send binary frames rather than text. Default: text.
+    google.protobuf.BoolValue binary = 4;
+  }
+  WebSocketOptions websocket = 123;
 
   // Allows user to set specific HTTP3 protocol options.
   // Only valid when protocol is set to HTTP3.

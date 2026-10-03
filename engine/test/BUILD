@@ -33,6 +33,33 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
+    name = "websocket_test",
+    srcs = ["websocket_test.cc"],
+    deps = [
+        "//engine/source/common:nighthawk_common_lib",
+        "@envoy//source/common/buffer:buffer_lib_with_external_headers",
+    ],
+)
+
+envoy_cc_test(
+    name = "websocket_stream_client_test",
+    srcs = ["websocket_stream_client_test.cc"],
+    deps = [
+        "//engine/source/client:nighthawk_client_lib",
+        "//engine/source/common:request_impl_lib",
+        "//engine/test/test_common:environment_lib",
+        "@envoy//source/common/buffer:buffer_lib_with_external_headers",
+        "@envoy//source/common/http:header_map_lib_with_external_headers",
+        "@envoy//source/common/stats:isolated_store_lib_with_external_headers",
+        "@envoy//source/exe:process_wide_lib_with_external_headers",
+        "@envoy//test/mocks/http:http_mocks",
+        "@envoy//test/mocks/stream_info:stream_info_mocks",
+        "@envoy//test/mocks/upstream:upstream_mocks",
+        "@envoy//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
     name = "grpc_stream_client_test",
     srcs = ["grpc_stream_client_test.cc"],
     deps = [

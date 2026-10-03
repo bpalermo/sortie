@@ -138,6 +138,22 @@ func TestValidationErrors(t *testing.T) {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"4\"\n    grpc: {mode: bidi-stream, streams: 10}", 1),
 			want: "must be a multiple of concurrency",
 		},
+		"websocket with grpc": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    grpc: {mode: unary}\n    websocket: {}", 1),
+			want: "websocket and grpc are mutually exclusive",
+		},
+		"websocket with http2": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    protocol: http2\n    websocket: {}", 1),
+			want: "websocket requires protocol http1",
+		},
+		"websocket with POST": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    method: POST\n    websocket: {}", 1),
+			want: "websocket requires method GET",
+		},
+		"websocket default streams not a multiple of concurrency": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"3\"\n    websocket: {}", 1),
+			want: "websocket.streams (20, the engine's default) must be a multiple of concurrency (3)",
+		},
 		"bidi default streams not a multiple of concurrency": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"3\"\n    grpc: {mode: bidi-stream}", 1),
 			want: "the engine's default",

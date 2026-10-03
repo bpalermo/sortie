@@ -119,6 +119,11 @@ README's Limitations section; keep the two in sync.
   interim responses (`progress` set, `output` a snapshot) that `nh.Execute`
   hands to a `Progress.Fn`; `run.Observer.ExecutionProgress` and `--progress`
   surface them. Nothing on the distributor path.
+- `Scenario.websocket` compiles to the engine's `websocket` options
+  (`WebSocketStreamBenchmarkClientImpl`, the gRPC bidi-stream client's twin;
+  framing in `engine/source/common/websocket.*`, shared with the test server's
+  `websocket-echo` filter). The rate rule is bidi-stream's (`aggregateRate` in
+  `internal/compile`); `protocol` http1 and `method` GET are forced.
 - One execution per backend at a time; `nighthawk_service` refuses a second.
 - `RequestSource` never sees responses, so there is no session flow and no
   response correlation.

@@ -65,13 +65,67 @@ func validateBeyondSchema(p *Plan) error {
 		if err := validateGrpc(p, s); err != nil {
 			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
 		}
+		if err := validateWebSocket(p, s); err != nil {
+			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
+		}
 	}
 	return nil
 }
 
 // defaultBidiStreams is the engine's --streams default, which the loader has
-// to validate against when a plan leaves streams unset.
+// to validate against when a plan leaves streams unset; the same for both
+// kinds of stream.
 const defaultBidiStreams = 20
+
+// validateWebSocket checks what the engine would otherwise reject at run time:
+// the upgrade is an HTTP/1.1 GET, grpc is another thing entirely, and streams
+// and rate are divided over a known number of workers.
+func validateWebSocket(p *Plan, s *Scenario) error {
+	d := p.GetDefaults()
+	w := s.GetWebsocket()
+	if w == nil {
+		w = d.GetWebsocket()
+	}
+	if w == nil {
+		return nil
+	}
+	if s.GetGrpc() != nil || d.GetGrpc() != nil {
+		return fmt.Errorf("websocket and grpc are mutually exclusive")
+	}
+	protocol := s.GetProtocol()
+	if protocol == "" {
+		protocol = d.GetProtocol()
+	}
+	if protocol != "" && protocol != "http1" {
+		return fmt.Errorf("websocket requires protocol http1 (got %q): the upgrade is an HTTP/1.1 request; leave it unset", protocol)
+	}
+	method := s.GetMethod()
+	if method == "" {
+		method = d.GetMethod()
+	}
+	if method != "" && !strings.EqualFold(method, "GET") {
+		return fmt.Errorf("websocket requires method GET (got %q); leave it unset", method)
+	}
+	concurrency := s.GetConcurrency()
+	if concurrency == "" {
+		concurrency = d.GetConcurrency()
+	}
+	if concurrency == "auto" {
+		return fmt.Errorf(`websocket needs a numeric concurrency, not "auto": streams and rate are divided over the workers`)
+	}
+	if concurrency != "" {
+		streams := uint64(defaultBidiStreams)
+		if w.Streams != nil {
+			streams = uint64(w.GetStreams())
+		}
+		workers, err := strconv.ParseUint(concurrency, 10, 32)
+		if err == nil && workers > 0 && streams%workers != 0 {
+			return fmt.Errorf("websocket.streams (%d%s) must be a multiple of concurrency (%d)",
+				streams, map[bool]string{true: ", the engine's default", false: ""}[w.Streams == nil], workers)
+		}
+	}
+	return nil
+}
 
 // validateGrpc checks what the engine would otherwise reject at run time:
 // gRPC is HTTP/2 POST, and bidi-stream spreads streams and rate over a known
