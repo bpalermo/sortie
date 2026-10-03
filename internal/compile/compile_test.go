@@ -554,9 +554,9 @@ func TestForPoolDistributorBidiStreamKeepsTheRatePerTarget(t *testing.T) {
 	if got := opts[0].GetRequestsPerSecond().GetValue(); got != 200 {
 		t.Errorf("rps = %d, want 200 (400 over 2 targets, not divided by 2 workers)", got)
 	}
-	s.Executor.Rate = 300
+	s.Executor.Rate = 302
 	execs, _ = Expand(s)
 	if _, _, err := ForPool(execs[0], pool); err == nil {
-		t.Fatal("300 over 2 targets is 150 per target, not a multiple of 2 workers; want an error")
+		t.Fatal("302 over 2 targets is 151 per target, not a multiple of 2 workers; want an error")
 	}
 }
