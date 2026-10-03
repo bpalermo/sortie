@@ -758,11 +758,6 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
     throw MalformedArgvException("Invalid value for --stats-flush-interval");
   }
 
-  if (!tls_context.getValue().empty()) {
-    ENVOY_LOG(warn, "--tls-context is deprecated. "
-                    "It can be replaced by an equivalent --transport-socket. "
-                    "See --help for an example.");
-  }
   if (!tls_context.getValue().empty() && !transport_socket.getValue().empty()) {
     throw MalformedArgvException("--tls-context and --transport-socket cannot both be set.");
   }
