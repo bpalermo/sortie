@@ -591,3 +591,31 @@ func TestGrpcBlockDropsATemplateGrpcStream(t *testing.T) {
 			execs[0].Options.GetGrpcStream())
 	}
 }
+
+// A grpc block alone does not discard what a template put in request_options:
+// its headers and body survive, and only the method is forced to POST.
+func TestGrpcBlockKeepsATemplateRequestOptions(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second)})
+	s.Grpc = &plan.Grpc{Mode: "unary"}
+	s.NighthawkTemplate = &client.CommandLineOptions{
+		OneofRequestOptions: &client.CommandLineOptions_RequestOptions{RequestOptions: &client.RequestOptions{
+			RequestMethod:  corev3.RequestMethod_GET,
+			RequestHeaders: []*corev3.HeaderValueOption{{Header: &corev3.HeaderValue{Key: "x-tenant", Value: "a"}}},
+			RequestBody:    []byte("\x00\x00\x00\x00\x00"),
+		}},
+	}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ro := execs[0].Options.GetRequestOptions()
+	if ro.GetRequestMethod() != corev3.RequestMethod_POST {
+		t.Errorf("method = %v, want POST", ro.GetRequestMethod())
+	}
+	if len(ro.GetRequestHeaders()) != 1 || ro.GetRequestHeaders()[0].GetHeader().GetKey() != "x-tenant" {
+		t.Errorf("headers = %v, want the template's x-tenant", ro.GetRequestHeaders())
+	}
+	if len(ro.GetRequestBody()) != 5 {
+		t.Errorf("body = %q, want the template's 5 bytes", ro.GetRequestBody())
+	}
+}

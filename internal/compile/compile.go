@@ -304,7 +304,7 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 		}
 	}
 	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil {
-		reqOpts, err := requestOptions(s)
+		reqOpts, err := requestOptions(s, o.GetRequestOptions())
 		if err != nil {
 			return nil, err
 		}
@@ -360,19 +360,33 @@ func protocol(name string) (client.Protocol_ProtocolOptions, error) {
 	return 0, fmt.Errorf("unknown protocol %q", name)
 }
 
-func requestOptions(s *plan.Scenario) (*client.RequestOptions, error) {
+// requestOptions builds the request options from what the scenario sets,
+// starting from the template's (base may be nil) so a template's headers or
+// body survive a scenario that says nothing about them. A scenario's headers
+// replace the template's rather than add to them: a plan that lists headers
+// means those headers.
+func requestOptions(s *plan.Scenario, base *client.RequestOptions) (*client.RequestOptions, error) {
 	ro := &client.RequestOptions{}
+	if base != nil {
+		ro = proto.Clone(base).(*client.RequestOptions)
+	}
 
 	methodName := s.GetMethod()
 	if methodName == "" && s.GetGrpc() != nil {
+		// gRPC is POST whatever a template says.
 		methodName = "POST"
 	}
-	method, err := requestMethod(methodName)
-	if err != nil {
-		return nil, fmt.Errorf("scenario %q: %w", s.Name, err)
+	if methodName != "" {
+		method, err := requestMethod(methodName)
+		if err != nil {
+			return nil, fmt.Errorf("scenario %q: %w", s.Name, err)
+		}
+		ro.RequestMethod = method
 	}
-	ro.RequestMethod = method
 
+	if len(s.Headers) > 0 {
+		ro.RequestHeaders = nil
+	}
 	for _, h := range s.Headers {
 		key, value, ok := strings.Cut(h, ":")
 		if !ok {
