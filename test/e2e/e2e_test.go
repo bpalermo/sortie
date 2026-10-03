@@ -324,6 +324,9 @@ func TestWebSocketPlanAgainstTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sortie run failed: %v", err)
 	}
+	if !regexp.MustCompile(`(?m)^\s+\S+: 500 messages sent, 500 echoed in \S+$`).Match(out) {
+		t.Errorf("sortie output lacks the backend line with 500 messages sent and echoed")
+	}
 	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
 		t.Errorf("sortie output lacks the PASS verdict")
 	}
