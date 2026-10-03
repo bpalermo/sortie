@@ -1,0 +1,62 @@
+name: sanitizers
+
+# The engine under AddressSanitizer and ThreadSanitizer, nightly on main.
+#
+# Not a pull-request gate: each run is an instrumented rebuild of Envoy and
+# takes tens of minutes, and tsan is non-deterministic by nature -- it only
+# sees the races that happened in that run -- so a per-PR gate would fail on
+# timing and teach people to ignore it. Nightly on main, a red run means
+# something. Reading a failure: a sanitizer *report* (a race, a use-after-free,
+# a leak) is a bug; a bare gtest assertion with no report is usually the
+# instrumented binary being too slow for a timing-sensitive test, which is why
+# the engine's .bazelrc gives these configs a longer test timeout.
+on:
+  schedule:
+    # 03:17 UTC, after the day's merges and off the hour.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sanitizers
+  cancel-in-progress: true
+
+jobs:
+  sanitize:
+    name: ${{ matrix.sanitizer }}
+    # Scheduled runs always use main's default branch; the environment holds
+    # the cache-write key, so an instrumented build is cached for the next
+    # night rather than rebuilt from scratch.
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [asan, tsan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          cache-save: false
+
+      # --config=libc++ alongside the sanitizer config, as upstream Nighthawk's
+      # CI did: the sanitizer runtimes are built against libc++ and mixing in
+      # libstdc++ produces duplicate symbols.
+      - name: bazel test //engine/test/... (${{ matrix.sanitizer }})
+        run: |
+          bazel test //engine/test/... \
+            --config=${{ matrix.sanitizer }} \
+            --config=libc++ \
+            --config=rbe-buildbuddy-amd64 \
+            --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_API_KEY }} \
+            --build_metadata=ROLE=CI \
+            --build_metadata=REPO_URL=https://github.com/${{ github.repository }} \
+            --build_metadata=COMMIT_SHA=${{ github.sha }} \
+            --test_env=ENVOY_IP_TEST_VERSIONS=v4only \
+            --test_output=errors
