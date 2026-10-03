@@ -50,9 +50,20 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
     return;
   }
   ProcessPtr process = std::move(*process_or_status);
+  {
+    Envoy::Thread::LockGuard guard(process_lock_);
+    active_process_ = process.get();
+  }
 
   OutputCollectorImpl output_collector(time_system_, *options);
   const bool ok = process->run(output_collector);
+  {
+    // Unpublish before shutdown, so a late cancellation finds nothing rather
+    // than a Process mid-teardown. A run that was cancelled returns here early
+    // with what it collected, and that is the response the client gets.
+    Envoy::Thread::LockGuard guard(process_lock_);
+    active_process_ = nullptr;
+  }
   if (!ok) {
     response.mutable_error_detail()->set_code(grpc::StatusCode::INTERNAL);
     // TODO(https://github.com/envoyproxy/nighthawk/issues/181): wire through error descriptions, so
@@ -97,7 +108,7 @@ grpc::Status ServiceImpl::finishGrpcStream(const bool success, absl::string_view
                  : grpc::Status(grpc::StatusCode::INTERNAL, std::string(description));
 }
 
-// TODO(oschaaf): implement a way to cancel test runs, and update rps config on the fly.
+// TODO(oschaaf): implement a way to update rps config on the fly.
 // TODO(oschaaf): unit-test Process, create MockProcess & use in service_test.cc / client_test.cc
 // TODO(oschaaf): should we merge incoming request options with defaults?
 // TODO(oschaaf): aggregate the client's logs and forward them in the grpc response.
@@ -124,7 +135,20 @@ grpc::Status ServiceImpl::ExecutionStream(
       } else {
         return finishGrpcStream(false, "Only a single benchmark session is allowed at a time.");
       }
-    } else if (request.has_update_request() || request.has_cancellation_request()) {
+    } else if (request.has_cancellation_request()) {
+      // Stops the active execution early; its response, with whatever it
+      // collected, follows on this stream as usual. The stream stays open:
+      // the client half-closes when it has read that response. Without an
+      // active execution there is nothing to do, and that is not an error --
+      // a cancellation racing the end of a run is the expected case.
+      Envoy::Thread::LockGuard guard(process_lock_);
+      if (active_process_ == nullptr) {
+        ENVOY_LOG(info, "Cancellation requested with no active execution; nothing to cancel.");
+      } else {
+        ENVOY_LOG(info, "Cancelling the active execution on the client's request.");
+        active_process_->requestExecutionCancellation();
+      }
+    } else if (request.has_update_request()) {
       return finishGrpcStream(false, "Request is not supported yet.");
     } else {
       PANIC("not reached");

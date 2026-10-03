@@ -70,6 +70,12 @@ private:
   // busy_lock_ is used to test from the service thread to query if there's
   // an active test being run.
   Envoy::Thread::MutexBasicLockable busy_lock_;
+  // The execution a CancellationRequest applies to: set by the thread running
+  // it for as long as it runs, read by the stream thread. Guarded by
+  // process_lock_, which the running thread also holds while clearing it, so a
+  // cancellation never reaches a Process that is being shut down.
+  Envoy::Thread::MutexBasicLockable process_lock_;
+  Process* active_process_{nullptr};
 };
 
 /**

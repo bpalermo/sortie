@@ -206,11 +206,10 @@ to hold. For a single-backend pool this is exactly the obvious behaviour.
 
 ## Limitations
 
-- **No mid-run control.** Nighthawk's `UpdateRequest` and `CancellationRequest`
-  are declared in the proto and rejected by the service
-  (envoyproxy/nighthawk#380). Interrupting `sortie run` abandons the gRPC
-  streams; the backends keep generating load until their configured duration
-  elapses.
+- **No mid-run updates.** A run's rate cannot be changed once started
+  (`UpdateRequest` is declared in the engine's API and rejected). It can be
+  stopped: interrupting `sortie run` cancels every backend's execution and the
+  run is reported as cancelled, not evaluated.
 - **No progress during a run.** A Nighthawk execution returns nothing until it
   finishes, so sortie reports per execution, not continuously.
 - **No scripting.** Nighthawk's `RequestSource` yields independent requests and
@@ -256,16 +255,13 @@ missing and creates it again, generating load even if the upgrade changed
 nothing about the run. Set it to `null` to keep finished Jobs until something
 deletes them.
 
-**Wait for a run to finish before upgrading it.** Replacing the Job deletes the
-running one, and terminating sortie does not stop the load: a Nighthawk backend
-keeps generating until its configured duration elapses, because the gRPC
-cancellation message is declared in Nighthawk's API but not implemented by the
-service ([envoyproxy/nighthawk#380][nh380]). A backend also runs one execution
-at a time, so the replacement Job starts, finds the backend still busy with the
-run it just abandoned, and fails -- with `backoffLimit: 0` it does not retry.
-The old run finishes on its own either way; what is lost is the new one.
-
-[nh380]: https://github.com/envoyproxy/nighthawk/issues/380
+Upgrading a release while a run is in flight replaces the Job. The old pod is
+sent SIGTERM, on which sortie cancels its backends' executions and waits for
+their partial responses, so the backends are free again before the replacement
+Job's pod reaches them; the old run is reported as cancelled, not evaluated.
+Keep the pod's termination grace period above the time a backend takes to
+answer a cancellation (seconds), or the backend is still busy when the new Job
+arrives and that Job fails -- with `backoffLimit: 0` it does not retry.
 
 The ConfigMap is named after the plan's digest for the same reason in reverse.
 A stable name would be updated in place, and a CronJob's Job that was created
