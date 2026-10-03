@@ -191,8 +191,9 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sortie run failed: %v", err)
 	}
-	// Anchored, so that 1500 or 2500 requests cannot satisfy it.
-	if !regexp.MustCompile(`(?m)^\s+\S+: 500 requests in 5s$`).Match(out) {
+	// Anchored on the count, so that 1500 or 2500 requests cannot satisfy it; the
+	// duration is the backend's measured one and may read 5.001s.
+	if !regexp.MustCompile(`(?m)^\s+\S+: 500 requests in \S+$`).Match(out) {
 		t.Errorf("sortie output lacks the backend line with exactly 500 requests")
 	}
 	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
