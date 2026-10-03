@@ -23,9 +23,6 @@ second that can be squeezed out of a system (irrespective of the high latency
 incurred), as well as for comparing numbers with other load generators that use
 this methodology.
 
-See also the [adaptive mode](adaptive_load_controller.md) which allows to
-determine the maximum requests per second without incurring the high latency.
-
 ## Execution
 
 When we talk about execution, we are referring to a single load test run.

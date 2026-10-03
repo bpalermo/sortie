@@ -158,7 +158,7 @@ scenarios:
       burst_size: 5
 ```
 
-This mirrors how Nighthawk's own adaptive load controller takes a
+This mirrors how upstream Nighthawk's adaptive load controller (not carried in `engine/`) takes a
 `nighthawk_traffic_template`, and it means sortie does not have to grow a field
 for every Nighthawk flag — transport sockets, request-source plugins,
 tunnelling and user-defined output plugins are all reachable without one.

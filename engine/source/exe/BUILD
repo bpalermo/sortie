@@ -9,21 +9,6 @@ licenses(["notice"])  # Apache 2
 envoy_package()
 
 envoy_cc_library(
-    name = "adaptive_load_client_entry_lib",
-    srcs = ["adaptive_load_client_main_entry.cc"],
-    visibility = ["//visibility:public"],
-    deps = [
-        "//engine/source/adaptive_load:adaptive_load_client_main",
-        "//engine/source/common:nighthawk_service_client_impl",
-        "//engine/source/common:version_linkstamp",
-        "@com_google_absl//absl/debugging:symbolize",
-        "@envoy//source/exe:platform_header_lib_with_external_headers",
-        "@envoy//source/exe:platform_impl_lib",
-    ],
-    alwayslink = True,
-)
-
-envoy_cc_library(
     name = "nighthawk_client_entry_lib",
     srcs = ["client_main_entry.cc"],
     visibility = ["//visibility:public"],

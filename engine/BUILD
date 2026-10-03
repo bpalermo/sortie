@@ -16,22 +16,10 @@ envoy_package()
 filegroup(
     name = "nighthawk",
     srcs = [
-        ":nighthawk_adaptive_load_client.stripped",
         ":nighthawk_client.stripped",
         ":nighthawk_output_transform.stripped",
         ":nighthawk_service.stripped",
         ":nighthawk_test_server.stripped",
-    ],
-)
-
-envoy_cc_binary(
-    name = "nighthawk_adaptive_load_client",
-    linkopts = [
-        "-l:libatomic.a",
-        "-lrt",
-    ],
-    deps = [
-        "//engine/source/exe:adaptive_load_client_entry_lib",
     ],
 )
 
