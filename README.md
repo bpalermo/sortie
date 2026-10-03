@@ -286,6 +286,11 @@ to hold. For a single-backend pool this is exactly the obvious behaviour.
 
 ## Limitations
 
+What sortie can and cannot yet drive, against what Envoy does, is in
+[docs/parity.md](docs/parity.md): WebSocket, TCP and UDP are the open items,
+in that order.
+
+
 - **No mid-run updates.** A run's rate cannot be changed once started
   (`UpdateRequest` is declared in the engine's API and rejected). It can be
   stopped: interrupting `sortie run` cancels every backend's execution in a
