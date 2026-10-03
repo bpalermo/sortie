@@ -51,16 +51,19 @@ public:
                                            nighthawk::client::ExecutionRequest>* stream) override;
 
 private:
-  void handleExecutionRequest(const nighthawk::client::ExecutionRequest& request);
-  void writeResponse(const nighthawk::client::ExecutionResponse& response);
-  grpc::Status finishGrpcStream(const bool success, absl::string_view description = "");
+  using Stream = grpc::ServerReaderWriter<nighthawk::client::ExecutionResponse,
+                                          nighthawk::client::ExecutionRequest>;
+  void handleExecutionRequest(const nighthawk::client::ExecutionRequest& request, Stream* stream);
+  void writeResponse(Stream* stream, const nighthawk::client::ExecutionResponse& response);
+  grpc::Status finishGrpcStream(const bool owner, const bool success,
+                                absl::string_view description = "");
 
   Envoy::Thread::MutexBasicLockable log_lock_;
   std::unique_ptr<Envoy::Logger::Context> logging_context_;
   std::shared_ptr<Envoy::ProcessWide> process_wide_;
   Envoy::Event::RealTimeSystem time_system_; // NO_CHECK_FORMAT(real_time)
-  grpc::ServerReaderWriter<nighthawk::client::ExecutionResponse,
-                           nighthawk::client::ExecutionRequest>* stream_;
+  // Written only by the stream that starts an execution, and waited on only by
+  // that stream; a stream the service turns away never touches it.
   std::future<void> future_;
   // accepted_lock_ and accepted_event_ are used to synchronize the threads
   // when starting up a future to service a test, and ensure the code servicing it
@@ -74,8 +77,11 @@ private:
   // it for as long as it runs, read by the stream thread. Guarded by
   // process_lock_, which the running thread also holds while clearing it, so a
   // cancellation never reaches a Process that is being shut down.
+  // active_stream_ is the stream that started it: a cancellation from any
+  // other stream is ignored, so one client cannot stop another's run.
   Envoy::Thread::MutexBasicLockable process_lock_;
   Process* active_process_{nullptr};
+  Stream* active_stream_{nullptr};
 };
 
 /**

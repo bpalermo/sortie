@@ -16,7 +16,8 @@
 namespace Nighthawk {
 namespace Client {
 
-void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionRequest& request) {
+void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionRequest& request,
+                                         Stream* stream) {
   std::unique_ptr<Envoy::Thread::LockGuard> busy_lock;
   {
     // Lock accepted_lock, in case we get here before accepted_event_.wait() is entered.
@@ -34,7 +35,7 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   } catch (const MalformedArgvException& e) {
     response.mutable_error_detail()->set_code(grpc::StatusCode::INTERNAL);
     response.mutable_error_detail()->set_message(e.what());
-    writeResponse(response);
+    writeResponse(stream, response);
     return;
   }
   envoy::config::core::v3::TypedExtensionConfig typed_dns_resolver_config;
@@ -48,13 +49,14 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
     response.mutable_error_detail()->set_code(grpc::StatusCode::INTERNAL);
     response.mutable_error_detail()->set_message(
         fmt::format("Unable to create ProcessImpl: {}", process_or_status.status().ToString()));
-    writeResponse(response);
+    writeResponse(stream, response);
     return;
   }
   ProcessPtr process = std::move(*process_or_status);
   {
     Envoy::Thread::LockGuard guard(process_lock_);
     active_process_ = process.get();
+    active_stream_ = stream;
   }
   // Unpublished on every way out of this scope -- a normal return, or one of
   // the exceptions Process::run() rethrows -- and before `process` itself is
@@ -65,6 +67,7 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   Envoy::Cleanup unpublish([this]() {
     Envoy::Thread::LockGuard guard(process_lock_);
     active_process_ = nullptr;
+    active_stream_ = nullptr;
   });
 
   OutputCollectorImpl output_collector(time_system_, *options);
@@ -92,23 +95,26 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   // coming in before we release the lock, which would lead up to us declining service when
   // we should not.
   busy_lock.reset();
-  writeResponse(response);
+  writeResponse(stream, response);
 }
 
-void ServiceImpl::writeResponse(const nighthawk::client::ExecutionResponse& response) {
+void ServiceImpl::writeResponse(Stream* stream,
+                                const nighthawk::client::ExecutionResponse& response) {
   ENVOY_LOG(debug, "Write response: {}", absl::StrCat(response));
-  if (!stream_->Write(response)) {
+  if (!stream->Write(response)) {
     ENVOY_LOG(warn, "Failed to write response to the stream");
   }
 }
 
-grpc::Status ServiceImpl::finishGrpcStream(const bool success, absl::string_view description) {
-  // We may get here while there's still an active future in-flight in the error-paths.
-  // Allow it to wrap up and put it's response on the stream before finishing the stream.
-  if (future_.valid()) {
+grpc::Status ServiceImpl::finishGrpcStream(const bool owner, const bool success,
+                                           absl::string_view description) {
+  // The stream that started an execution may get here while it is still in
+  // flight, in the error paths: let it wrap up and put its response on the
+  // stream before finishing the stream. A stream that started nothing has
+  // nothing to wait for -- least of all another client's run.
+  if (owner && future_.valid()) {
     future_.wait();
   }
-  stream_ = nullptr;
   return success ? grpc::Status::OK
                  : grpc::Status(grpc::StatusCode::INTERNAL, std::string(description));
 }
@@ -122,7 +128,8 @@ grpc::Status ServiceImpl::ExecutionStream(
     grpc::ServerReaderWriter<nighthawk::client::ExecutionResponse,
                              nighthawk::client::ExecutionRequest>* stream) {
   nighthawk::client::ExecutionRequest request;
-  stream_ = stream;
+  // Whether this stream is the one that started an execution.
+  bool owner = false;
 
   while (stream->Read(&request)) {
     ENVOY_LOG(debug, "Read ExecutionRequest data {}", absl::StrCat(request));
@@ -133,12 +140,14 @@ grpc::Status ServiceImpl::ExecutionStream(
         Envoy::Thread::LockGuard accepted_lock(accepted_lock_);
         // We pass in std::launch::async to avoid lazy evaluation, as we want this to run
         // asap. See: https://en.cppreference.com/w/cpp/thread/async
-        future_ = std::future<void>(
-            std::async(std::launch::async, &ServiceImpl::handleExecutionRequest, this, request));
+        owner = true;
+        future_ = std::future<void>(std::async(
+            std::launch::async, &ServiceImpl::handleExecutionRequest, this, request, stream));
         // Block until the thread associated to the future has acquired busy_lock_
         accepted_event_.wait(accepted_lock_);
       } else {
-        return finishGrpcStream(false, "Only a single benchmark session is allowed at a time.");
+        return finishGrpcStream(owner, false,
+                                "Only a single benchmark session is allowed at a time.");
       }
     } else if (request.has_cancellation_request()) {
       // Stops the active execution early; its response, with whatever it
@@ -149,17 +158,20 @@ grpc::Status ServiceImpl::ExecutionStream(
       Envoy::Thread::LockGuard guard(process_lock_);
       if (active_process_ == nullptr) {
         ENVOY_LOG(info, "Cancellation requested with no active execution; nothing to cancel.");
+      } else if (active_stream_ != stream) {
+        ENVOY_LOG(warn, "Cancellation requested by a stream that did not start the active "
+                        "execution; ignored.");
       } else {
         ENVOY_LOG(info, "Cancelling the active execution on the client's request.");
         active_process_->requestExecutionCancellation();
       }
     } else if (request.has_update_request()) {
-      return finishGrpcStream(false, "Request is not supported yet.");
+      return finishGrpcStream(owner, false, "Request is not supported yet.");
     } else {
       PANIC("not reached");
     }
   }
-  return finishGrpcStream(true);
+  return finishGrpcStream(owner, true);
 }
 
 namespace {
