@@ -926,29 +926,6 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
-    "//bazel/nighthawk:nighthawk.bzl%nighthawk_api": {
-      "general": {
-        "bzlTransitiveDigest": "6411Qr4qH6kQzB4v2vF1runYyZi4AoGqy/E0/jaF0PE=",
-        "usagesDigest": "ucD+LtOyTqTWKtFzntjs7cpL9D6+R2v5Iwy23JSG5aU=",
-        "recordedInputs": [
-          "REPO_MAPPING:,bazel_tools bazel_tools"
-        ],
-        "generatedRepoSpecs": {
-          "nighthawk_api": {
-            "repoRuleId": "@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive",
-            "attributes": {
-              "build_file": "@@//bazel/nighthawk:nighthawk_api.BUILD",
-              "patch_cmds": [
-                "find . -mindepth 2 \\( -name BUILD -o -name BUILD.bazel \\) -delete"
-              ],
-              "sha256": "2e600ea2113a3e29a0f4a76564f11ad0796d4c7f744c917f44082dc132e0b260",
-              "strip_prefix": "nighthawk-403f9773b6b1c7d843d21e5683bdac87ba3901ca",
-              "url": "https://github.com/envoyproxy/nighthawk/archive/403f9773b6b1c7d843d21e5683bdac87ba3901ca.tar.gz"
-            }
-          }
-        }
-      }
-    },
     "@@aspect_rules_esbuild+//esbuild:extensions.bzl%esbuild": {
       "general": {
         "bzlTransitiveDigest": "zHTxEUJi37HHbuoiJkToNOdzMWPcyGFW+RzKIesV/Gg=",

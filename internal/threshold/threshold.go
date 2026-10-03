@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/bpalermo/sortie/internal/metric"
-	client "github.com/envoyproxy/nighthawk/api/client"
+	client "github.com/bpalermo/sortie/engine/api/client"
 )
 
 // Op is a comparison operator.

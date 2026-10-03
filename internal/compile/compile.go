@@ -15,8 +15,8 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/bpalermo/sortie/internal/plan"
-	client "github.com/envoyproxy/nighthawk/api/client"
-	ratelimiter "github.com/envoyproxy/nighthawk/api/rate_limiter"
+	client "github.com/bpalermo/sortie/engine/api/client"
+	ratelimiter "github.com/bpalermo/sortie/engine/api/rate_limiter"
 )
 
 // LinearRampingRateLimiterPlugin is the name Nighthawk registers its linear

@@ -28,7 +28,7 @@ and what counters came back.
 - [ ] Ran a plan end to end against `nighthawk_service`, and the achieved rate
       matched what the plan asked for. State the numbers — a rate that is off by
       the worker count is the failure this catches.
-- [ ] If the Nighthawk pin moved: `bazel/bump-nighthawk.sh <ref>` was used, not a
-      hand-edited sha256.
+- [ ] If a proto in `engine/api` changed: both the C++ and the Go side were
+      rebuilt (`bazel test //...` covers both) and the change is additive.
 
 ## Risks and follow-ups

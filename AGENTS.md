@@ -111,13 +111,14 @@ template survives compilation.
 
 ## Protos
 
-Nighthawk's API protos are fetched at the commit pinned in `bazel/nighthawk/nighthawk.bzl`
-and compiled by Bazel; `bazel/nighthawk/nighthawk_api.BUILD` declares the targets. Nothing
-is vendored and no generated code is checked in. Move the pin with
-`bazel/bump-nighthawk.sh <ref>`, never by hand-editing the sha256.
+The engine's API protos live in `engine/api` and are compiled by Bazel for
+both C++ and Go; the `go_proto_library` targets beside them are what sortie
+imports (`github.com/bpalermo/sortie/engine/api/...`). Nothing is vendored and
+no generated code is checked in. Change a message in one place and both sides
+see it.
 
-Every Go dependency in `bazel/nighthawk/nighthawk_api.BUILD` must be the same target the
-rest of the build already links for that import path. Envoy types come from
+Every Go dependency of those `go_proto_library` targets must be the same target
+the rest of the build already links for that import path. Envoy types come from
 `envoy_api`, validate from the target `envoy_api` itself uses, and
 `google/rpc/status.proto`'s Go code from the genproto module gRPC-Go links.
 Picking a different target for the same import path fails the link with

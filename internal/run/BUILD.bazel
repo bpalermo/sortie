@@ -6,12 +6,12 @@ go_library(
     importpath = "github.com/bpalermo/sortie/internal/run",
     visibility = ["//:__subpackages__"],
     deps = [
+        "//engine/api/client:base_go_proto",
         "//internal/compile",
         "//internal/nh",
         "//internal/plan",
         "//internal/result",
         "//internal/threshold",
-        "@nighthawk_api//:client_go_proto",
         "@org_golang_x_sync//errgroup",
     ],
 )
@@ -25,8 +25,8 @@ go_test(
     ],
     deps = [
         ":run",
+        "//engine/api/client:base_go_proto",
         "//internal/plan",
-        "@nighthawk_api//:client_go_proto",
         "@org_golang_google_genproto_googleapis_rpc//status",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_protobuf//types/known/durationpb",

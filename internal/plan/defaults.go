@@ -3,7 +3,7 @@ package plan
 import (
 	"google.golang.org/protobuf/proto"
 
-	client "github.com/envoyproxy/nighthawk/api/client"
+	client "github.com/bpalermo/sortie/engine/api/client"
 )
 
 // applyDefaults folds the defaults block into every scenario so that consumers

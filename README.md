@@ -335,10 +335,10 @@ so `90s` rather than Go's `1m30s`.
 
 ## Protos
 
-Nighthawk's API protos are fetched at a commit pinned in `bazel/nighthawk/nighthawk.bzl`
-and compiled by Bazel. Nothing is vendored and no generated code is checked in,
-so the bindings cannot go stale against the `.proto` files they came from.
-`bazel/bump-nighthawk.sh <ref>` moves the pin.
+The engine's API protos live in `engine/api` and are compiled by Bazel for
+both C++ and Go, so the control plane and the engine always agree on one
+definition. Nothing is vendored and no generated code is checked in, so the
+bindings cannot go stale against the `.proto` files they came from.
 
 Envoy's types come from the `envoy_api` module rather than from the
 `go-control-plane` Go module, because that is where the generated Nighthawk
