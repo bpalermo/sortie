@@ -104,6 +104,26 @@ envoy_cc_library(
 )
 
 envoy_cc_library(
+    name = "udp_echo_filter_lib",
+    srcs = ["udp_echo_filter.cc"],
+    hdrs = ["udp_echo_filter.h"],
+    deps = [
+        "@envoy//envoy/network:filter_interface_with_external_headers",
+        "@envoy//envoy/network:listener_interface_with_external_headers",
+    ],
+)
+
+envoy_cc_library(
+    name = "udp_echo_filter_config",
+    srcs = ["udp_echo_filter_config.cc"],
+    deps = [
+        ":udp_echo_filter_lib",
+        "//engine/api/server:response_options_proto_cc_proto",
+        "@envoy//envoy/server:filter_config_interface_with_external_headers",
+    ],
+)
+
+envoy_cc_library(
     name = "http_test_server_filter_config",
     srcs = ["http_test_server_filter_config.cc"],
     deps = [

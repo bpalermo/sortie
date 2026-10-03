@@ -123,6 +123,19 @@ message Tcp {
   ];
 }
 
+// Udp is what a scenario can set about UDP load.
+message Udp {
+  // Unanswered datagrams allowed before a scheduled send is dropped and
+  // counted in benchmark.udp_deferred. Default 256.
+  optional uint32 max_inflight = 1 [(buf.validate.field).uint32.gte = 1];
+
+  // How long a datagram may go unanswered before it is lost. Default 1s.
+  google.protobuf.Duration timeout = 2 [
+    (buf.validate.field).duration.gt = {seconds: 0},
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+}
+
 // WebSocket is what a scenario can set about WebSocket load. The rate rule is
 // bidi-stream's: each backend's share must be a multiple of its concurrency,
 // as must `streams`, and every stream is a connection.
@@ -174,12 +187,13 @@ message Scenario {
   string pool = 2;
 
   // URI to benchmark: http:// or https:// for HTTP, gRPC and WebSocket;
-  // tcp:// or tcps:// (TLS) with an explicit port for raw TCP (see Tcp).
+  // tcp:// or tcps:// (TLS) with an explicit port for raw TCP (see Tcp);
+  // udp:// with an explicit port for UDP (see Udp).
   string target = 3 [
     (buf.validate.field).cel = {
       id: "scenario.target.scheme"
-      message: "target scheme must be http, https, tcp or tcps"
-      expression: "this.startsWith('http://') || this.startsWith('https://') || this.startsWith('tcp://') || this.startsWith('tcps://')"
+      message: "target scheme must be http, https, tcp, tcps or udp"
+      expression: "this.startsWith('http://') || this.startsWith('https://') || this.startsWith('tcp://') || this.startsWith('tcps://') || this.startsWith('udp://')"
     },
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
   ];
@@ -259,6 +273,15 @@ message Scenario {
   // empty then. method, headers, protocol, grpc and websocket are errors with
   // a tcp target.
   Tcp tcp = 20;
+
+  // UDP load, for Envoy's udp_proxy: a udp:// target selects it, this block
+  // tunes it. Each worker sends the message (body or body_file) as one
+  // datagram per scheduled request at the executor's rate -- per worker --
+  // prefixed with a sequence number, and times it against its echo, matched
+  // by that number (benchmark_udp.message_latency); a datagram unanswered for
+  // `timeout` is lost (benchmark.udp_lost). method, headers, protocol, grpc,
+  // websocket and tcp are errors with a udp target; a body is required.
+  Udp udp = 21;
 
   // Like body, but the bytes of a file, resolved relative to the plan file.
   // For request messages that are not text, such as serialized protobufs.

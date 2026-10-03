@@ -786,3 +786,26 @@ func TestTcpTargetOptions(t *testing.T) {
 		t.Errorf("rps = %d, want 100 (400 over 2 backends x 2 workers: per worker, as HTTP)", got)
 	}
 }
+
+// A udp target selects the engine's UDP mode by URI; the udp block becomes
+// its options and the body is the datagram.
+func TestUdpTargetOptions(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second)})
+	s.Target = "udp://127.0.0.1:9000"
+	s.Body = "ping"
+	s.Udp = &plan.Udp{MaxInflight: proto.Uint32(8), Timeout: durationpb.New(250 * time.Millisecond)}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := execs[0].Options
+	if o.GetUdp().GetMaxInflight().GetValue() != 8 || o.GetUdp().GetTimeout().AsDuration() != 250*time.Millisecond {
+		t.Errorf("udp = %v, want 8 inflight and a 250ms timeout", o.GetUdp())
+	}
+	if string(o.GetRequestOptions().GetRequestBody()) != "ping" {
+		t.Errorf("body = %q, want ping", o.GetRequestOptions().GetRequestBody())
+	}
+	if o.GetTcp() != nil {
+		t.Errorf("tcp options set on a udp target")
+	}
+}

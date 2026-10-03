@@ -107,7 +107,7 @@ func TestValidationErrors(t *testing.T) {
 		},
 		"bad target scheme": {
 			src:  strings.Replace(minimal, "http://127.0.0.1:8080/", "ftp://host/", 1),
-			want: "target scheme must be http, https, tcp or tcps",
+			want: "target scheme must be http, https, tcp, tcps or udp",
 		},
 		"ramp without ramp_time": {
 			src:  strings.Replace(minimal, "type: constant-rate", "type: ramping-rate", 1),
@@ -137,6 +137,18 @@ func TestValidationErrors(t *testing.T) {
 		"bidi streams not a multiple of concurrency": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"4\"\n    grpc: {mode: bidi-stream, streams: 10}", 1),
 			want: "must be a multiple of concurrency",
+		},
+		"udp block on an http target": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    udp: {}", 1),
+			want: "udp applies to a udp:// target",
+		},
+		"udp target without a body": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: udp://127.0.0.1:9000", 1),
+			want: "a udp target needs a body or body_file",
+		},
+		"udp target with websocket": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: udp://127.0.0.1:9000\n    body: ping\n    websocket: {}", 1),
+			want: "grpc, websocket and tcp cannot go with a udp target",
 		},
 		"tcp block on an http target": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    tcp: {}", 1),

@@ -68,6 +68,11 @@ func execution(w io.Writer, e run.ExecutionReport) error {
 				b.Addr, sent, counters["benchmark.stream_messages_received"], elapsed)
 			continue
 		}
+		if sent, ok := counters["benchmark.udp_datagrams_sent"]; ok {
+			fmt.Fprintf(w, "       %s: %d datagrams sent, %d echoed, %d lost in %s\n",
+				b.Addr, sent, counters["benchmark.udp_datagrams_received"], counters["benchmark.udp_lost"], elapsed)
+			continue
+		}
 		if sent, ok := counters["benchmark.tcp_messages_sent"]; ok {
 			fmt.Fprintf(w, "       %s: %d messages sent, %d echoed in %s\n",
 				b.Addr, sent, counters["benchmark.tcp_messages_received"], elapsed)

@@ -310,6 +310,23 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 			o.GrpcStream = so
 		}
 	}
+	if plan.IsUdpTarget(s.GetTarget()) {
+		// The engine reads the mode from the URI; the block only tunes it.
+		o.GrpcMode = nil
+		o.GrpcStream = nil
+		o.Websocket = nil
+		o.Tcp = nil
+		if u := s.GetUdp(); u != nil {
+			uo := &client.CommandLineOptions_UdpOptions{}
+			if u.MaxInflight != nil {
+				uo.MaxInflight = wrapperspb.UInt32(u.GetMaxInflight())
+			}
+			if u.GetTimeout() != nil {
+				uo.Timeout = u.GetTimeout()
+			}
+			o.Udp = uo
+		}
+	}
 	if plan.IsTcpTarget(s.GetTarget()) {
 		// The engine reads the mode from the URI; the block only tunes it.
 		o.GrpcMode = nil
@@ -377,6 +394,7 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 		o.TlsContext = tlsCtx
 	}
 	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil || s.GetWebsocket() != nil || plan.IsTcpTarget(s.GetTarget()) {
+	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil || s.GetWebsocket() != nil || plan.IsTcpTarget(s.GetTarget()) || plan.IsUdpTarget(s.GetTarget()) {
 		reqOpts, err := requestOptions(s, o.GetRequestOptions())
 		if err != nil {
 			return nil, err

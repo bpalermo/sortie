@@ -151,9 +151,9 @@ Cluster createNighthawkClusterForWorker(const Client::Options& options,
   cluster.set_name(fmt::format("{}", worker_number));
   cluster.mutable_connect_timeout()->set_seconds(options.timeout().count());
 
-  if (options.tcp()) {
-    // Raw connections through tcpConn(): no HTTP protocol options, and the HTTP pool's
-    // breakers do not apply.
+  if (options.tcp() || options.udp()) {
+    // Raw connections through tcpConn(), or a datagram socket to the host: no HTTP protocol
+    // options, and the HTTP pool's breakers do not apply.
     cluster.set_type(Cluster::STATIC);
     ClusterLoadAssignment* load_assignment = cluster.mutable_load_assignment();
     load_assignment->set_cluster_name(cluster.name());

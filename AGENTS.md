@@ -136,6 +136,11 @@ README's Limitations section; keep the two in sync.
   `ThreadLocalCluster::tcpConn`, so the cluster's transport socket applies);
   `Scenario.tcp` tunes it. Per-worker rate like HTTP; counters `benchmark.tcp_*`,
   statistic `benchmark_tcp.message_latency`.
+- A `udp://` target selects the engine's UDP mode (`UdpBenchmarkClientImpl`:
+  one connected datagram socket per worker, sequence-matched echoes, a sweep
+  timer losing datagrams past `--udp-timeout`); `Scenario.udp` tunes it.
+  Counters `benchmark.udp_*`, statistic `benchmark_udp.message_latency`. The
+  test server's `udp-echo` is a UDP listener filter.
 - One execution per backend at a time; `nighthawk_service` refuses a second.
 - `RequestSource` never sees responses, so there is no session flow and no
   response correlation.

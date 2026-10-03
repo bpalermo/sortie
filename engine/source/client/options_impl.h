@@ -72,6 +72,9 @@ public:
   uint32_t tcpConnections() const override { return tcp_connections_; }
   uint32_t tcpMaxInflightPerConnection() const override { return tcp_max_inflight_; }
   bool tcpExpectEcho() const override { return tcp_expect_echo_; }
+  bool udp() const override { return udp_; }
+  uint32_t udpMaxInflight() const override { return udp_max_inflight_; }
+  std::chrono::nanoseconds udpTimeout() const override { return udp_timeout_; }
   bool websocket() const override { return websocket_; }
   bool websocketBinary() const override { return websocket_binary_; }
   uint32_t streams() const override { return streams_; };
@@ -194,6 +197,10 @@ private:
   uint32_t tcp_connections_{1};
   uint32_t tcp_max_inflight_{256};
   bool tcp_expect_echo_{true};
+  // Derived from the URI's scheme (udp) when the options are validated.
+  bool udp_{false};
+  uint32_t udp_max_inflight_{256};
+  std::chrono::nanoseconds udp_timeout_{std::chrono::seconds(1)};
   uint32_t streams_{20};
   uint32_t max_inflight_per_stream_{256};
   std::chrono::nanoseconds stream_drain_duration_{std::chrono::milliseconds(500)};

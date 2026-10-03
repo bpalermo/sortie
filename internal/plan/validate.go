@@ -74,6 +74,9 @@ func validateBeyondSchema(p *Plan) error {
 		if err := validateTcp(p, s); err != nil {
 			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
 		}
+		if err := validateUdp(p, s); err != nil {
+			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
+		}
 	}
 	return nil
 }
@@ -103,6 +106,58 @@ func validateTls(p *Plan, s *Scenario) error {
 // to validate against when a plan leaves streams unset; the same for both
 // kinds of stream.
 const defaultBidiStreams = 20
+
+// IsUdpTarget reports whether a target URL selects UDP load.
+func IsUdpTarget(target string) bool {
+	return strings.HasPrefix(target, "udp://")
+}
+
+// validateUdp checks a UDP scenario: the target decides the mode, the udp
+// block only tunes it, nothing HTTP- or TCP-shaped goes with it, and the
+// datagram must have content to be matched by.
+func validateUdp(p *Plan, s *Scenario) error {
+	d := p.GetDefaults()
+	target := s.GetTarget()
+	if target == "" {
+		target = d.GetTarget()
+	}
+	udp := s.GetUdp()
+	if udp == nil {
+		udp = d.GetUdp()
+	}
+	if !IsUdpTarget(target) {
+		if udp != nil {
+			return fmt.Errorf("udp applies to a udp:// target (got %q)", target)
+		}
+		return nil
+	}
+	if _, port, err := splitTargetHostPort(target); err != nil || port == "" {
+		return fmt.Errorf("a udp target needs an explicit port (got %q)", target)
+	}
+	effective := func(a, b string) string {
+		if a != "" {
+			return a
+		}
+		return b
+	}
+	if m := effective(s.GetMethod(), d.GetMethod()); m != "" {
+		return fmt.Errorf("method %q has no meaning with a udp target: the body is the datagram", m)
+	}
+	if len(s.GetHeaders()) > 0 || len(d.GetHeaders()) > 0 {
+		return fmt.Errorf("headers have no meaning with a udp target: the body is the datagram")
+	}
+	if pr := effective(s.GetProtocol(), d.GetProtocol()); pr != "" {
+		return fmt.Errorf("protocol %q has no meaning with a udp target", pr)
+	}
+	if s.GetGrpc() != nil || d.GetGrpc() != nil || s.GetWebsocket() != nil || d.GetWebsocket() != nil ||
+		s.GetTcp() != nil || d.GetTcp() != nil {
+		return fmt.Errorf("grpc, websocket and tcp cannot go with a udp target")
+	}
+	if effective(s.GetBody(), d.GetBody()) == "" && effective(s.GetBodyFile(), d.GetBodyFile()) == "" {
+		return fmt.Errorf("a udp target needs a body or body_file: the datagram is what gets echoed and matched")
+	}
+	return nil
+}
 
 // IsTcpTarget reports whether a target URL selects raw TCP load.
 func IsTcpTarget(target string) bool {

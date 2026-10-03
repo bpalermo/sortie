@@ -90,6 +90,18 @@ public:
    */
   virtual bool tcpExpectEcho() const PURE;
   /**
+   * @return bool whether UDP load generation is selected (a udp:// URI).
+   */
+  virtual bool udp() const PURE;
+  /**
+   * @return uint32_t unanswered datagrams allowed before sends are deferred in UDP mode.
+   */
+  virtual uint32_t udpMaxInflight() const PURE;
+  /**
+   * @return std::chrono::nanoseconds how long a datagram may go unanswered before it is lost.
+   */
+  virtual std::chrono::nanoseconds udpTimeout() const PURE;
+  /**
    * @return bool whether WebSocket load generation is enabled (--websocket).
    */
   virtual bool websocket() const PURE;

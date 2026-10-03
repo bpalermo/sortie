@@ -63,3 +63,8 @@ message ResponseOptions {
 // [{upgrade_type: websocket}]).
 message WebSocketEchoConfiguration {
 }
+
+// Configuration of the udp-echo listener filter, which has none: it sends every datagram back
+// to its sender. For a UDP listener (address.socket_address.protocol: UDP).
+message UdpEchoConfiguration {
+}
