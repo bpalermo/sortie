@@ -489,6 +489,68 @@ TEST_F(OptionsImplTest, GrpcStreamExplicitValues) {
   EXPECT_EQ(50, explicit_pending->maxPendingRequests());
 }
 
+TEST_F(OptionsImplTest, WebSocketDefaultsRoundTripAndValidation) {
+  std::unique_ptr<OptionsImpl> options = TestUtility::createOptionsImpl(
+      fmt::format("{} --websocket --concurrency 2 --rps 400 --max-active-requests 128 {}",
+                  client_name_, good_test_uri_));
+  EXPECT_TRUE(options->websocket());
+  EXPECT_FALSE(options->websocketBinary());
+  EXPECT_EQ(nighthawk::client::GrpcMode::NONE, options->grpcMode());
+  EXPECT_EQ(Envoy::Http::Protocol::Http11, options->protocol());
+  EXPECT_EQ(20, options->streams());
+  EXPECT_EQ(256, options->maxInflightPerStream());
+  EXPECT_EQ(std::chrono::milliseconds(500), options->streamDrainDuration());
+  // 20 streams over 2 workers: the pending-request breaker holds the 10 opening connections.
+  EXPECT_EQ(10, options->maxPendingRequests());
+
+  CommandLineOptionsPtr cmd = options->toCommandLineOptions();
+  ASSERT_TRUE(cmd->has_websocket());
+  EXPECT_FALSE(cmd->has_grpc_stream());
+  EXPECT_EQ(20, cmd->websocket().streams().value());
+  EXPECT_FALSE(cmd->websocket().binary().value());
+  OptionsImpl round_trip(*cmd);
+  EXPECT_TRUE(round_trip.websocket());
+  EXPECT_EQ(20, round_trip.streams());
+
+  std::unique_ptr<OptionsImpl> binary = TestUtility::createOptionsImpl(
+      fmt::format("{} --websocket --websocket-binary --concurrency 1 --rps 100 --streams 4 "
+                  "--max-inflight-per-stream 8 --stream-drain-duration 2s {}",
+                  client_name_, good_test_uri_));
+  EXPECT_TRUE(binary->websocketBinary());
+  EXPECT_EQ(4, binary->streams());
+  EXPECT_EQ(8, binary->maxInflightPerStream());
+  EXPECT_EQ(std::chrono::seconds(2), binary->streamDrainDuration());
+  EXPECT_TRUE(binary->toCommandLineOptions()->websocket().binary().value());
+
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(fmt::format(
+          "{} --websocket --grpc-mode unary --concurrency 1 --rps 100 {}", client_name_,
+          good_test_uri_)),
+      MalformedArgvException, "--websocket and --grpc-mode are mutually exclusive");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(fmt::format(
+          "{} --websocket --protocol http2 --concurrency 1 --rps 100 {}", client_name_,
+          good_test_uri_)),
+      MalformedArgvException, "--websocket requires HTTP/1.1");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(fmt::format(
+          "{} --websocket --request-method POST --concurrency 1 --rps 100 {}", client_name_,
+          good_test_uri_)),
+      MalformedArgvException, "--websocket requires --request-method GET");
+  EXPECT_THROW_WITH_REGEX(TestUtility::createOptionsImpl(fmt::format(
+                              "{} --websocket --concurrency auto {}", client_name_, good_test_uri_)),
+                          MalformedArgvException, "--websocket requires a numeric --concurrency");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(fmt::format(
+          "{} --websocket --concurrency 1 --rps 100 --streams 200 --connections 100 {}",
+          client_name_, good_test_uri_)),
+      MalformedArgvException, "every stream is a connection");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(fmt::format(
+          "{} --websocket --concurrency 3 --streams 20 --rps 300 {}", client_name_, good_test_uri_)),
+      MalformedArgvException, "--streams must be a positive multiple of --concurrency");
+}
+
 TEST_F(OptionsImplTest, GrpcStreamValidation) {
   EXPECT_THROW_WITH_REGEX(
       TestUtility::createOptionsImpl(fmt::format("{} --grpc-mode bidi-stream --concurrency auto {}",

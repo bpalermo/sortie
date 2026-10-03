@@ -100,6 +100,28 @@ message Pool {
     }];
 }
 
+// WebSocket is what a scenario can set about WebSocket load. The rate rule is
+// bidi-stream's: each backend's share must be a multiple of its concurrency,
+// as must `streams`, and every stream is a connection.
+message WebSocket {
+  // Connections to upgrade per backend. The engine's default is 20.
+  optional uint32 streams = 1 [(buf.validate.field).uint32.gte = 1];
+
+  // Unanswered messages a connection may hold before a scheduled send is
+  // dropped and counted in benchmark.stream_deferred. Default 256.
+  optional uint32 max_inflight_per_stream = 2 [(buf.validate.field).uint32.gte = 1];
+
+  // How long to wait for outstanding echoes after Close is sent at the end of
+  // the run. Default 500ms.
+  google.protobuf.Duration drain_duration = 3 [
+    (buf.validate.field).duration.gte = {seconds: 0},
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+
+  // Send the message as binary frames rather than text.
+  bool binary = 4;
+}
+
 // Scenario is one unit of load: a target, an executor that shapes the request
 // rate over time, and the client tuning that goes with it.
 message Scenario {
@@ -174,6 +196,14 @@ message Scenario {
   // setting either to anything else is an error. The request message is the
   // body (or body_file), sent verbatim as the serialized protobuf message.
   Grpc grpc = 16;
+
+  // WebSocket load: `streams` connections per backend upgraded from HTTP/1.1,
+  // the message (body or body_file) sent on them round-robin at the executor's
+  // rate, each timed against its echo -- the bidi-stream schedule and
+  // accounting, for WebSocket. The target is the upgrade request's URL
+  // (http:// or https://, not ws://). Implies protocol http1 and method GET;
+  // mutually exclusive with grpc.
+  WebSocket websocket = 19;
 
   // Like body, but the bytes of a file, resolved relative to the plan file.
   // For request messages that are not text, such as serialized protobufs.

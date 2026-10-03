@@ -68,6 +68,8 @@ public:
   uint32_t requestBodySize() const override { return request_body_size_; };
   const std::string& requestBody() const override { return request_body_; };
   nighthawk::client::GrpcMode::GrpcModeOptions grpcMode() const override { return grpc_mode_; };
+  bool websocket() const override { return websocket_; }
+  bool websocketBinary() const override { return websocket_binary_; }
   uint32_t streams() const override { return streams_; };
   uint32_t maxInflightPerStream() const override { return max_inflight_per_stream_; };
   std::chrono::nanoseconds streamDrainDuration() const override { return stream_drain_duration_; };
@@ -179,6 +181,10 @@ private:
   nighthawk::client::GrpcMode::GrpcModeOptions grpc_mode_{nighthawk::client::GrpcMode::NONE};
   bool grpcEnabled() const { return grpc_mode_ != nighthawk::client::GrpcMode::NONE; }
   bool grpcStreamEnabled() const { return grpc_mode_ == nighthawk::client::GrpcMode::BIDI_STREAM; }
+  // Either kind of long-lived stream: gRPC bidi or WebSocket.
+  bool streamModeEnabled() const { return grpcStreamEnabled() || websocket_; }
+  bool websocket_{false};
+  bool websocket_binary_{false};
   uint32_t streams_{20};
   uint32_t max_inflight_per_stream_{256};
   std::chrono::nanoseconds stream_drain_duration_{std::chrono::milliseconds(500)};

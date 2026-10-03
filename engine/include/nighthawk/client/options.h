@@ -74,7 +74,16 @@ public:
    */
   virtual nighthawk::client::GrpcMode::GrpcModeOptions grpcMode() const PURE;
   /**
-   * @return uint32_t total number of gRPC bidi streams to open (BIDI_STREAM grpc mode).
+   * @return bool whether WebSocket load generation is enabled (--websocket).
+   */
+  virtual bool websocket() const PURE;
+  /**
+   * @return bool whether WebSocket messages are sent as binary frames rather than text.
+   */
+  virtual bool websocketBinary() const PURE;
+  /**
+   * @return uint32_t total number of streams to open: gRPC bidi streams in BIDI_STREAM grpc mode,
+   * connections in WebSocket mode.
    */
   virtual uint32_t streams() const PURE;
   /**

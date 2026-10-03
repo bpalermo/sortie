@@ -229,3 +229,102 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 		t.Errorf("sortie output lacks the PASS verdict")
 	}
 }
+
+// The test server with the upgrade allowed and the websocket-echo filter in
+// front of the test-server one: a WebSocket echo endpoint at any path.
+const wsTestServerConfig = `admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 0 }
+static_resources:
+  listeners:
+  - address:
+      socket_address: { address: 127.0.0.1, port_value: 0 }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          codec_type: AUTO
+          stat_prefix: ingress_ws
+          upgrade_configs:
+          - upgrade_type: websocket
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: service
+              domains: ["*"]
+          http_filters:
+          - name: websocket-echo
+            typed_config:
+              "@type": type.googleapis.com/nighthawk.server.WebSocketEchoConfiguration
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+              dynamic_stats: false
+`
+
+// 100 messages per second for 5 s over 4 connections and 2 workers: exactly
+// 500 echoes, with no deferred or lost message.
+const wsPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+defaults:
+  pool: local
+  target: http://127.0.0.1:%d/echo
+  concurrency: "2"
+  body: '{"type":"ping"}'
+  websocket:
+    streams: 4
+thresholds:
+  - "counter:benchmark.stream_upgrade_rejected == 0"
+  - "counter:benchmark.stream_open_failures == 0"
+  - "counter:benchmark.stream_deferred == 0"
+  - "counter:benchmark.stream_inflight_lost == 0"
+scenarios:
+  - name: ws
+    executor:
+      type: constant-rate
+      rate: 100
+      duration: 5s
+    thresholds:
+      - "counter:benchmark.stream_messages_received == 500"
+      - "benchmark_stream.message_latency.p99 < 500ms"
+`
+
+func TestWebSocketPlanAgainstTheEngine(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tmp := t.TempDir()
+
+	configPath := filepath.Join(tmp, "test_server.yaml")
+	if err := os.WriteFile(configPath, []byte(wsTestServerConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adminPath := filepath.Join(tmp, "admin_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_test_server"),
+		"--config-path", configPath, "--admin-address-path", adminPath,
+		"--disable-hot-restart", "--concurrency", "1", "--base-id", "3")
+	targetPort := listenerPort(t, waitForAddress(t, adminPath))
+
+	servicePath := filepath.Join(tmp, "service_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath)
+	serviceAddr := waitForAddress(t, servicePath)
+	assertHealthy(t, ctx, serviceAddr)
+
+	planPath := filepath.Join(tmp, "plan.yaml")
+	if err := os.WriteFile(planPath, []byte(fmt.Sprintf(wsPlanTemplate, serviceAddr, targetPort)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath)
+	out, err := cmd.CombinedOutput()
+	t.Logf("sortie run:\n%s", out)
+	if err != nil {
+		t.Fatalf("sortie run failed: %v", err)
+	}
+	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict")
+	}
+}

@@ -186,6 +186,41 @@ a multiple of the scenario's `concurrency`, which has to be a number, as must
 `streams` -- so 300 rps over two backends with four workers is 152 and 148.
 `sortie compile` shows the result.
 
+## WebSocket
+
+```yaml
+scenarios:
+  - name: chat
+    target: http://gateway.example.test/ws   # the upgrade request's URL, not ws://
+    body: '{"type":"ping"}'
+    concurrency: "2"
+    websocket:
+      streams: 40                   # connections per backend; default 20
+      max_inflight_per_stream: 16   # default 256
+      binary: false                 # text frames unless true
+    executor: {type: constant-rate, rate: 2000, duration: 60s}
+    thresholds:
+      - "benchmark_stream.message_latency.p99 < 50ms"
+      - "counter:benchmark.stream_deferred == 0"
+```
+
+Each backend upgrades `streams` HTTP/1.1 connections (through Envoy's own
+upgrade path, so an Envoy in front with `upgrade_configs: [{upgrade_type:
+websocket}]` is exactly what gets tested) and sends the message on them
+round-robin at the executor's rate, each timed against its echo. The server is
+expected to echo what it receives; sortie prefixes every message with a
+sequence number to match echoes, so an endpoint that answers something else
+counts in `benchmark.stream_unexpected_message`. Everything said about
+`bidi-stream` applies: the rate is a backend's aggregate, `streams` and the
+rate must be multiples of `concurrency`, a full connection drops the next send
+into `benchmark.stream_deferred`, and the counters and statistic carry the same
+names (`benchmark.stream_*`, `benchmark_stream.message_latency`), plus
+`stream_upgrade_rejected` and `stream_protocol_errors`. Every stream is a
+connection: sortie sets the engine's connection cap to the streams per worker
+unless the plan sets `connections`. Implies `protocol: http1` and `method:
+GET`; mutually exclusive with `grpc`. `nighthawk_test_server`'s
+`websocket-echo` filter is the target the e2e test uses.
+
 ## Anything this schema does not model
 
 `nighthawk_template` on a scenario carries Nighthawk options straight through.

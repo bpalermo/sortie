@@ -80,6 +80,30 @@ envoy_cc_library(
 )
 
 envoy_cc_library(
+    name = "websocket_echo_filter_lib",
+    srcs = ["websocket_echo_filter.cc"],
+    hdrs = ["websocket_echo_filter.h"],
+    deps = [
+        "//engine/source/common:nighthawk_common_lib",
+        "@envoy//source/common/buffer:buffer_lib_with_external_headers",
+        "@envoy//source/common/http:header_map_lib_with_external_headers",
+        "@envoy//source/common/http:headers_lib_with_external_headers",
+        "@envoy//source/common/http:utility_lib_with_external_headers",
+        "@envoy//source/exe:all_extensions_lib_with_external_headers",
+    ],
+)
+
+envoy_cc_library(
+    name = "websocket_echo_filter_config",
+    srcs = ["websocket_echo_filter_config.cc"],
+    deps = [
+        ":websocket_echo_filter_lib",
+        "//engine/api/server:response_options_proto_cc_proto",
+        "@envoy//envoy/server:filter_config_interface_with_external_headers",
+    ],
+)
+
+envoy_cc_library(
     name = "http_test_server_filter_config",
     srcs = ["http_test_server_filter_config.cc"],
     deps = [

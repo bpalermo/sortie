@@ -210,10 +210,16 @@ func Divide(e Execution, backends int) ([]*client.CommandLineOptions, error) {
 // each backend's aggregate is a multiple of its workers, which the engine
 // requires.
 func backendRate(e Execution, perWorkerShare uint32, workers int) uint32 {
-	if e.Scenario.GetGrpc().GetMode() == "bidi-stream" {
+	if aggregateRate(e.Scenario) {
 		return perWorkerShare * uint32(workers)
 	}
 	return perWorkerShare
+}
+
+// aggregateRate reports whether the engine takes a backend's aggregate rate
+// and divides it over the workers itself: in gRPC bidi-stream and WebSocket.
+func aggregateRate(s *plan.Scenario) bool {
+	return s.GetGrpc().GetMode() == "bidi-stream" || s.GetWebsocket() != nil
 }
 
 // workersPerBackend reports how many worker threads each backend will run.
@@ -303,7 +309,44 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 			o.GrpcStream = so
 		}
 	}
-	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil {
+	if w := s.GetWebsocket(); w != nil {
+		// The upgrade is an HTTP/1.1 request; the loader already rejected
+		// anything else.
+		o.OneofProtocol = &client.CommandLineOptions_Protocol{
+			Protocol: &client.Protocol{Value: client.Protocol_HTTP1},
+		}
+		o.GrpcMode = nil
+		o.GrpcStream = nil
+		wo := &client.CommandLineOptions_WebSocketOptions{}
+		if w.Streams != nil {
+			wo.Streams = wrapperspb.UInt32(w.GetStreams())
+		}
+		if w.MaxInflightPerStream != nil {
+			wo.MaxInflightPerStream = wrapperspb.UInt32(w.GetMaxInflightPerStream())
+		}
+		if w.GetDrainDuration() != nil {
+			wo.DrainDuration = w.GetDrainDuration()
+		}
+		if w.GetBinary() {
+			wo.Binary = wrapperspb.Bool(true)
+		}
+		o.Websocket = wo
+		// Every stream is a connection: unless the plan set connections, lift
+		// the engine's per-worker connection cap to the streams per worker, so
+		// the pool can open them all.
+		if s.Connections == nil && o.Connections == nil {
+			streams := uint32(20)
+			if w.Streams != nil {
+				streams = w.GetStreams()
+			}
+			if workers, err := workersPerBackend(s); err == nil && workers > 0 {
+				if per := streams / uint32(workers); per > 0 {
+					o.Connections = wrapperspb.UInt32(per)
+				}
+			}
+		}
+	}
+	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil || s.GetWebsocket() != nil {
 		reqOpts, err := requestOptions(s, o.GetRequestOptions())
 		if err != nil {
 			return nil, err
@@ -372,6 +415,10 @@ func requestOptions(s *plan.Scenario, base *client.RequestOptions) (*client.Requ
 	}
 
 	methodName := s.GetMethod()
+	if methodName == "" && s.GetWebsocket() != nil {
+		// The upgrade is a GET whatever a template says.
+		methodName = "GET"
+	}
 	if methodName == "" && s.GetGrpc() != nil {
 		// gRPC is POST whatever a template says.
 		methodName = "POST"

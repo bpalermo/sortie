@@ -642,3 +642,48 @@ func TestScenarioBodyReplacesATemplateBodySize(t *testing.T) {
 		t.Errorf("body = %q, want hello", ro.GetRequestBody())
 	}
 }
+
+// A websocket block becomes the engine's websocket options, an HTTP/1.1 GET
+// upgrade, the aggregate rate per backend, and a connection cap that fits
+// the streams per worker.
+func TestWebSocketBlockOptions(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 400, Duration: dur(time.Second)})
+	s.Concurrency = "2"
+	s.Body = "ping"
+	s.Websocket = &plan.WebSocket{Streams: proto.Uint32(8), MaxInflightPerStream: proto.Uint32(4), Binary: true}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := execs[0].Options
+	if o.GetProtocol().GetValue() != client.Protocol_HTTP1 {
+		t.Errorf("protocol = %v, want HTTP1", o.GetProtocol().GetValue())
+	}
+	if o.GetRequestOptions().GetRequestMethod() != corev3.RequestMethod_GET {
+		t.Errorf("method = %v, want GET", o.GetRequestOptions().GetRequestMethod())
+	}
+	if string(o.GetRequestOptions().GetRequestBody()) != "ping" {
+		t.Errorf("body = %q, want ping", o.GetRequestOptions().GetRequestBody())
+	}
+	w := o.GetWebsocket()
+	if w.GetStreams().GetValue() != 8 || w.GetMaxInflightPerStream().GetValue() != 4 || !w.GetBinary().GetValue() {
+		t.Errorf("websocket = %v, want 8 streams, 4 inflight, binary", w)
+	}
+	if o.GetConnections().GetValue() != 4 {
+		t.Errorf("connections = %d, want 4 (8 streams over 2 workers)", o.GetConnections().GetValue())
+	}
+	opts, err := Divide(execs[0], 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := opts[0].GetRequestsPerSecond().GetValue(); got != 200 {
+		t.Errorf("rps = %d, want 200 (400 over 2 backends, the aggregate, not per worker)", got)
+	}
+
+	// A plan that sets connections keeps them.
+	s.Connections = proto.Uint32(50)
+	execs, _ = Expand(s)
+	if got := execs[0].Options.GetConnections().GetValue(); got != 50 {
+		t.Errorf("connections = %d, want the plan's 50", got)
+	}
+}

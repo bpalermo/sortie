@@ -88,8 +88,8 @@ private:
 
 /**
  * The rate one worker should generate for the given options. --rps is per
- * worker, except in --grpc-mode bidi-stream where it is the aggregate message
- * rate, divided over the workers. Every rate limiter a worker is given must
+ * worker, except in --grpc-mode bidi-stream and --websocket where it is the
+ * aggregate message rate, divided over the workers. Every rate limiter a worker is given must
  * take its frequency from here, or the modes disagree on what --rps means.
  *
  * @param options the options of the run; concurrency is numeric in bidi-stream mode.

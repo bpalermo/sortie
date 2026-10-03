@@ -99,7 +99,8 @@ bazel-bin/engine/nighthawk_client  [--user-defined-plugin-config <string>] ...
 [--tls-context <string>]
 [--stream-drain-duration <string>]
 [--max-inflight-per-stream <uint32_t>]
-[--streams <uint32_t>] [--grpc-mode <unary
+[--streams <uint32_t>] [--websocket-binary] [--websocket]
+[--grpc-mode <unary
 |bidi-stream>] [--request-body-file
 <string>] [--request-body-size <uint32_t>]
 [--request-header <string>] ...
@@ -286,16 +287,31 @@ in json. Mutually exclusive with --transport-socket. Example (json):
 -SHA"]}}}
 
 --stream-drain-duration <string>
-Time to wait for outstanding echoes after half-closing the streams in
---grpc-mode bidi-stream, as a duration string (default: 0.5s).
+Time to wait for outstanding echoes after half-closing the streams
+(--grpc-mode bidi-stream) or sending Close (--websocket), as a duration
+string (default: 0.5s).
 
 --max-inflight-per-stream <uint32_t>
-Maximum unanswered messages per stream in --grpc-mode bidi-stream
-before scheduled sends are deferred (default: 256).
+Maximum unanswered messages per stream (--grpc-mode bidi-stream,
+--websocket) before scheduled sends are deferred (default: 256).
 
 --streams <uint32_t>
-Total number of gRPC bidi streams to open in --grpc-mode bidi-stream
-mode (default: 20).
+Total number of streams to open: gRPC bidi streams in --grpc-mode
+bidi-stream, connections with --websocket (default: 20).
+
+--websocket-binary
+With --websocket, send binary frames rather than text.
+
+--websocket
+WebSocket load: upgrade --streams HTTP/1.1 connections to WebSocket
+(spread evenly over the workers) and send the request body as a message
+on them round-robin at --rps messages per second (aggregate), timing
+each against its echo -- the --grpc-mode bidi-stream schedule and
+accounting, for WebSocket. The URI is the upgrade request's; use
+http:// or https:// (wss). Requires HTTP/1.1, no --grpc-mode, a numeric
+--concurrency that divides --streams, and --connections of at least the
+streams per worker. Counters: benchmark.stream_* as for bidi-stream,
+plus stream_upgrade_rejected and stream_protocol_errors.
 
 --grpc-mode <unary|bidi-stream>
 gRPC load generation mode. Possible values: [unary, bidi-stream].

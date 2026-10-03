@@ -60,6 +60,7 @@ envoy_cc_binary(
         "//engine/source/server:http_dynamic_delay_filter_config",
         "//engine/source/server:http_test_server_filter_config",
         "//engine/source/server:http_time_tracking_filter_config",
+        "//engine/source/server:websocket_echo_filter_config",
         "@envoy//source/exe:envoy_main_entry_lib",
     ],
 )

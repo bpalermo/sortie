@@ -106,6 +106,7 @@ envoy_cc_library(
 
 envoy_cc_library(
     name = "nighthawk_common_lib",
+    external_deps = ["ssl"],
     srcs = [
         "phase_impl.cc",
         "rate_limiter_impl.cc",
@@ -116,6 +117,7 @@ envoy_cc_library(
         "uri_impl.cc",
         "utility.cc",
         "version_info.cc",
+        "websocket.cc",
         "worker_impl.cc",
     ],
     hdrs = [
@@ -131,10 +133,13 @@ envoy_cc_library(
         "uri_impl.h",
         "utility.h",
         "version_info.h",
+        "websocket.h",
         "worker_impl.h",
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "@envoy//source/common/common:base64_lib_with_external_headers",
+        "@envoy//source/common/common:random_generator_lib_with_external_headers",
         "//engine/api/client:base_cc_proto",
         "//engine/api/client:grpc_service_lib",
         "//engine/api/rate_limiter:rate_limiter_plugin_cc_proto",
