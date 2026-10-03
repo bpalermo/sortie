@@ -246,6 +246,12 @@ The plan is held in a ConfigMap and mounted read-only, so changing a run does
 not mean republishing anything. The Job's exit code is the verdict: a breached
 threshold fails it, and a malformed plan fails it differently.
 
+The Job and the engine come up together, so sortie waits up to 30 seconds for
+each backend to accept connections before the run starts; a backend that is
+not there by then fails the run with the address it tried. `test/chart/run.sh`
+installs the chart on a kind cluster with both images built from the checkout
+and checks both verdicts; CI runs it on every change.
+
 The Job's name carries a digest of its rendered pod template, because a Job's
 `spec.template` is immutable: with a stable name, `helm upgrade` with a changed
 plan would fail with `field is immutable` rather than run it. With the suffix an

@@ -12,6 +12,7 @@ them; hand-assembling the four rules gets whichever the author remembered.
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 load("@rules_img//img:image.bzl", "image_index", "image_manifest")
 load("@rules_img//img:layer.bzl", "file_metadata", "image_layer")
+load("@rules_img//img:load.bzl", "image_load")
 load("@rules_img//img:push.bzl", "image_push")
 
 DEFAULT_PLATFORMS = [
@@ -29,6 +30,7 @@ def go_image(
         base = "@distroless_static",
         platforms = DEFAULT_PLATFORMS,
         default_tag = "dev",
+        load_tag = None,
         visibility = ["//visibility:public"]):
     """Builds a multi-arch image around a Go binary and a target to push it.
 
@@ -40,6 +42,9 @@ def go_image(
       //pkg:image_manifest  one platform's manifest
       //pkg:image_index     the multi-platform index
       //pkg:image_push      pushes the index under two tags
+      //pkg:image_load      loads the index into the local daemon as
+                            `load_tag`; its `tarball` output group is the
+                            OCI archive (what `kind load image-archive` takes)
 
     Args:
       name: prefix for the generated targets.
@@ -54,6 +59,8 @@ def go_image(
         libc and a smaller base is a smaller attack surface.
       platforms: rules_go toolchain constraints, one manifest per platform.
       default_tag: value of the tag flag when nothing overrides it.
+      load_tag: the name the image gets in a local daemon, e.g.
+        "localhost/sortie:e2e". Defaults to "<repository>:<default_tag>".
       visibility: visibility of the index and push targets.
     """
     if entrypoint_path == None:
@@ -118,5 +125,17 @@ def go_image(
             "{{.tag}}",
             "{{if .STABLE_GIT_COMMIT}}{{.tag}}-{{.STABLE_GIT_COMMIT}}{{end}}",
         ],
+        visibility = visibility,
+    )
+
+    # From the index, not the bare manifest: the index is where the platform
+    # transition happens, and a manifest built for the host as-is carries a
+    # cgo-linked binary that a static base cannot exec. `bazel run` it with
+    # `-- --platform linux/<arch>` to load one platform into a daemon; its
+    # `tarball` output group is the OCI archive of the whole index.
+    image_load(
+        name = name + "_load",
+        image = name + "_index",
+        tag = load_tag or (repository + ":" + default_tag),
         visibility = visibility,
     )

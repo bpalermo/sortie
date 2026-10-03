@@ -10,22 +10,61 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
 	client "github.com/bpalermo/sortie/engine/api/client"
 )
 
-// Dial opens a plaintext connection to a Nighthawk service.
+// readyTimeout bounds how long Dial waits for a backend to accept connections.
+// Backends often start with the run that uses them -- the chart's engine
+// Deployment comes up beside its Job -- and a listener that is seconds away
+// is not an error. One that is not there after this long is.
+const readyTimeout = 30 * time.Second
+
+// Dial opens a plaintext connection to a Nighthawk service and waits, up to
+// readyTimeout, for it to be reachable.
 //
 // Nighthawk's own services speak plaintext gRPC and have no authentication, so
 // they are expected to sit on a trusted network or behind a proxy that
 // terminates TLS. sortie does not pretend otherwise.
 func Dial(ctx context.Context, addr string) (*grpc.ClientConn, error) {
+	return DialTimeout(ctx, addr, readyTimeout)
+}
+
+// DialTimeout is Dial with its own bound on the wait for the backend.
+func DialTimeout(ctx context.Context, addr string, timeout time.Duration) (*grpc.ClientConn, error) {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("dialing %s: %w", addr, err)
 	}
+	if err := waitReady(ctx, conn, timeout); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("backend %s: %w", addr, err)
+	}
 	return conn, nil
+}
+
+// waitReady drives the connection and returns once it is READY, or an error
+// when it is not within timeout or ctx ends first. gRPC's own behaviour --
+// fail the first RPC fast on a refused connection -- is right for a client
+// that retries; a load test runs once, so the wait happens here.
+func waitReady(ctx context.Context, conn *grpc.ClientConn, timeout time.Duration) error {
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	conn.Connect()
+	for {
+		state := conn.GetState()
+		if state == connectivity.Ready {
+			return nil
+		}
+		if !conn.WaitForStateChange(waitCtx, state) {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("not reachable within %s (last state %s)", timeout, state)
+		}
+	}
 }
 
 // Execute runs one benchmark against a single nighthawk_service and returns its

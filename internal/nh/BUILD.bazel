@@ -13,6 +13,7 @@ go_library(
         "//engine/api/distributor:distributor_go_proto",
         "@envoy_api//envoy/config/core/v3:pkg_go_proto",
         "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//connectivity",
         "@org_golang_google_grpc//credentials/insecure",
     ],
 )

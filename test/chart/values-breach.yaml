@@ -1,0 +1,23 @@
+# Layered over values.yaml for the second half of run.sh: the same run with a
+# threshold no healthy target can meet, so the Job must fail and `helm upgrade
+# --wait-for-jobs` with it. That is the chart's contract -- the Job's exit code
+# is the verdict -- exercised from the outside.
+plan: |
+  version: v1
+  pools:
+    - name: engine
+      services: ["sortie-sortie-engine:8443"]
+  defaults:
+    pool: engine
+    target: http://target:8080/
+    protocol: http1
+    concurrency: "2"
+    connections: 4
+  scenarios:
+    - name: breach
+      executor:
+        type: constant-rate
+        rate: 100
+        duration: 2s
+      thresholds:
+        - "counter:benchmark.http_2xx == 0"
