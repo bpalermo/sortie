@@ -64,9 +64,11 @@ new mode of the existing one:
 - `TcpBenchmarkClient` keeps a fixed pool of `tcp.connections`
   `Network::ClientConnection`s per worker, opened in `prepare()` (with the
   transport socket the `tls` block configures, so TLS termination is covered)
-  and, on each `tryStartRequest`, writes `body` on the next connection and
-  times the echo -- correlated by a sequence prefix, like WebSocket -- or,
-  with `expect_echo: false`, times the write alone. This is its own field, not
+  and, on each `tryStartRequest`, writes `body` -- exactly `body`, no prefix:
+  a TCP connection delivers in order, so echoes are correlated FIFO against
+  the bytes sent -- on the next connection and times the echo. With
+  `expect_echo: false` nothing is timed: a write only queues bytes locally,
+  so the run counts sends and reports no latency. This is its own field, not
   `Scenario.connections`: that one is the HTTP pool's circuit-breaker cap
   (default 100), and a TCP mode wants a small, exact, eagerly opened pool --
   default 1 per worker, the way `websocket.streams` is exact.
