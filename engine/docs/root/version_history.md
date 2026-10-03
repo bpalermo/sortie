@@ -1,6 +1,10 @@
 Version history
 ---------------
 
+> **Frozen.** This is upstream Nighthawk's history up to the commit this
+> engine was forked from; nothing is added to it. The engine's changes are
+> recorded in the sortie repository's history and release notes.
+
 0.3 (TBD)
 =========================
 

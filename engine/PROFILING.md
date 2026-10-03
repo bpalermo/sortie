@@ -8,14 +8,20 @@ From https://github.com/google/pprof#building-pprof
 go get -u github.com/google/pprof
 ```
 
-## Nighthawk's scripted benchmark
+## Profiles from a run
 
-Nighthawk comes with a [small framework and experimental benchmark suite](/benchmarks/) that
-will write `.prof` files to `/tmp/`. Currently it contains a single simple high rps test.
+Build with gperftools' tcmalloc and symbols, and point the profiler at a file
+through its environment variables; `nighthawk_client` is linked against the
+profiler in that configuration and writes the profile on exit:
 
 ```bash
-bazel test --test_env=ENVOY_IP_TEST_VERSIONS=v4only --test_env=HEAPPROFILE= --test_env=HEAPCHECK= --cache_test_results=no --compilation_mode=opt --cxxopt=-g --cxxopt=-ggdb3 //engine/benchmarks:*
+bazel build -c opt --define tcmalloc=gperftools --cxxopt=-g --cxxopt=-ggdb3 //engine:nighthawk_client
+CPUPROFILE=/tmp/nighthawk.prof bazel-bin/engine/nighthawk_client --rps 1000 --duration 30 http://127.0.0.1:8080/
 ```
+
+`HEAPPROFILE=/tmp/nighthawk.heap` does the same for the heap. The scripted
+benchmark suite upstream Nighthawk shipped for this is not carried here; a
+sortie plan against `nighthawk_test_server` is the equivalent driver.
 
 Note that it is possible to override Nighthawk's Envoy dependency
 to link against a local version, by adding a line to `.bazelrc`:
