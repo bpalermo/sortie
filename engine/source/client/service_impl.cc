@@ -1,5 +1,7 @@
 #include "engine/source/client/service_impl.h"
 
+#include "engine/source/client/redaction.h"
+
 #include "source/common/common/cleanup.h"
 #include "source/common/protobuf/utility.h"
 
@@ -19,29 +21,6 @@
 namespace Nighthawk {
 namespace Client {
 
-namespace {
-// A copy of the request fit for a log line: a client private key carried inline in its
-// tls_context is replaced with a note of its size.
-nighthawk::client::ExecutionRequest
-redactedForLog(const nighthawk::client::ExecutionRequest& request) {
-  nighthawk::client::ExecutionRequest copy = request;
-  if (copy.has_start_request() && copy.start_request().has_options() &&
-      copy.start_request().options().has_tls_context()) {
-    auto* common = copy.mutable_start_request()
-                       ->mutable_options()
-                       ->mutable_tls_context()
-                       ->mutable_common_tls_context();
-    for (auto& certificate : *common->mutable_tls_certificates()) {
-      if (certificate.has_private_key() && !certificate.private_key().inline_bytes().empty()) {
-        const size_t size = certificate.private_key().inline_bytes().size();
-        certificate.mutable_private_key()->set_inline_string(
-            absl::StrCat("<redacted: ", size, " bytes>"));
-      }
-    }
-  }
-  return copy;
-}
-} // namespace
 
 void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionRequest& request,
                                          Stream* stream) {

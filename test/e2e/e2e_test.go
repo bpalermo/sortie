@@ -461,6 +461,20 @@ func writeTestPKI(t *testing.T, dir string) {
 	}
 	leaf("server", 2, x509.ExtKeyUsageServerAuth, []net.IP{net.ParseIP("127.0.0.1")})
 	leaf("client", 3, x509.ExtKeyUsageClientAuth, nil)
+
+	// A second, unrelated CA: trusting it instead must make the target's
+	// certificate fail verification.
+	otherKey := newKey()
+	otherTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(4), Subject: pkix.Name{CommonName: "some other CA"},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	otherDER, err := x509.CreateCertificate(rand.Reader, otherTemplate, otherTemplate, &otherKey.PublicKey, otherKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("other-ca.pem", "CERTIFICATE", otherDER)
 }
 
 // A tls block with the CA and a client pair passes against a target that
@@ -496,6 +510,9 @@ func TestMutualTLSPlanAgainstTheEngine(t *testing.T) {
 	}{
 		{"with the client pair", withPair, true},
 		{"without the client pair", "", false},
+		// ca_file is enforced: the right pair, but trusting a CA that did not
+		// sign the target's certificate, fails the handshake on our side.
+		{"with the client pair and the wrong CA", withPair + "\n    ca_file: other-ca.pem", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			planPath := filepath.Join(tmp, strings.ReplaceAll(tc.name, " ", "_")+".yaml")

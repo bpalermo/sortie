@@ -92,9 +92,7 @@ func validateTls(p *Plan, s *Scenario) error {
 	if !strings.HasPrefix(target, "https://") {
 		return fmt.Errorf("tls needs an https target (got %q)", target)
 	}
-	if (t.GetCertFile() == "") != (t.GetKeyFile() == "") {
-		return fmt.Errorf("tls: cert_file and key_file go together")
-	}
+	// cert_file and key_file going together is the schema's rule (a CEL constraint on Tls).
 	return nil
 }
 
