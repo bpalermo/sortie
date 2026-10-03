@@ -57,6 +57,27 @@ already links for a given Go import path.
 CI requires that `bazel run //:gazelle` leaves no diff, so regenerate BUILD
 files rather than hand-editing them.
 
+## The Envoy pin
+
+The engine is Envoy, so an Envoy bump is how it gets CVE fixes and new client
+features. The pin is three things that move together: `ENVOY_COMMIT` in
+`MODULE.bazel` (a commit, resolved by `git_override`; the registry publishes a
+snapshot only every few weeks and a security fix should not wait for one), the
+`envoyproxy/bazel-registry` commit in `.bazelrc` (Envoy's `.envoy`-suffixed
+transitive modules exist only there, and it drops old snapshots), and the
+versions of the modules this workspace declares that Envoy also pins.
+
+`bazel/bump-envoy.sh <commit>` moves all three, refreshes the lockfile and
+prints the lines Envoy's `.bazelrc` has that the `ENGINE` section of ours does
+not, and vice versa. Those are the human part: Envoy reorganises its build
+flags from time to time (it removed `--config=clang` in Sep 2026), and a line
+it drops usually has to be dropped here too. Lines marked `# unique` are ours.
+Then `bazel test //...` and a PR whose description names the Envoy range.
+
+Bazel and the Go SDK move only with this pin (Envoy pins both; we match). The
+`bazel-arm64` and release jobs on `main` are the first to see a bump on arm64.
+aether's proxy pins Envoy too; keep the two within a week of each other.
+
 ## The two things that are easy to get wrong
 
 Both were found by running against a real backend, not by reading code, and unit
