@@ -4,155 +4,57 @@
      for sortie. It is built as part of the sortie workspace; its build and
      release are described in the repository README. -->
 
-# Nighthawk
+# The engine
 
-*A L7 (HTTP/HTTPS/HTTP2) performance characterization tool*
+The load engine of [sortie](../README.md): a fork of
+[Nighthawk](https://github.com/envoyproxy/nighthawk), Envoy's L7 load generator,
+built as part of the sortie workspace. It generates HTTP/1.1, HTTP/2, HTTP/3 and
+gRPC (unary and bidirectional streaming) load with Envoy's own client stack, so
+what it measures is what an Envoy data plane does.
 
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/envoyproxy/nighthawk/badge)](https://securityscorecards.dev/viewer/?uri=github.com/envoyproxy/nighthawk)
+Three binaries:
 
-## Current state
+| Binary | Role |
+| --- | --- |
+| `nighthawk_service` | The backend a sortie plan dispatches to, over gRPC on port 8443. The entrypoint of the `ghcr.io/bpalermo/sortie/engine` image. |
+| `nighthawk_test_server` | An Envoy with the test-server filters: a target for calibration runs and for the end-to-end test. |
+| `nighthawk_client` | The CLI, for driving one backend by hand without sortie. Its usage is below. |
 
-Nighthawk currently offers:
+`nighthawk_output_transform` is also built, for converting the client's JSON
+output into other formats.
 
-- A load testing client which supports HTTP/1.1 and HTTP/2 over HTTP and HTTPS.
-(HTTPS certificates are not yet validated).
-- A simple [test server](source/server/README.md) which is capable of generating dynamic response sizes, as well as inject delays.
-- A binary to transform nighthawk output to well-known formats, allowing integration with other systems and dashboards.
+## Building
 
-## Navigating the codebase
+From the repository root:
 
-See [navigating the codebase](docs/root/navigating_the_codebase.md) for a
-description of the directory structure.
-
-## Additional Documentation
-
-See the [howto](docs/root/howto) directory for documentation aimed at specific
-use-cases.
-
-## Building Nighthawk
-
-### Prerequisites
-
-Note that Nighthawk uses [Envoy's code](https://github.com/envoyproxy/envoy)
-directly, so building Envoy is a prerequisite for building Nighthawk. Start by
-looking at [Envoy's
-building](https://www.envoyproxy.io/docs/envoy/latest/start/building.html)
-documentation.
-
-#### Compiler requirements
-
-The main supported way of building Nighthawk is with the Clang compiler. At
-least Clang/LLVM 12+ is needed to successfully build Nighthawk.
-
-#### Bazel
-
-Both Envoy and Nighthawk use the [Bazel](https://bazel.build/) build tool. The
-steps required to set up Bazel are documented in Envoy's [Quick start Bazel
-build for
-developers](https://github.com/envoyproxy/envoy/blob/main/bazel/README.md#quick-start-bazel-build-for-developers).
-
-### Building on Ubuntu
-
-This section outlines the steps needed to build on Ubuntu. Note that these steps
-include commands that are documented in the prerequisites section above.
-
-#### Install required packages
-
-Run the following command to install the required packages.
-```
-sudo apt-get install \
-   autoconf \
-   automake \
-   cmake \
-   curl \
-   libtool \
-   make \
-   ninja-build \
-   patch \
-   python3-pip \
-   unzip \
-   virtualenv
+```console
+bazel build //engine:nighthawk_service //engine:nighthawk_test_server //engine:nighthawk_client
+bazel test //engine/test/...
 ```
 
-#### Install Clang/LLVM
+The toolchain is Envoy's hermetic Clang, downloaded by Bazel; no compiler needs
+installing. The engine's Envoy pin, and how to move it, is described in the root
+`AGENTS.md` under "The Envoy pin". Format checks are Envoy's:
 
-Note that depending on the chosen Ubuntu version, you may need to manually
-install a never version of Clang/LLVM. The installed version of Clang can be
-verified by running:
-```
-clang -v
-```
-
-If you do need to install a newer version, be sure to use Ubuntu's
-`update-alternatives` or a similar approach to switch to using the newer
-Clang/LLVM. See [issue#832](https://github.com/envoyproxy/nighthawk/issues/832)
-for one possible approach.
-
-Run the following commands to install Clang/LLVM.
-```
-sudo apt install -y lld clang llvm lld lldb
-sudo apt install -y clang-{format,tidy,tools} clang-doc clang-examples
+```console
+engine/tools/check_format.sh check
+engine/tools/format_python_tools.sh check
 ```
 
-#### Install Bazelisk instead of bazel
+## What differs from upstream
 
-[Bazelisk](https://github.com/bazelbuild/bazelisk) is recommended, since it
-automatically chooses and downloads the appropriate Bazel version. If you
-already have Bazel installed, it is strongly recommended to remove it.
+Carried from the sortie work: the gRPC modes (`--grpc-mode unary|bidi-stream`
+and the stream options), `--request-body-file`, the Envoy stats sink adapter
+(`nighthawk.envoy_stats_sink_adapter`), gRPC health checks and cancellation on
+`nighthawk_service`, and a client that no longer forks a child process unless a
+tunnel is configured. Removed: the adaptive load controller, the experimental
+sink and distributor services (the distributor's API stays, for sortie's
+distributor pools), and upstream's CI and release machinery, which the sortie
+workspace replaces.
 
-Run the following to remove bazel.
-```
-sudo apt-get remove bazel
-```
-
-Run the following to install Bazelisk.
-```
-sudo wget -O /usr/local/bin/bazel https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-$([ $(uname -m) = "aarch64" ] && echo "arm64" || echo "amd64")
-sudo chmod +x /usr/local/bin/bazel
-```
-
-#### Clone Nighthawk
-
-Run the following to clone the Nighthawk repository. Clang with libc++ is the
-default toolchain, so no compiler configuration flag is needed.
-```
-git clone https://github.com/envoyproxy/nighthawk
-cd nighthawk/
-```
-
-#### Install Python libraries
-
-It is advisable to use the same version of Python as the one listed at the top of `tools/base/requirements.txt`. While other versions may also work, the chances of success are greatest if using the same one.
-
-Recommended: Use `virtualenv` to avoid conflicts between Nighthawk's Python package version requirements and other versions already on your system:
-```
-python3 -m venv ~/my_nh_venv
-source ~/my_nh_venv/bin/activate
-```
-
-Note: Avoid creating the environment under the Nighthawk project directory.
-
-Install Python packages required for Nighthawk (whether using `virtualenv` or not):
-```
-pip3 install --user -r tools/base/requirements.txt
-```
-
-If `pip3 install` fails, you will need to troubleshoot the Python environment before attempting to build and test Nighthawk.
-
-#### Build and testing  Nighthawk
-
-You can now use the CI script to build Nighthawk.
-```
-ci/do_ci.sh build
-```
-
-Or to execute its tests.
-```
-ci/do_ci.sh test
-```
-
-Note that after building completes, the Nighthawk binaries are located in the
-`bazel-bin/` directory located at the root of the cloned Nighthawk repository.
+See [navigating the codebase](docs/root/navigating_the_codebase.md) for the
+directory layout and the [howto](docs/root/howto) directory for use-case guides.
+The [test server](source/server/README.md) has its own README.
 
 ## Using the Nighthawk client CLI
 
