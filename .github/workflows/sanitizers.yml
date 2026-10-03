@@ -19,8 +19,11 @@ on:
 permissions:
   contents: read
 
+# Keyed by ref: a manual dispatch from a branch must not cancel main's nightly
+# run, which it could not replace -- the release environment is restricted to
+# main.
 concurrency:
-  group: sanitizers
+  group: sanitizers-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -48,6 +51,9 @@ jobs:
       # --config=libc++ alongside the sanitizer config, as upstream Nighthawk's
       # CI did: the sanitizer runtimes are built against libc++ and mixing in
       # libstdc++ produces duplicate symbols.
+      # --nocache_test_results: a cached pass would otherwise satisfy the next
+      # night without running anything, and tsan's value is in running the
+      # tests again under new interleavings.
       - name: bazel test //engine/test/... (${{ matrix.sanitizer }})
         run: |
           bazel test //engine/test/... \
@@ -59,4 +65,5 @@ jobs:
             --build_metadata=REPO_URL=https://github.com/${{ github.repository }} \
             --build_metadata=COMMIT_SHA=${{ github.sha }} \
             --test_env=ENVOY_IP_TEST_VERSIONS=v4only \
+            --nocache_test_results \
             --test_output=errors
