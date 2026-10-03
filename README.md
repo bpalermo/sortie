@@ -225,8 +225,16 @@ A multi-arch image and a Helm chart are published to GHCR on every push to main:
 
 ```
 ghcr.io/bpalermo/sortie                 linux/amd64, linux/arm64
+ghcr.io/bpalermo/sortie/engine          linux/amd64, linux/arm64
 oci://ghcr.io/bpalermo/sortie/charts    the chart
 ```
+
+The engine image carries `nighthawk_service` (its entrypoint),
+`nighthawk_test_server` and `nighthawk_client`, built from `engine/` in this
+repository at the same commit as `sortie`. Each architecture is built natively
+and the two are stitched into one index. With `engine.enabled=true` the chart
+also deploys `nighthawk_service` behind a Service named `<release>-sortie-engine`
+on port 8443, for a plan's `services:` to name.
 
 The chart runs a plan as a Job, or as a CronJob with `cronJob.enabled=true`.
 The plan is held in a ConfigMap and mounted read-only, so changing a run does

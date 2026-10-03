@@ -1,0 +1,4 @@
+# Values for the template test that renders the engine objects, which the
+# chart's defaults leave out.
+engine:
+  enabled: true

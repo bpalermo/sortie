@@ -32,6 +32,15 @@ helm_template_test(
     chart = ":sortie",
 )
 
+# The engine Deployment and Service are behind engine.enabled, which the
+# defaults leave off, so they get their own render.
+helm_template_test(
+    name = "sortie_engine_template_test",
+    size = "small",
+    chart = ":sortie",
+    values = ["test/engine-enabled.yaml"],
+)
+
 filegroup(
     name = "starlark_srcs",
     srcs = glob(

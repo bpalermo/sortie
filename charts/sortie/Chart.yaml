@@ -6,8 +6,9 @@ description: |
   a breached threshold fails the Job and a malformed plan fails it differently
   (2 rather than 1).
 
-  This chart deploys the load generator's driver only. The Nighthawk backends
-  it dispatches to are addressed by the plan and are not deployed here.
+  This chart deploys the load generator's driver, and optionally
+  (engine.enabled) one Deployment of its engine, nighthawk_service, behind a
+  Service. The backends a plan dispatches to are addressed by name in the plan.
 type: application
 # Stamped at package time from the workspace status.
 version: "0.1.0-{STABLE_GIT_COMMIT}"

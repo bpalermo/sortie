@@ -1,0 +1,60 @@
+{{- if .Values.engine.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sortie.engineName" . }}
+  labels:
+    {{- include "sortie.labels" . | nindent 4 }}
+    app.kubernetes.io/component: engine
+spec:
+  replicas: {{ .Values.engine.replicas }}
+  selector:
+    matchLabels:
+      {{- include "sortie.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: engine
+  template:
+    metadata:
+      labels:
+        {{- include "sortie.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: engine
+    spec:
+      serviceAccountName: {{ include "sortie.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: engine
+          image: {{ .Values.engine.image.ref | quote }}
+          imagePullPolicy: {{ .Values.engine.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # The image's entrypoint is nighthawk_service.
+          args:
+            - --listen
+            - 0.0.0.0:8443
+          ports:
+            - name: grpc
+              containerPort: 8443
+              protocol: TCP
+          # nighthawk_service does not serve the gRPC health protocol, and the
+          # image has no shell or curl, so the probe is the kubelet's own TCP
+          # connect: it proves the listener is up, which is all there is to
+          # prove -- the service accepts one execution at a time regardless.
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+          resources:
+            {{- toYaml .Values.engine.resources | nindent 12 }}
+      {{- with .Values.engine.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.engine.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}

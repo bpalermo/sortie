@@ -10,6 +10,15 @@
 {{- end -}}
 {{- end -}}
 
+{{/*
+The engine's Deployment and Service name. fullname may already be 63
+characters, the DNS label limit a Service name has to meet, so the base is
+cut to leave room for the suffix.
+*/}}
+{{- define "sortie.engineName" -}}
+{{- printf "%s-engine" (include "sortie.fullname" . | trunc 56 | trimSuffix "-") -}}
+{{- end -}}
+
 {{- define "sortie.labels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 app.kubernetes.io/name: {{ include "sortie.name" . }}
