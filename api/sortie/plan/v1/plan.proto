@@ -198,8 +198,8 @@ message Scenario {
   Grpc grpc = 16;
 
   // WebSocket load: `streams` connections per backend upgraded from HTTP/1.1,
-  // the message (body or body_file) sent on them round-robin at the executor's
-  // rate, each timed against its echo -- the bidi-stream schedule and
+  // the message (body or body_file) sent on them round-robin at the backend's
+  // share of the executor's rate, each timed against its echo -- the bidi-stream schedule and
   // accounting, for WebSocket. The target is the upgrade request's URL
   // (http:// or https://, not ws://). Implies protocol http1 and method GET;
   // mutually exclusive with grpc.

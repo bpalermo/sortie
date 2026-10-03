@@ -207,7 +207,8 @@ scenarios:
 Each backend upgrades `streams` HTTP/1.1 connections (through Envoy's own
 upgrade path, so an Envoy in front with `upgrade_configs: [{upgrade_type:
 websocket}]` is exactly what gets tested) and sends the message on them
-round-robin at the executor's rate, each timed against its echo. The server is
+round-robin at its share of the executor's rate -- the rate is pool-wide and
+divided between backends, as always -- each timed against its echo. The server is
 expected to echo what it receives; sortie prefixes every message with a
 sequence number to match echoes, so an endpoint that answers something else
 counts in `benchmark.stream_unexpected_message`. Everything said about
