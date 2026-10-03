@@ -9,6 +9,7 @@ package plan
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"buf.build/go/protovalidate"
 	"buf.build/go/protoyaml"
@@ -49,6 +50,7 @@ type (
 	Plan     = planv1.Plan
 	Pool     = planv1.Pool
 	Scenario = planv1.Scenario
+	Grpc     = planv1.Grpc
 	Executor = planv1.Executor
 	Stage    = planv1.Stage
 )
@@ -83,6 +85,27 @@ func parse(raw []byte, path string) (*Plan, error) {
 	if err := validateBeyondSchema(p); err != nil {
 		return nil, err
 	}
+	resolveBodyFiles(p, path)
 	applyDefaults(p)
 	return p, nil
+}
+
+// resolveBodyFiles makes every body_file relative to the plan's directory
+// rather than to wherever sortie happens to run, so a plan and the message it
+// sends travel together. A plan parsed from memory has no directory and keeps
+// its paths as written.
+func resolveBodyFiles(p *Plan, path string) {
+	if path == "" {
+		return
+	}
+	dir := filepath.Dir(path)
+	resolve := func(s *Scenario) {
+		if s != nil && s.GetBodyFile() != "" && !filepath.IsAbs(s.GetBodyFile()) {
+			s.BodyFile = filepath.Join(dir, s.GetBodyFile())
+		}
+	}
+	resolve(p.GetDefaults())
+	for _, s := range p.GetScenarios() {
+		resolve(s)
+	}
 }

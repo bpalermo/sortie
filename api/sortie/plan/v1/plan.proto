@@ -170,6 +170,16 @@ message Scenario {
   // Thresholds applied to this scenario only.
   repeated string thresholds = 14;
 
+  // gRPC load instead of plain HTTP. Implies protocol http2 and method POST;
+  // setting either to anything else is an error. The request message is the
+  // body (or body_file), sent verbatim as the serialized protobuf message.
+  Grpc grpc = 16;
+
+  // Like body, but the bytes of a file, resolved relative to the plan file.
+  // For request messages that are not text, such as serialized protobufs.
+  // Mutually exclusive with body.
+  string body_file = 17;
+
   // Nighthawk options passed through untouched, for anything this schema does
   // not model: transport sockets, request source plugins, tunnelling,
   // user-defined output plugins.
@@ -180,6 +190,40 @@ message Scenario {
   // Nighthawk's own adaptive load controller takes a
   // nighthawk_traffic_template.
   nighthawk.client.CommandLineOptions nighthawk_template = 15;
+}
+
+// Grpc selects one of the engine's gRPC modes.
+message Grpc {
+  // "unary": one gRPC call per request, scored by grpc-status (a failed RPC
+  // never counts as http_2xx; see benchmark.grpc_error and
+  // benchmark.grpc_status.<code>, and the latency_grpc_ok statistic).
+  //
+  // "bidi-stream": `streams` long-lived bidirectional streams per backend,
+  // sending the request message round-robin at the executor's rate and
+  // measuring each message against its echo (benchmark_stream.message_latency).
+  // The server is expected to echo one message per message, in order. In this
+  // mode the rate is divided between backends only: the backend spreads its
+  // share over its workers itself, so each backend's share must be a multiple
+  // of its concurrency, as must `streams`.
+  string mode = 1 [(buf.validate.field).cel = {
+    id: "grpc.mode.known"
+    message: "grpc.mode must be unary or bidi-stream"
+    expression: "this in ['unary', 'bidi-stream']"
+  }];
+
+  // bidi-stream only: streams to open per backend. The engine's default is 20.
+  optional uint32 streams = 2 [(buf.validate.field).uint32.gte = 1];
+
+  // bidi-stream only: unanswered messages a stream may hold before a scheduled
+  // send is dropped and counted in benchmark.stream_deferred. Default 256.
+  optional uint32 max_inflight_per_stream = 3 [(buf.validate.field).uint32.gte = 1];
+
+  // bidi-stream only: how long to wait for outstanding echoes after the
+  // streams are half-closed at the end of the run. Default 500ms.
+  google.protobuf.Duration drain_duration = 4 [
+    (buf.validate.field).duration.gte = {seconds: 0},
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
 }
 
 // Executor shapes the request rate over time.

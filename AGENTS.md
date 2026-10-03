@@ -130,6 +130,20 @@ sortie needs to reason about it — the template already reaches it. The fields
 sortie overwrites are listed in `internal/compile.options`; everything else in a
 template survives compilation.
 
+## gRPC modes
+
+`Scenario.grpc` maps to the engine's `grpc_mode` and `grpc_stream` options and
+forces `protocol` http2 and `method` POST (the loader rejects anything else).
+The one subtlety is the rate: in `bidi-stream` the engine's
+`requests_per_second` is the backend's *aggregate* message rate, which it
+divides over its workers itself (`perWorkerRequestsPerSecond` in
+`engine/source/common/rate_limiter_impl.cc`, used by the linear and the
+ramping limiter alike). `compile.Divide` and `uniformShare` therefore split
+the plan's rate in per-worker units as always and, in that mode only,
+multiply each backend's share back up by the workers (`backendRate`).
+Everywhere else the engine's rate is per worker. Tests in `internal/compile`
+pin both behaviours; keep them when touching `Divide`.
+
 ## Protos
 
 The engine's API protos live in `engine/api` and are compiled by Bazel for

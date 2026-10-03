@@ -181,7 +181,7 @@ RateLimiterPtr LinearRampingRateLimiterImplFactory::createRateLimiterPlugin(
   nighthawk::rate_limiter::LinearRampingRateLimiterConfig config;
   Envoy::MessageUtil::anyConvert(*any, config);
 
-  const uint32_t rps = options.requestsPerSecond();
+  const uint32_t rps = perWorkerRequestsPerSecond(options);
   const std::chrono::nanoseconds ramp_time = std::chrono::seconds(config.ramp_time().seconds()) +
                                              std::chrono::nanoseconds(config.ramp_time().nanos());
 
@@ -194,6 +194,13 @@ RateLimiterPtr LinearRampingRateLimiterImplFactory::createRateLimiterPlugin(
   }
 
   return std::make_unique<LinearRampingRateLimiterImpl>(time_source, ramp_time, Frequency(rps));
+}
+
+uint32_t perWorkerRequestsPerSecond(const Nighthawk::Client::Options& options) {
+  if (options.grpcMode() == nighthawk::client::GrpcMode::BIDI_STREAM) {
+    return options.requestsPerSecond() / std::stoi(options.concurrency());
+  }
+  return options.requestsPerSecond();
 }
 
 REGISTER_FACTORY(LinearRampingRateLimiterImplFactory, RateLimiterPluginConfigFactory);

@@ -145,6 +145,47 @@ RPC exists in `api/client/service.proto` but the service rejects it. Each stage
 is therefore its own execution: connections are re-established at every
 boundary, and each stage is reported and judged separately.
 
+## gRPC
+
+A scenario with a `grpc` block generates gRPC load instead of plain HTTP. It
+implies `protocol: http2` and `method: POST`; the request message is the
+scenario's `body` or, for a serialized protobuf, `body_file` (a path relative to
+the plan file).
+
+```yaml
+scenarios:
+  - name: unary
+    target: http://grpc.example.test:8080/helloworld.Greeter/SayHello
+    body_file: hello_request.bin
+    grpc: {mode: unary}
+    executor: {type: constant-rate, rate: 1000, duration: 60s}
+    thresholds:
+      - "counter:benchmark.grpc_error == 0"
+      - "latency_grpc_ok.p99 < 20ms"
+
+  - name: streaming
+    target: http://grpc.example.test:8080/echo.Echo/Chat
+    body_file: chat_message.bin
+    concurrency: "2"
+    grpc: {mode: bidi-stream, streams: 20, max_inflight_per_stream: 256}
+    executor: {type: constant-rate, rate: 4000, duration: 60s}
+    thresholds:
+      - "counter:benchmark.stream_deferred == 0"
+      - "message_latency.p99 < 10ms"
+```
+
+| Mode | What it does |
+| --- | --- |
+| `unary` | One gRPC call per request, scored by `grpc-status`: a failed RPC never counts as `http_2xx`. Counters `benchmark.grpc_error` and `benchmark.grpc_status.<code>`; statistic `latency_grpc_ok`. |
+| `bidi-stream` | `streams` long-lived bidirectional streams per backend; the message is sent round-robin at the executor's rate and each one is timed against its echo (`benchmark_stream.message_latency`). The server must echo one message per message, in order. A stream holding `max_inflight_per_stream` unanswered messages drops the next scheduled send into `benchmark.stream_deferred` -- the saturation signal. |
+
+In `bidi-stream` the engine spreads a backend's share of the rate over its own
+workers, so sortie sends each backend its aggregate rather than a per-worker
+rate. The split is still made in per-worker units -- the plan's rate must be
+a multiple of the scenario's `concurrency`, which has to be a number, as must
+`streams` -- so 300 rps over two backends with four workers is 152 and 148.
+`sortie compile` shows the result.
+
 ## Anything this schema does not model
 
 `nighthawk_template` on a scenario carries Nighthawk options straight through.

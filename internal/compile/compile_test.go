@@ -1,6 +1,7 @@
 package compile
 
 import (
+	"google.golang.org/protobuf/proto"
 	"testing"
 	"time"
 
@@ -9,9 +10,9 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"github.com/bpalermo/sortie/internal/plan"
 	client "github.com/bpalermo/sortie/engine/api/client"
 	ratelimiter "github.com/bpalermo/sortie/engine/api/rate_limiter"
+	"github.com/bpalermo/sortie/internal/plan"
 )
 
 func dur(d time.Duration) *durationpb.Duration { return durationpb.New(d) }
@@ -455,5 +456,189 @@ func TestConcurrencyAtTheUint32LimitIsAccepted(t *testing.T) {
 	}
 	if got := perBackend[0].GetRequestsPerSecond().GetValue(); got != 1 {
 		t.Errorf("--rps = %d, want 1", got)
+	}
+}
+
+func TestGrpcUnaryImpliesHttp2Post(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 10, Duration: dur(time.Second)})
+	s.Body = "msg"
+	s.Grpc = &plan.Grpc{Mode: "unary"}
+
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := execs[0].Options
+	if o.GetGrpcMode().GetValue() != client.GrpcMode_UNARY {
+		t.Errorf("grpc_mode = %v, want UNARY", o.GetGrpcMode().GetValue())
+	}
+	if o.GetProtocol().GetValue() != client.Protocol_HTTP2 {
+		t.Errorf("protocol = %v, want HTTP2", o.GetProtocol().GetValue())
+	}
+	if o.GetRequestOptions().GetRequestMethod().String() != "POST" {
+		t.Errorf("method = %v, want POST", o.GetRequestOptions().GetRequestMethod())
+	}
+	if o.GetGrpcStream() != nil {
+		t.Errorf("unary must not set grpc_stream, got %v", o.GetGrpcStream())
+	}
+}
+
+func TestGrpcBidiStreamOptions(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 10, Duration: dur(time.Second)})
+	s.Grpc = &plan.Grpc{Mode: "bidi-stream", Streams: proto.Uint32(40), MaxInflightPerStream: proto.Uint32(8)}
+
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := execs[0].Options
+	if o.GetGrpcMode().GetValue() != client.GrpcMode_BIDI_STREAM {
+		t.Errorf("grpc_mode = %v, want BIDI_STREAM", o.GetGrpcMode().GetValue())
+	}
+	if o.GetGrpcStream().GetStreams().GetValue() != 40 || o.GetGrpcStream().GetMaxInflightPerStream().GetValue() != 8 {
+		t.Errorf("grpc_stream = %v", o.GetGrpcStream())
+	}
+}
+
+// In bidi-stream the engine takes a backend's aggregate rate and spreads it
+// over its workers itself, so the plan's rate is divided between backends
+// only. Forwarding a per-worker share, as every other mode needs, would
+// generate 1/workers of the load.
+func TestDivideBidiStreamKeepsTheRatePerBackend(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 400, Duration: dur(time.Second)})
+	s.Concurrency = "2"
+	s.Grpc = &plan.Grpc{Mode: "bidi-stream"}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := Divide(execs[0], 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, o := range opts {
+		if got := o.GetRequestsPerSecond().GetValue(); got != 200 {
+			t.Errorf("backend %d: rps = %d, want 200 (400 over 2 backends, not divided by 2 workers)", i, got)
+		}
+	}
+}
+
+// Shares are dealt in per-worker units, so an uneven split stays possible in
+// bidi-stream and every backend's aggregate is a multiple of its workers.
+func TestDivideBidiStreamSplitsInWorkerUnits(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 300, Duration: dur(time.Second)})
+	s.Concurrency = "4"
+	s.Grpc = &plan.Grpc{Mode: "bidi-stream"}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := Divide(execs[0], 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []uint32{opts[0].GetRequestsPerSecond().GetValue(), opts[1].GetRequestsPerSecond().GetValue()}
+	if got[0] != 152 || got[1] != 148 {
+		t.Errorf("rps = %v, want [152 148] (300 rps in units of 4 workers: 38 and 37 units)", got)
+	}
+	s.Executor.Rate = 302
+	execs, _ = Expand(s)
+	if _, err := Divide(execs[0], 2); err == nil {
+		t.Fatal("302 is not a multiple of 4 workers; want an error")
+	}
+}
+
+// The distributor path has the same bidi-stream rule as the direct one: a
+// backend's aggregate rate, divided between targets only.
+func TestForPoolDistributorBidiStreamKeepsTheRatePerTarget(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 400, Duration: dur(time.Second)})
+	s.Concurrency = "2"
+	s.Grpc = &plan.Grpc{Mode: "bidi-stream"}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := &plan.Pool{Name: "p", Distributor: "127.0.0.1:1", Targets: []string{"a:1", "b:1"}}
+	_, opts, err := ForPool(execs[0], pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := opts[0].GetRequestsPerSecond().GetValue(); got != 200 {
+		t.Errorf("rps = %d, want 200 (400 over 2 targets, not divided by 2 workers)", got)
+	}
+	s.Executor.Rate = 302
+	execs, _ = Expand(s)
+	if _, _, err := ForPool(execs[0], pool); err == nil {
+		t.Fatal("302 is not a multiple of 2 targets x 2 workers; want an error")
+	}
+}
+
+// A template's grpc_stream does not outlive the plan's grpc block: what the
+// plan leaves unset is the engine's default, as the loader assumed.
+func TestGrpcBlockDropsATemplateGrpcStream(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second)})
+	s.Concurrency = "4"
+	s.Grpc = &plan.Grpc{Mode: "bidi-stream"}
+	s.NighthawkTemplate = &client.CommandLineOptions{
+		GrpcStream: &client.CommandLineOptions_GrpcStreamOptions{Streams: wrapperspb.UInt32(10)},
+	}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execs[0].Options.GetGrpcStream() != nil {
+		t.Errorf("grpc_stream = %v, want none (the template's 10 streams would not divide over 4 workers)",
+			execs[0].Options.GetGrpcStream())
+	}
+}
+
+// A grpc block alone does not discard what a template put in request_options:
+// its headers and body survive, and only the method is forced to POST.
+func TestGrpcBlockKeepsATemplateRequestOptions(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second)})
+	s.Grpc = &plan.Grpc{Mode: "unary"}
+	s.NighthawkTemplate = &client.CommandLineOptions{
+		OneofRequestOptions: &client.CommandLineOptions_RequestOptions{RequestOptions: &client.RequestOptions{
+			RequestMethod:  corev3.RequestMethod_GET,
+			RequestHeaders: []*corev3.HeaderValueOption{{Header: &corev3.HeaderValue{Key: "x-tenant", Value: "a"}}},
+			RequestBody:    []byte("\x00\x00\x00\x00\x00"),
+		}},
+	}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ro := execs[0].Options.GetRequestOptions()
+	if ro.GetRequestMethod() != corev3.RequestMethod_POST {
+		t.Errorf("method = %v, want POST", ro.GetRequestMethod())
+	}
+	if len(ro.GetRequestHeaders()) != 1 || ro.GetRequestHeaders()[0].GetHeader().GetKey() != "x-tenant" {
+		t.Errorf("headers = %v, want the template's x-tenant", ro.GetRequestHeaders())
+	}
+	if len(ro.GetRequestBody()) != 5 {
+		t.Errorf("body = %q, want the template's 5 bytes", ro.GetRequestBody())
+	}
+}
+
+// A scenario's body replaces a template's request_body_size, which the engine
+// would otherwise reject alongside it.
+func TestScenarioBodyReplacesATemplateBodySize(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second)})
+	s.Body = "hello"
+	s.NighthawkTemplate = &client.CommandLineOptions{
+		OneofRequestOptions: &client.CommandLineOptions_RequestOptions{RequestOptions: &client.RequestOptions{
+			RequestBodySize: wrapperspb.UInt32(1024),
+		}},
+	}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ro := execs[0].Options.GetRequestOptions()
+	if ro.RequestBodySize != nil {
+		t.Errorf("request_body_size = %v survived the scenario's body", ro.GetRequestBodySize())
+	}
+	if string(ro.GetRequestBody()) != "hello" {
+		t.Errorf("body = %q, want hello", ro.GetRequestBody())
 	}
 }

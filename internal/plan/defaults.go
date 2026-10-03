@@ -27,8 +27,12 @@ func applyDefaults(p *Plan) {
 		if s.GetMethod() == "" {
 			s.Method = d.GetMethod()
 		}
-		if s.GetBody() == "" {
+		if s.GetBody() == "" && s.GetBodyFile() == "" {
 			s.Body = d.GetBody()
+			s.BodyFile = d.GetBodyFile()
+		}
+		if s.GetGrpc() == nil && d.GetGrpc() != nil {
+			s.Grpc = proto.Clone(d.GetGrpc()).(*Grpc)
 		}
 		if s.GetProtocol() == "" {
 			s.Protocol = d.GetProtocol()

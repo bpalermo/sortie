@@ -4,6 +4,7 @@ package compile
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,9 +15,9 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"github.com/bpalermo/sortie/internal/plan"
 	client "github.com/bpalermo/sortie/engine/api/client"
 	ratelimiter "github.com/bpalermo/sortie/engine/api/rate_limiter"
+	"github.com/bpalermo/sortie/internal/plan"
 )
 
 // LinearRampingRateLimiterPlugin is the name Nighthawk registers its linear
@@ -143,7 +144,7 @@ func uniformShare(e Execution, targets int) (*client.CommandLineOptions, error) 
 	}
 
 	clone := cloneOptions(e.Options)
-	clone.RequestsPerSecond = wrapperspb.UInt32(e.Rate / divisor)
+	clone.RequestsPerSecond = wrapperspb.UInt32(backendRate(e, e.Rate/divisor, workers))
 	return clone, nil
 }
 
@@ -191,13 +192,28 @@ func Divide(e Execution, backends int) ([]*client.CommandLineOptions, error) {
 			share++
 		}
 		clone := cloneOptions(e.Options)
-		clone.RequestsPerSecond = wrapperspb.UInt32(share)
+		clone.RequestsPerSecond = wrapperspb.UInt32(backendRate(e, share, workers))
 		if backends > 1 {
 			clone.ExecutionId = wrapperspb.String(fmt.Sprintf("%s#%d", e.Label, i))
 		}
 		out = append(out, clone)
 	}
 	return out, nil
+}
+
+// backendRate turns a backend's per-worker share into the --rps it is sent.
+// That is the share itself, except in gRPC bidi-stream mode, where the engine
+// takes a backend's aggregate and divides it over the workers itself: sending
+// the per-worker share there would generate 1/workers of the load. Dividing in
+// per-worker units first and multiplying back keeps uneven splits possible --
+// 300 rps over two backends with four workers is 152 + 148 -- and guarantees
+// each backend's aggregate is a multiple of its workers, which the engine
+// requires.
+func backendRate(e Execution, perWorkerShare uint32, workers int) uint32 {
+	if e.Scenario.GetGrpc().GetMode() == "bidi-stream" {
+		return perWorkerShare * uint32(workers)
+	}
+	return perWorkerShare
 }
 
 // workersPerBackend reports how many worker threads each backend will run.
@@ -256,8 +272,39 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 			Protocol: &client.Protocol{Value: value},
 		}
 	}
-	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" {
-		reqOpts, err := requestOptions(s)
+	if g := s.GetGrpc(); g != nil {
+		// gRPC is HTTP/2 POST; the loader already rejected anything else, so
+		// setting both here is what makes an unset protocol and method mean the
+		// right thing rather than http1 GET.
+		o.OneofProtocol = &client.CommandLineOptions_Protocol{
+			Protocol: &client.Protocol{Value: client.Protocol_HTTP2},
+		}
+		mode := client.GrpcMode_UNARY
+		if g.GetMode() == "bidi-stream" {
+			mode = client.GrpcMode_BIDI_STREAM
+		}
+		o.GrpcMode = &client.GrpcMode{Value: mode}
+		// The plan's grpc block is the whole of the stream configuration: a
+		// template's grpc_stream is dropped, so a field the plan leaves unset
+		// really is the engine's default -- the one the loader validated the
+		// concurrency against.
+		o.GrpcStream = nil
+		if g.Streams != nil || g.MaxInflightPerStream != nil || g.GetDrainDuration() != nil {
+			so := &client.CommandLineOptions_GrpcStreamOptions{}
+			if g.Streams != nil {
+				so.Streams = wrapperspb.UInt32(g.GetStreams())
+			}
+			if g.MaxInflightPerStream != nil {
+				so.MaxInflightPerStream = wrapperspb.UInt32(g.GetMaxInflightPerStream())
+			}
+			if g.GetDrainDuration() != nil {
+				so.DrainDuration = g.GetDrainDuration()
+			}
+			o.GrpcStream = so
+		}
+	}
+	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil {
+		reqOpts, err := requestOptions(s, o.GetRequestOptions())
 		if err != nil {
 			return nil, err
 		}
@@ -313,15 +360,33 @@ func protocol(name string) (client.Protocol_ProtocolOptions, error) {
 	return 0, fmt.Errorf("unknown protocol %q", name)
 }
 
-func requestOptions(s *plan.Scenario) (*client.RequestOptions, error) {
+// requestOptions builds the request options from what the scenario sets,
+// starting from the template's (base may be nil) so a template's headers or
+// body survive a scenario that says nothing about them. A scenario's headers
+// replace the template's rather than add to them: a plan that lists headers
+// means those headers.
+func requestOptions(s *plan.Scenario, base *client.RequestOptions) (*client.RequestOptions, error) {
 	ro := &client.RequestOptions{}
-
-	method, err := requestMethod(s.Method)
-	if err != nil {
-		return nil, fmt.Errorf("scenario %q: %w", s.Name, err)
+	if base != nil {
+		ro = proto.Clone(base).(*client.RequestOptions)
 	}
-	ro.RequestMethod = method
 
+	methodName := s.GetMethod()
+	if methodName == "" && s.GetGrpc() != nil {
+		// gRPC is POST whatever a template says.
+		methodName = "POST"
+	}
+	if methodName != "" {
+		method, err := requestMethod(methodName)
+		if err != nil {
+			return nil, fmt.Errorf("scenario %q: %w", s.Name, err)
+		}
+		ro.RequestMethod = method
+	}
+
+	if len(s.Headers) > 0 {
+		ro.RequestHeaders = nil
+	}
 	for _, h := range s.Headers {
 		key, value, ok := strings.Cut(h, ":")
 		if !ok {
@@ -334,10 +399,25 @@ func requestOptions(s *plan.Scenario) (*client.RequestOptions, error) {
 			},
 		})
 	}
+	if s.Body != "" || s.GetBodyFile() != "" {
+		// The scenario's body is the body: a template's request_body_size or
+		// json_body would otherwise ride along, and the engine rejects them
+		// together.
+		ro.RequestBodySize = nil
+		ro.JsonBody = ""
+	}
 	if s.Body != "" {
 		// RequestBody is sent verbatim and sets no Content-Type, leaving the
 		// header entirely under the plan's control.
 		ro.RequestBody = []byte(s.Body)
+	}
+	if s.GetBodyFile() != "" {
+		// Resolved against the plan's directory by the loader.
+		body, err := os.ReadFile(s.GetBodyFile())
+		if err != nil {
+			return nil, fmt.Errorf("scenario %q: body_file: %w", s.Name, err)
+		}
+		ro.RequestBody = body
 	}
 	return ro, nil
 }

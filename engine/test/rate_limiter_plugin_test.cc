@@ -81,6 +81,45 @@ TEST_F(LinearRampingRateLimiterPluginTest, ValidConfigInitializesWorkingRateLimi
   EXPECT_NE(dynamic_cast<LinearRampingRateLimiterImpl*>(plugin.get()), nullptr);
 }
 
+// In --grpc-mode bidi-stream --rps is the aggregate over the workers, for the
+// ramping limiter as much as for the linear one: a ramp to 100 rps over two
+// workers tops out at 50 rps on each.
+TEST_F(LinearRampingRateLimiterPluginTest, BidiStreamRampsToThePerWorkerRate) {
+  LinearRampingRateLimiterImplFactory config_factory;
+  nighthawk::rate_limiter::LinearRampingRateLimiterConfig config;
+  config.mutable_ramp_time()->set_seconds(1);
+  Envoy::Protobuf::Any config_any;
+  std::ignore = config_any.PackFrom(config);
+
+  EXPECT_CALL(options_, requestsPerSecond()).WillRepeatedly(testing::Return(100));
+  EXPECT_CALL(options_, grpcMode())
+      .WillRepeatedly(testing::Return(nighthawk::client::GrpcMode::BIDI_STREAM));
+  EXPECT_CALL(options_, concurrency()).WillRepeatedly(testing::Return("2"));
+  EXPECT_CALL(options_, noDuration()).WillRepeatedly(testing::Return(true));
+
+  RateLimiterPtr plugin =
+      config_factory.createRateLimiterPlugin(config_any, *api_, time_system_, options_);
+  ASSERT_NE(plugin, nullptr);
+
+  // Ramp for a second, then count a second at the top rate.
+  EXPECT_FALSE(plugin->tryAcquireOne());
+  const auto tick = std::chrono::microseconds(100);
+  for (auto elapsed = std::chrono::microseconds(0); elapsed < std::chrono::seconds(1);
+       elapsed += tick) {
+    time_system_.advanceTimeWait(tick);
+    plugin->tryAcquireOne();
+  }
+  unsigned int count = 0;
+  for (auto elapsed = std::chrono::microseconds(0); elapsed < std::chrono::seconds(1);
+       elapsed += tick) {
+    time_system_.advanceTimeWait(tick);
+    if (plugin->tryAcquireOne()) {
+      count++;
+    }
+  }
+  EXPECT_EQ(count, 50);
+}
+
 TEST_F(LinearRampingRateLimiterPluginTest, RampTimeExceedingDurationThrowsException) {
   LinearRampingRateLimiterImplFactory config_factory;
 
