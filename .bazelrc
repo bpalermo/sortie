@@ -35,17 +35,16 @@ test --test_verbose_timeout_warnings
 # section does not, which is where a bump starts.
 #############################################################################
 
-build:asan --test_timeout=4800
-build:tsan --test_timeout=4800
-build:test_gcc --test_timeout=4800
+build:asan --test_timeout=4800  # unique
+build:tsan --test_timeout=4800  # unique
 # See https://github.com/envoyproxy/nighthawk/issues/405
 
 # Test configuration flags
 # Enable stress tests (expensive tests that are skipped by default)
-test:stress --//engine/test/config:run_stress_tests=True
+test:stress --//engine/test/config:run_stress_tests=True  # unique
 
 # CI configuration
-build:download-toplevel --remote_download_outputs=toplevel
+build:download-toplevel --remote_download_outputs=toplevel  # unique
 #############################################################################
 # startup
 #############################################################################
@@ -175,10 +174,10 @@ build:asan-common --define signal_trace=disabled
 build:asan-common --define ENVOY_CONFIG_ASAN=1
 build:asan-common --build_tag_filters=-no_san
 build:asan-common --test_tag_filters=-no_san
-# The following two lines were manually edited due to #593.
+# The following two lines were manually edited due to nighthawk#593.
 # Flag undefined was dropped from both the lines to allow CI/ASAN to pass.
-build:asan-common --copt -fsanitize=address
-build:asan-common --linkopt -fsanitize=address
+build:asan-common --copt -fsanitize=address  # unique
+build:asan-common --linkopt -fsanitize=address  # unique
 # vptr and function sanitizer are enabled in asan
 build:asan-common --copt -fno-sanitize=vptr,function
 build:asan-common --linkopt -fno-sanitize=vptr,function
