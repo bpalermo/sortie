@@ -258,8 +258,7 @@ void TcpBenchmarkClientImpl::finish() {
   if (anyInflight()) {
     waiting_for_ = WaitingFor::Echoes;
     wait_timer_ = dispatcher_.createTimer([this]() { dispatcher_.exit(); });
-    wait_timer_->enableTimer(
-        std::chrono::ceil<std::chrono::milliseconds>(drain_duration_));
+    wait_timer_->enableTimer(std::chrono::ceil<std::chrono::milliseconds>(drain_duration_));
     dispatcher_.run(Envoy::Event::Dispatcher::RunType::RunUntilExit);
     wait_timer_.reset();
     waiting_for_ = WaitingFor::Nothing;
@@ -289,8 +288,17 @@ void TcpBenchmarkClientImpl::finish() {
 void TcpBenchmarkClientImpl::terminate() {
   finish();
   setShouldMeasureLatencies(false);
-  for (uint32_t i = 0; i < connection_count_; i++) {
-    closeConnection(i, Envoy::Network::ConnectionCloseType::NoFlush);
+  // finish() closed with FlushWrite and marked the connections Closed; a flush that has not
+  // completed is cut short here, whatever the state says.
+  for (Connection& connection : connections_) {
+    if (connection.state == State::Connecting) {
+      pending_opens_--;
+    }
+    connection.state = State::Closed;
+    completeInflight(connection, /*success=*/false);
+    if (connection.connection != nullptr) {
+      connection.connection->close(Envoy::Network::ConnectionCloseType::NoFlush);
+    }
   }
 }
 

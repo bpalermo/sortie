@@ -255,6 +255,8 @@ TEST_F(TcpBenchmarkClientTest, FinishWaitsForEchoesThenCloses) {
   EXPECT_EQ(1, successes);
   EXPECT_EQ(0, getCounter("tcp_drain_incomplete"));
   EXPECT_EQ(0, getCounter("tcp_inflight_lost"));
+  // terminate() cuts the flush short, whatever finish() already did.
+  EXPECT_CALL(*connections_[0], close(Envoy::Network::ConnectionCloseType::NoFlush));
   client_->terminate();
 }
 
