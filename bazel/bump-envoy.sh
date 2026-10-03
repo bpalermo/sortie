@@ -76,7 +76,14 @@ echo "MODULE.bazel.lock refreshed"
 # Envoy keeps in files we do not import are the expected noise.
 awk '/^# ENGINE: /{f=1} /^# SORTIE: BuildBuddy/{f=0} f' .bazelrc \
   | grep -v -E '^#|^$|--registry=' | sort -u > "${tmp}/ours"
-grep -v -E '^#|^$|--registry=|^try-import' "${tmp}/.bazelrc" | sort -u > "${tmp}/theirs"
+# Only the configs the ENGINE section keeps are compared; Envoy's others
+# (coverage, fuzzing, msan, gcc, docker, macOS, FIPS, EngFlow) are dropped on
+# purpose and would only be noise here.
+# Escaped for the alternation: libc++ would otherwise read as a quantifier.
+kept_configs="$(grep -oE '^(build|common|test):[A-Za-z0-9_+-]+' "${tmp}/ours" | sed -E 's/^[a-z]+://; s/\+/\\+/g' | sort -u | paste -sd'|' -)"
+grep -v -E '^#|^$|--registry=|^try-import' "${tmp}/.bazelrc" \
+  | grep -E "^(build|common|test|run|query|fetch|startup) --|^(build|common|test):(${kept_configs:-NONE}) " \
+  | sort -u > "${tmp}/theirs"
 echo
 echo "Envoy .bazelrc lines not in our ENGINE section (consider adding):"
 comm -13 "${tmp}/ours" "${tmp}/theirs" | sed 's/^/  + /'
