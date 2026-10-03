@@ -1,0 +1,314 @@
+#include <chrono>
+
+#include "nighthawk/common/exception.h"
+
+#include "source/common/protobuf/message_validator_impl.h"
+#include "source/common/protobuf/utility.h"
+#include "test/test_common/file_system_for_test.h"
+#include "test/test_common/simulated_time_system.h"
+
+#include "engine/api/client/options.pb.h"
+#include "engine/api/client/output.pb.h"
+
+#include "engine/source/client/output_collector_impl.h"
+#include "engine/source/client/output_formatter_impl.h"
+#include "engine/source/common/statistic_impl.h"
+#include "engine/source/common/version_info.h"
+
+#include "test_common/environment.h"
+#include "test_common/proto_matchers.h"
+
+#include "engine/test/mocks/client/mock_options.h"
+
+#include "absl/strings/str_replace.h"
+#include "gtest/gtest.h"
+
+using namespace std::chrono_literals;
+using namespace testing;
+
+namespace Nighthawk {
+namespace Client {
+
+using ::Envoy::Protobuf::TextFormat;
+using ::nighthawk::client::Protocol;
+
+class OutputCollectorTest : public Test {
+public:
+  OutputCollectorTest() {
+    StatisticPtr used_statistic = std::make_unique<StreamingStatistic>();
+    StatisticPtr empty_statistic = std::make_unique<StreamingStatistic>();
+    StatisticPtr size_statistic = std::make_unique<HdrStatistic>();
+    StatisticPtr latency_statistic = std::make_unique<HdrStatistic>();
+
+    used_statistic->setId("stat_id");
+    used_statistic->addValue(1000000);
+    used_statistic->addValue(2000000);
+    used_statistic->addValue(3000000);
+
+    size_statistic->addValue(14);
+    size_statistic->addValue(15);
+    size_statistic->addValue(16);
+    size_statistic->addValue(17);
+    size_statistic->setId("foo_size");
+
+    latency_statistic->addValue(180000);
+    latency_statistic->addValue(190000);
+    latency_statistic->addValue(200000);
+    latency_statistic->addValue(210000);
+    latency_statistic->setId("foo_latency");
+
+    statistics_.push_back(std::move(used_statistic));
+    statistics_.push_back(std::move(empty_statistic));
+    statistics_.push_back(std::move(size_statistic));
+    statistics_.push_back(std::move(latency_statistic));
+
+    counters_["foo"] = 1;
+    counters_["bar"] = 2;
+    time_system_.setSystemTime(std::chrono::milliseconds(1234567891567));
+    command_line_options_.mutable_duration()->set_seconds(1);
+    command_line_options_.mutable_connections()->set_value(0);
+    EXPECT_CALL(options_, toCommandLineOptions())
+        .WillOnce(Return(ByMove(
+            std::make_unique<nighthawk::client::CommandLineOptions>(command_line_options_))));
+    setupCollector();
+  }
+
+  void expectEqualToGoldFile(absl::string_view output, absl::string_view path) {
+    std::string s = readGoldFile(path);
+    EXPECT_EQ(s, output);
+  }
+
+  std::string readGoldFile(absl::string_view path) {
+    std::string s = Envoy::Filesystem::fileSystemForTest()
+                        .fileReadToEnd(TestEnvironment::runfilesPath(std::string(path)))
+                        .value();
+    const auto version = VersionInfo::buildVersion().version();
+    const std::string major = fmt::format("{}", version.major_number());
+    const std::string minor = fmt::format("{}", version.minor_number());
+    const std::string patch = fmt::format("{}", version.patch());
+    s = absl::StrReplaceAll(s, {{"@version_major@", major}});
+    s = absl::StrReplaceAll(s, {{"@version_minor@", minor}});
+    s = absl::StrReplaceAll(s, {{"@version_patch@", patch}});
+    return s;
+  }
+  void setupCollector() {
+    collector_ = std::make_unique<OutputCollectorImpl>(time_system_, options_);
+    collector_->addResult("worker_0", statistics_, counters_, 1s, time_system_.systemTime(), {});
+    collector_->addResult("worker_1", statistics_, counters_, 1s, std::nullopt, {});
+    collector_->addResult("global", statistics_, counters_, 1s, time_system_.systemTime(), {});
+  }
+
+  nighthawk::client::CommandLineOptions command_line_options_;
+  Envoy::Event::SimulatedTimeSystem time_system_;
+  MockOptions options_;
+  std::vector<StatisticPtr> statistics_;
+  std::map<std::string, uint64_t> counters_;
+  OutputCollectorPtr collector_;
+};
+
+TEST_F(OutputCollectorTest, CliFormatter) {
+  ConsoleOutputFormatterImpl formatter;
+  expectEqualToGoldFile(*(formatter.formatProto(collector_->toProto())),
+                        "engine/test/test_data/output_formatter.txt.gold");
+}
+
+TEST_F(OutputCollectorTest, JsonFormatter) {
+  JsonOutputFormatterImpl formatter;
+  EXPECT_EQ((formatter.formatProto(collector_->toProto())).ok(), true);
+  std::string expected_str = readGoldFile("engine/test/test_data/output_formatter.json.gold");
+  nighthawk::client::Output expected_output_proto, output_proto;
+  std::ignore = TextFormat::ParseFromString(expected_str, &expected_output_proto);
+  std::ignore = TextFormat::ParseFromString((formatter.formatProto(collector_->toProto())).value(),
+                                            &output_proto);
+  EXPECT_THAT(output_proto, EqualsProto(expected_output_proto));
+}
+
+TEST_F(OutputCollectorTest, YamlFormatter) {
+  YamlOutputFormatterImpl formatter;
+  EXPECT_EQ((formatter.formatProto(collector_->toProto())).ok(), true);
+  std::string expected_str = readGoldFile("engine/test/test_data/output_formatter.yaml.gold");
+  nighthawk::client::Output expected_output_proto, output_proto;
+  std::ignore = TextFormat::ParseFromString(expected_str, &expected_output_proto);
+  std::ignore = TextFormat::ParseFromString((formatter.formatProto(collector_->toProto())).value(),
+                                            &output_proto);
+  EXPECT_THAT(output_proto, EqualsProto(expected_output_proto));
+}
+
+TEST_F(OutputCollectorTest, DottedFormatter) {
+  DottedStringOutputFormatterImpl formatter;
+  expectEqualToGoldFile((formatter.formatProto(collector_->toProto())).value(),
+                        "engine/test/test_data/output_formatter.dotted.gold");
+}
+
+TEST_F(OutputCollectorTest, CsvFormatter) {
+  CsvOutputFormatterImpl formatter;
+  expectEqualToGoldFile((formatter.formatProto(collector_->toProto())).value(),
+                        "engine/test/test_data/output_formatter.csv.gold");
+}
+
+TEST_F(OutputCollectorTest, PrometheusFormatter) {
+  PrometheusOutputFormatterImpl formatter;
+  expectEqualToGoldFile((formatter.formatProto(collector_->toProto())).value(),
+                        "engine/test/test_data/output_formatter.prometheus.gold");
+}
+
+TEST_F(OutputCollectorTest, GetLowerCaseOutputFormats) {
+  auto output_formats = OutputFormatterImpl::getLowerCaseOutputFormats();
+  // When you're looking at this code you probably just added an output format.
+  // This is to point out that you might want to update the list below and add a test above.
+  ASSERT_THAT(output_formats, ElementsAre("json", "human", "yaml", "dotted", "fortio",
+                                          "experimental_fortio_pedantic", "csv", "prometheus"));
+}
+
+class FortioOutputCollectorTest : public OutputCollectorTest {
+public:
+  FortioOutputCollectorTest() {
+    counters_["upstream_rq_total"] = 3;
+    counters_["benchmark.http_2xx"] = 4;
+    StatisticPtr used_statistic = std::make_unique<StreamingStatistic>();
+    used_statistic->setId("benchmark_http_client.request_to_response");
+    used_statistic->addValue(4000000);
+    statistics_.push_back(std::move(used_statistic));
+    EXPECT_CALL(options_, toCommandLineOptions())
+        .WillOnce(Return(ByMove(
+            std::make_unique<nighthawk::client::CommandLineOptions>(command_line_options_))));
+    setupCollector();
+  }
+};
+
+TEST_F(FortioOutputCollectorTest, MissingGlobalResult) {
+  nighthawk::client::Output output_proto = collector_->toProto();
+  output_proto.clear_results();
+
+  FortioOutputFormatterImpl formatter;
+  EXPECT_FALSE((formatter.formatProto(output_proto)).ok());
+}
+
+TEST_F(FortioOutputCollectorTest, MissingGlobalResultGetGlobalResult) {
+  nighthawk::client::Output output_proto = collector_->toProto();
+  output_proto.clear_results();
+
+  FortioOutputFormatterImpl formatter;
+  EXPECT_FALSE((formatter.getGlobalResult(output_proto)).has_value());
+}
+
+TEST_F(FortioOutputCollectorTest, MissingCounter) {
+  nighthawk::client::Output output_proto = collector_->toProto();
+  output_proto.mutable_results(2)->clear_counters();
+  FortioOutputFormatterImpl formatter;
+  EXPECT_TRUE((formatter.formatProto(output_proto)).ok());
+  ASSERT_NO_THROW((formatter.formatProto(output_proto)).value());
+}
+
+TEST_F(FortioOutputCollectorTest, MissingStatistic) {
+  nighthawk::client::Output output_proto = collector_->toProto();
+  output_proto.mutable_results(2)->clear_statistics();
+  FortioOutputFormatterImpl formatter;
+  EXPECT_TRUE((formatter.formatProto(output_proto)).ok());
+  ASSERT_NO_THROW((formatter.formatProto(output_proto)).value());
+}
+
+TEST_F(FortioOutputCollectorTest, NoExceptions) {
+  nighthawk::client::Output output_proto = collector_->toProto();
+  FortioOutputFormatterImpl formatter;
+  EXPECT_TRUE((formatter.formatProto(output_proto)).ok());
+  ASSERT_NO_THROW((formatter.formatProto(output_proto)).value());
+}
+
+class MediumOutputCollectorTest : public OutputCollectorTest {
+public:
+  nighthawk::client::Output loadProtoFromFile(absl::string_view path) {
+    nighthawk::client::Output proto;
+    const auto contents = Envoy::Filesystem::fileSystemForTest()
+                              .fileReadToEnd(TestEnvironment::runfilesPath(std::string(path)))
+                              .value();
+    Envoy::MessageUtil::loadFromJson(contents, proto,
+                                     Envoy::ProtobufMessage::getStrictValidationVisitor());
+    return proto;
+  }
+};
+
+TEST_F(MediumOutputCollectorTest, FortioFormatter) {
+  const nighthawk::client::Output input_proto =
+      loadProtoFromFile("engine/test/test_data/output_formatter.medium.proto.gold");
+  std::string expected_str = readGoldFile("engine/test/test_data/output_formatter.medium.fortio.gold");
+  nighthawk::client::Output expected_output_proto, output_proto;
+  std::ignore = TextFormat::ParseFromString(expected_str, &expected_output_proto);
+  FortioOutputFormatterImpl formatter;
+  std::ignore =
+      TextFormat::ParseFromString((formatter.formatProto(input_proto)).value(), &output_proto);
+  EXPECT_THAT(output_proto, EqualsProto(expected_output_proto));
+}
+
+TEST_F(MediumOutputCollectorTest, FortioFormatter0sJitterUniformGetsReflected) {
+  nighthawk::client::Output input_proto =
+      loadProtoFromFile("engine/test/test_data/output_formatter.medium.proto.gold");
+  FortioOutputFormatterImpl formatter;
+  input_proto.mutable_options()->mutable_jitter_uniform()->set_nanos(0);
+  input_proto.mutable_options()->mutable_jitter_uniform()->set_seconds(0);
+  EXPECT_NE((formatter.formatProto(input_proto)).value().find(" \"Jitter\": false,"),
+            std::string::npos);
+}
+
+TEST_F(MediumOutputCollectorTest, CalculatesNumThreads) {
+  nighthawk::client::Output input_proto =
+      loadProtoFromFile("engine/test/test_data/output_formatter.medium.proto.gold");
+  FortioOutputFormatterImpl formatter;
+
+  absl::StatusOr<std::string> result_json = formatter.formatProto(input_proto);
+  ASSERT_TRUE(result_json.status().ok());
+  nighthawk::client::FortioResult result;
+  Envoy::MessageUtil::loadFromJson(*result_json, result,
+                                   Envoy::ProtobufMessage::getStrictValidationVisitor());
+
+  // Expect 300 threads (3 workers * 100 connections).
+  EXPECT_EQ(300, result.numthreads());
+}
+
+TEST_F(MediumOutputCollectorTest, ConsoleOutputFormatter) {
+  const nighthawk::client::Output input_proto =
+      loadProtoFromFile("engine/test/test_data/percentile-column-overflow.json");
+  ConsoleOutputFormatterImpl formatter;
+  expectEqualToGoldFile((formatter.formatProto(input_proto)).value(),
+                        "engine/test/test_data/percentile-column-overflow.txt.gold");
+}
+
+class StatidToNameTest : public Test {};
+
+TEST_F(StatidToNameTest, TestTranslations) {
+  // Well known id's shouldn't be returned as-is, but unknown ones should.
+  EXPECT_EQ(ConsoleOutputFormatterImpl::statIdtoFriendlyStatName("foo"), "foo");
+  const std::vector<std::string> ids = {"benchmark_http_client.queue_to_connect",
+                                        "benchmark_http_client.request_to_response",
+                                        "benchmark_http_client.response_body_size",
+                                        "benchmark_http_client.response_header_size",
+                                        "sequencer.callback",
+                                        "sequencer.blocking"};
+  for (const std::string& id : ids) {
+    EXPECT_NE(ConsoleOutputFormatterImpl::statIdtoFriendlyStatName(id), id);
+  }
+}
+
+TEST_F(MediumOutputCollectorTest, FortioPedanticFormatter) {
+  const nighthawk::client::Output input_proto =
+      loadProtoFromFile("engine/test/test_data/output_formatter.medium.proto.gold");
+  std::string expected_str =
+      readGoldFile("engine/test/test_data/output_formatter.medium.fortio-noquirks.gold");
+  nighthawk::client::Output expected_output_proto, output_proto;
+  std::ignore = TextFormat::ParseFromString(expected_str, &expected_output_proto);
+  FortioPedanticOutputFormatterImpl formatter;
+  std::ignore =
+      TextFormat::ParseFromString((formatter.formatProto(input_proto)).value(), &output_proto);
+  EXPECT_THAT(output_proto, EqualsProto(expected_output_proto));
+}
+
+TEST_F(MediumOutputCollectorTest, FortioPedanticFormatterMissingGlobalResult) {
+  nighthawk::client::Output output_proto = collector_->toProto();
+  output_proto.clear_results();
+
+  FortioPedanticOutputFormatterImpl formatter;
+  EXPECT_FALSE((formatter.formatProto(output_proto)).ok());
+}
+
+} // namespace Client
+} // namespace Nighthawk

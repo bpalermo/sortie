@@ -1,0 +1,400 @@
+#include "test/mocks/event/mocks.h"
+#include "test/mocks/stats/mocks.h"
+#include "test/mocks/tracing/mocks.h"
+#include "test/test_common/simulated_time_system.h"
+#include "test/test_common/utility.h"
+#include <chrono>
+
+#include "engine/source/client/factories_impl.h"
+#include "engine/source/client/grpc_stream_client_impl.h"
+#include "engine/source/common/request_source_impl.h"
+
+#include "engine/test/mocks/client/mock_benchmark_client.h"
+#include "engine/test/mocks/client/mock_options.h"
+#include "engine/test/mocks/common/mock_termination_predicate.h"
+#include "engine/test/test_common/environment.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+
+using namespace testing;
+
+namespace Nighthawk {
+namespace Client {
+
+class FactoriesTest : public Test {
+public:
+  FactoriesTest()
+      : api_(Envoy::Api::createApiForTest(stats_store_)),
+        tracer_(std::make_unique<Envoy::Tracing::MockTracer>()) {}
+
+  Envoy::Api::ApiPtr api_;
+  Envoy::Stats::MockIsolatedStatsStore stats_store_;
+  Envoy::Stats::Scope& stats_scope_{*stats_store_.rootScope()};
+  Envoy::Event::MockDispatcher dispatcher_;
+  MockOptions options_;
+  Envoy::Tracing::TracerSharedPtr tracer_;
+  const std::string empty_body_;
+};
+
+TEST_F(FactoriesTest, CreateBenchmarkClient) {
+  BenchmarkClientFactoryImpl factory(options_);
+  Envoy::Upstream::ClusterManagerPtr cluster_manager;
+  EXPECT_CALL(options_, connections());
+  EXPECT_CALL(options_, protocol()).WillOnce(Return(Envoy::Http::Protocol::Http11));
+  EXPECT_CALL(options_, maxPendingRequests());
+  EXPECT_CALL(options_, maxActiveRequests());
+  EXPECT_CALL(options_, maxRequestsPerConnection());
+  EXPECT_CALL(options_, openLoop());
+  EXPECT_CALL(options_, responseHeaderWithLatencyInput());
+  EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
+  EXPECT_CALL(options_, timeout());
+  StaticRequestSourceImpl request_generator(
+      std::make_unique<Envoy::Http::TestRequestHeaderMapImpl>());
+  auto benchmark_client =
+      factory.create(*api_, dispatcher_, stats_scope_, cluster_manager, tracer_, "foocluster",
+                     /*worker_id=*/0, request_generator, {});
+  EXPECT_NE(nullptr, benchmark_client.get());
+}
+
+TEST_F(FactoriesTest, CreateGrpcStreamBenchmarkClient) {
+  BenchmarkClientFactoryImpl factory(options_);
+  Envoy::Upstream::ClusterManagerPtr cluster_manager;
+  EXPECT_CALL(options_, grpcMode())
+      .WillRepeatedly(Return(nighthawk::client::GrpcMode::BIDI_STREAM));
+  EXPECT_CALL(options_, concurrency()).WillRepeatedly(Return("2"));
+  EXPECT_CALL(options_, streams()).WillRepeatedly(Return(20));
+  EXPECT_CALL(options_, maxInflightPerStream()).WillRepeatedly(Return(256));
+  EXPECT_CALL(options_, streamDrainDuration())
+      .WillRepeatedly(Return(std::chrono::nanoseconds(std::chrono::milliseconds(500))));
+  EXPECT_CALL(options_, timeout()).WillRepeatedly(Return(std::chrono::seconds(30)));
+  StaticRequestSourceImpl request_generator(
+      std::make_unique<Envoy::Http::TestRequestHeaderMapImpl>());
+  auto benchmark_client =
+      factory.create(*api_, dispatcher_, stats_scope_, cluster_manager, tracer_, "foocluster",
+                     /*worker_id=*/0, request_generator, {});
+  ASSERT_NE(nullptr, benchmark_client.get());
+  EXPECT_NE(nullptr, dynamic_cast<GrpcStreamBenchmarkClientImpl*>(benchmark_client.get()));
+  EXPECT_EQ(1, benchmark_client->statistics().count("benchmark_stream.message_latency"));
+}
+
+TEST_F(FactoriesTest, CreateRequestSourcePluginWithWorkingJsonReturnsWorkingRequestSource) {
+  std::optional<envoy::config::core::v3::TypedExtensionConfig> request_source_plugin_config;
+  std::string request_source_plugin_config_json =
+      "{"
+      "name:\"nighthawk.in-line-options-list-request-source-plugin\","
+      "typed_config:{"
+      "\"@type\":\"type.googleapis.com/"
+      "nighthawk.request_source.InLineOptionsListRequestSourceConfig\","
+      "options_list:{"
+      "options:[{request_method:\"1\",request_headers:[{header:{key:\":path\",value:\"inlinepath\"}"
+      "}]}]"
+      "},"
+      "}"
+      "}";
+  request_source_plugin_config.emplace(envoy::config::core::v3::TypedExtensionConfig());
+  Envoy::MessageUtil::loadFromJson(request_source_plugin_config_json,
+                                   request_source_plugin_config.value(),
+                                   Envoy::ProtobufMessage::getStrictValidationVisitor());
+  EXPECT_CALL(options_, requestMethod());
+  EXPECT_CALL(options_, requestBodySize());
+  EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(empty_body_));
+  EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
+  EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/"));
+  EXPECT_CALL(options_, requestSource());
+  EXPECT_CALL(options_, requestSourcePluginConfig())
+      .Times(2)
+      .WillRepeatedly(ReturnRef(request_source_plugin_config));
+  auto cmd = std::make_unique<nighthawk::client::CommandLineOptions>();
+  envoy::config::core::v3::HeaderValueOption* request_headers =
+      cmd->mutable_request_options()->add_request_headers();
+  request_headers->mutable_header()->set_key("foo");
+  request_headers->mutable_header()->set_value("bar");
+  EXPECT_CALL(options_, toCommandLineOptions()).WillOnce(Return(ByMove(std::move(cmd))));
+  RequestSourceFactoryImpl factory(options_, *api_);
+  Envoy::Upstream::ClusterManagerPtr cluster_manager;
+  Nighthawk::RequestSourcePtr request_source = factory.create(
+      cluster_manager, dispatcher_, *stats_scope_.createScope("foo."), "requestsource");
+  EXPECT_NE(nullptr, request_source.get());
+  Nighthawk::RequestGenerator generator = request_source->get();
+  Nighthawk::RequestPtr request = generator();
+  EXPECT_EQ("inlinepath", request->header()->getPathValue());
+}
+
+TEST_F(FactoriesTest, CreateRequestSourcePluginWithNonWorkingJsonThrowsError) {
+  std::optional<envoy::config::core::v3::TypedExtensionConfig> request_source_plugin_config;
+  std::string request_source_plugin_config_json =
+      "{"
+      R"(name:"nighthawk.file-based-request-source-plugin",)"
+      "typed_config:{"
+      R"("@type":"type.googleapis.com/)"
+      R"(nighthawk.request_source.FileBasedOptionsListRequestSourceConfig",)"
+      R"(file_path:")" +
+      TestEnvironment::runfilesPath("engine/test/request_source/test_data/NotARealFile.yaml") +
+      "\","
+      "}"
+      "}";
+  request_source_plugin_config.emplace(envoy::config::core::v3::TypedExtensionConfig());
+  Envoy::MessageUtil::loadFromJson(request_source_plugin_config_json,
+                                   request_source_plugin_config.value(),
+                                   Envoy::ProtobufMessage::getStrictValidationVisitor());
+  EXPECT_CALL(options_, requestMethod());
+  EXPECT_CALL(options_, requestBodySize());
+  EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(empty_body_));
+  EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
+  EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/"));
+  EXPECT_CALL(options_, requestSource());
+  EXPECT_CALL(options_, requestSourcePluginConfig())
+      .Times(2)
+      .WillRepeatedly(ReturnRef(request_source_plugin_config));
+  auto cmd = std::make_unique<nighthawk::client::CommandLineOptions>();
+  envoy::config::core::v3::HeaderValueOption* request_headers =
+      cmd->mutable_request_options()->add_request_headers();
+  request_headers->mutable_header()->set_key("foo");
+  request_headers->mutable_header()->set_value("bar");
+  EXPECT_CALL(options_, toCommandLineOptions()).WillOnce(Return(ByMove(std::move(cmd))));
+  RequestSourceFactoryImpl factory(options_, *api_);
+  Envoy::Upstream::ClusterManagerPtr cluster_manager;
+  EXPECT_THROW_WITH_REGEX(
+      factory.create(cluster_manager, dispatcher_, *stats_scope_.createScope("foo."),
+                     "requestsource"),
+      NighthawkException,
+      "Request Source plugin loading error should have been caught during input validation");
+}
+
+TEST_F(FactoriesTest, CreateRequestSource) {
+  std::optional<envoy::config::core::v3::TypedExtensionConfig> request_source_plugin_config;
+  EXPECT_CALL(options_, requestMethod());
+  EXPECT_CALL(options_, requestBodySize());
+  EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(empty_body_));
+  EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
+  EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/"));
+  EXPECT_CALL(options_, requestSource());
+  EXPECT_CALL(options_, requestSourcePluginConfig())
+      .Times(1)
+      .WillRepeatedly(ReturnRef(request_source_plugin_config));
+  auto cmd = std::make_unique<nighthawk::client::CommandLineOptions>();
+  envoy::config::core::v3::HeaderValueOption* request_headers =
+      cmd->mutable_request_options()->add_request_headers();
+  request_headers->mutable_header()->set_key("foo");
+  request_headers->mutable_header()->set_value("bar");
+  EXPECT_CALL(options_, toCommandLineOptions()).WillOnce(Return(ByMove(std::move(cmd))));
+  RequestSourceFactoryImpl factory(options_, *api_);
+  Envoy::Upstream::ClusterManagerPtr cluster_manager;
+  RequestSourcePtr request_generator = factory.create(
+      cluster_manager, dispatcher_, *stats_scope_.createScope("foo."), "requestsource");
+  EXPECT_NE(nullptr, request_generator.get());
+}
+
+TEST_F(FactoriesTest, CreateRequestSourceWithBodyFileSetsContentLengthOnly) {
+  std::optional<envoy::config::core::v3::TypedExtensionConfig> request_source_plugin_config;
+  const std::string body("\x00\x01raw\xff", 6);
+  EXPECT_CALL(options_, requestMethod())
+      .WillRepeatedly(Return(envoy::config::core::v3::RequestMethod::POST));
+  EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(body));
+  EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
+  EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/bar"));
+  EXPECT_CALL(options_, requestSource());
+  EXPECT_CALL(options_, requestSourcePluginConfig())
+      .WillRepeatedly(ReturnRef(request_source_plugin_config));
+  EXPECT_CALL(options_, toCommandLineOptions())
+      .WillOnce(Return(ByMove(std::make_unique<nighthawk::client::CommandLineOptions>())));
+  RequestSourceFactoryImpl factory(options_, *api_);
+  Envoy::Upstream::ClusterManagerPtr cluster_manager;
+  RequestSourcePtr request_source = factory.create(
+      cluster_manager, dispatcher_, *stats_scope_.createScope("foo."), "requestsource");
+  Nighthawk::RequestPtr request = request_source->get()();
+  EXPECT_EQ(body, request->body());
+  EXPECT_EQ("6", request->header()->getContentLengthValue());
+  EXPECT_EQ("", request->header()->getContentTypeValue());
+  EXPECT_EQ("POST", request->header()->getMethodValue());
+}
+
+TEST_F(FactoriesTest, CreateRequestSourceWithGrpcFramesBodyAndSetsGrpcHeaders) {
+  std::optional<envoy::config::core::v3::TypedExtensionConfig> request_source_plugin_config;
+  const std::string message("hello");
+  EXPECT_CALL(options_, requestMethod())
+      .WillRepeatedly(Return(envoy::config::core::v3::RequestMethod::POST));
+  EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(message));
+  EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::UNARY));
+  EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/pkg.Svc/Method"));
+  EXPECT_CALL(options_, requestSource());
+  EXPECT_CALL(options_, requestSourcePluginConfig())
+      .WillRepeatedly(ReturnRef(request_source_plugin_config));
+  EXPECT_CALL(options_, toCommandLineOptions())
+      .WillOnce(Return(ByMove(std::make_unique<nighthawk::client::CommandLineOptions>())));
+  RequestSourceFactoryImpl factory(options_, *api_);
+  Envoy::Upstream::ClusterManagerPtr cluster_manager;
+  RequestSourcePtr request_source = factory.create(
+      cluster_manager, dispatcher_, *stats_scope_.createScope("foo."), "requestsource");
+  Nighthawk::RequestPtr request = request_source->get()();
+  const std::string expected_frame = std::string("\x00\x00\x00\x00\x05", 5) + message;
+  EXPECT_EQ(expected_frame, request->body());
+  EXPECT_EQ("application/grpc", request->header()->getContentTypeValue());
+  EXPECT_EQ("trailers", request->header()->getTEValue());
+  EXPECT_EQ("", request->header()->getContentLengthValue());
+  EXPECT_EQ("/pkg.Svc/Method", request->header()->getPathValue());
+  EXPECT_EQ("POST", request->header()->getMethodValue());
+}
+
+TEST_F(FactoriesTest, CreateRemoteRequestSource) {
+  std::optional<envoy::config::core::v3::TypedExtensionConfig> request_source_plugin_config;
+  EXPECT_CALL(options_, requestMethod());
+  EXPECT_CALL(options_, requestBodySize());
+  EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(empty_body_));
+  EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
+  EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/"));
+  EXPECT_CALL(options_, requestSource()).WillOnce(Return("http://bar/"));
+  EXPECT_CALL(options_, requestsPerSecond()).WillOnce(Return(5));
+  auto cmd = std::make_unique<nighthawk::client::CommandLineOptions>();
+  envoy::config::core::v3::HeaderValueOption* request_headers =
+      cmd->mutable_request_options()->add_request_headers();
+  request_headers->mutable_header()->set_key("foo");
+  request_headers->mutable_header()->set_value("bar");
+  EXPECT_CALL(options_, toCommandLineOptions()).WillOnce(Return(ByMove(std::move(cmd))));
+  RequestSourceFactoryImpl factory(options_, *api_);
+  Envoy::Upstream::ClusterManagerPtr cluster_manager;
+  RequestSourcePtr request_generator = factory.create(
+      cluster_manager, dispatcher_, *stats_scope_.createScope("foo."), "requestsource");
+  EXPECT_NE(nullptr, request_generator.get());
+}
+
+TEST_F(FactoriesTest, CreateSequencer) {}
+class SequencerFactoryTest
+    : public FactoriesTest,
+      public WithParamInterface<
+          nighthawk::client::SequencerIdleStrategy::SequencerIdleStrategyOptions> {
+public:
+  void testSequencerCreation(nighthawk::client::SequencerIdleStrategy::SequencerIdleStrategyOptions
+                                 sequencer_idle_strategy) {
+    SequencerFactoryImpl factory(options_);
+    MockBenchmarkClient benchmark_client;
+    std::optional<envoy::config::core::v3::TypedExtensionConfig> rate_limiter_plugin_config;
+    EXPECT_CALL(options_, rateLimiterPluginConfig())
+        .WillOnce(ReturnRef(rate_limiter_plugin_config));
+    EXPECT_CALL(options_, requestsPerSecond()).WillOnce(Return(1));
+    EXPECT_CALL(options_, grpcMode());
+    EXPECT_CALL(options_, burstSize()).WillOnce(Return(2));
+    EXPECT_CALL(options_, sequencerIdleStrategy())
+        .Times(1)
+        .WillOnce(Return(sequencer_idle_strategy));
+    EXPECT_CALL(dispatcher_, createTimer_(_)).Times(2);
+    EXPECT_CALL(options_, jitterUniform()).WillOnce(Return(1ns));
+    Envoy::Event::SimulatedTimeSystem time_system;
+    const SequencerTarget dummy_sequencer_target = [](const CompletionCallback&) -> bool {
+      return true;
+    };
+    auto sequencer = factory.create(api_->timeSource(), dispatcher_, dummy_sequencer_target,
+                                    std::make_unique<MockTerminationPredicate>(), stats_scope_,
+                                    time_system.monotonicTime() + 10ms, *api_);
+    EXPECT_NE(nullptr, sequencer.get());
+  }
+};
+
+TEST_P(SequencerFactoryTest, TestCreation) { testSequencerCreation(GetParam()); }
+
+TEST_P(SequencerFactoryTest, ValidRateLimiterPluginCreatesWorkingSequencer) {
+  std::optional<envoy::config::core::v3::TypedExtensionConfig> rate_limiter_plugin_config;
+  std::string rate_limiter_plugin_config_json =
+      "{"
+      "name:\"nighthawk.linear-ramping-rate-limiter-plugin\","
+      "typed_config:{"
+      "\"@type\":\"type.googleapis.com/"
+      "nighthawk.rate_limiter.LinearRampingRateLimiterConfig\","
+      "ramp_time:{seconds:5}"
+      "}"
+      "}";
+  rate_limiter_plugin_config.emplace(envoy::config::core::v3::TypedExtensionConfig());
+  Envoy::MessageUtil::loadFromJson(rate_limiter_plugin_config_json,
+                                   rate_limiter_plugin_config.value(),
+                                   Envoy::ProtobufMessage::getStrictValidationVisitor());
+
+  SequencerFactoryImpl factory(options_);
+
+  EXPECT_CALL(options_, rateLimiterPluginConfig())
+      .Times(AtLeast(1))
+      .WillRepeatedly(ReturnRef(rate_limiter_plugin_config));
+  EXPECT_CALL(options_, sequencerIdleStrategy()).WillOnce(Return(GetParam()));
+  EXPECT_CALL(dispatcher_, createTimer_(_)).Times(2);
+
+  // LinearRampingRateLimiter specific. Adjust if test fails because of any
+  // changes made to the LinearRampingRateLimiterImplFactory.
+  EXPECT_CALL(options_, requestsPerSecond()).WillOnce(Return(100));
+  EXPECT_CALL(options_, noDuration()).WillOnce(Return(false));
+  EXPECT_CALL(options_, duration()).WillOnce(Return(std::chrono::seconds(10)));
+
+  Envoy::Event::SimulatedTimeSystem time_system;
+  const SequencerTarget dummy_sequencer_target = [](const CompletionCallback&) -> bool {
+    return true;
+  };
+
+  auto sequencer = factory.create(api_->timeSource(), dispatcher_, dummy_sequencer_target,
+                                  std::make_unique<MockTerminationPredicate>(), stats_scope_,
+                                  time_system.monotonicTime() + 10ms, *api_);
+  EXPECT_NE(nullptr, sequencer.get());
+}
+
+TEST_P(SequencerFactoryTest, UnknownRateLimiterPluginThrowsException) {
+  std::optional<envoy::config::core::v3::TypedExtensionConfig> rate_limiter_plugin_config;
+  std::string rate_limiter_plugin_config_json =
+      "{"
+      "name:\"nighthawk.unknown-rate-limiter-plugin\","
+      "typed_config:{"
+      "\"@type\":\"type.googleapis.com/"
+      "nighthawk.rate_limiter.LinearRampingRateLimiterConfig\","
+      "ramp_time:{seconds:5}"
+      "}"
+      "}";
+  rate_limiter_plugin_config.emplace(envoy::config::core::v3::TypedExtensionConfig());
+  Envoy::MessageUtil::loadFromJson(rate_limiter_plugin_config_json,
+                                   rate_limiter_plugin_config.value(),
+                                   Envoy::ProtobufMessage::getStrictValidationVisitor());
+
+  SequencerFactoryImpl factory(options_);
+
+  EXPECT_CALL(options_, rateLimiterPluginConfig())
+      .Times(AtLeast(1))
+      .WillRepeatedly(ReturnRef(rate_limiter_plugin_config));
+
+  Envoy::Event::SimulatedTimeSystem time_system;
+  const SequencerTarget dummy_sequencer_target = [](const CompletionCallback&) -> bool {
+    return true;
+  };
+
+  EXPECT_THROW_WITH_REGEX(factory.create(api_->timeSource(), dispatcher_, dummy_sequencer_target,
+                                         std::make_unique<MockTerminationPredicate>(), stats_scope_,
+                                         time_system.monotonicTime() + 10ms, *api_),
+                          NighthawkException, "Rate Limiter plugin loading error");
+}
+
+INSTANTIATE_TEST_SUITE_P(SequencerIdleStrategies, SequencerFactoryTest,
+                         ValuesIn({nighthawk::client::SequencerIdleStrategy::POLL,
+                                   nighthawk::client::SequencerIdleStrategy::SLEEP,
+                                   nighthawk::client::SequencerIdleStrategy::SPIN}));
+
+TEST_F(FactoriesTest, CreateStatistic) {
+  StatisticFactoryImpl factory(options_);
+  EXPECT_NE(nullptr, factory.create().get());
+}
+
+class OutputFormatterFactoryTest
+    : public FactoriesTest,
+      public WithParamInterface<nighthawk::client::OutputFormat::OutputFormatOptions> {
+public:
+  void testOutputCollector(nighthawk::client::OutputFormat::OutputFormatOptions type) {
+    Envoy::Event::SimulatedTimeSystem time_source;
+    EXPECT_CALL(options_, outputFormat()).WillOnce(Return(type));
+    OutputFormatterFactoryImpl factory;
+    EXPECT_NE(nullptr, factory.create(options_.outputFormat()).get());
+  }
+};
+
+TEST_P(OutputFormatterFactoryTest, TestCreation) { testOutputCollector(GetParam()); }
+
+INSTANTIATE_TEST_SUITE_P(
+    OutputFormats, OutputFormatterFactoryTest,
+    ValuesIn({nighthawk::client::OutputFormat::HUMAN, nighthawk::client::OutputFormat::JSON,
+              nighthawk::client::OutputFormat::YAML, nighthawk::client::OutputFormat::DOTTED,
+              nighthawk::client::OutputFormat::FORTIO, nighthawk::client::OutputFormat::CSV}));
+
+} // namespace Client
+} // namespace Nighthawk

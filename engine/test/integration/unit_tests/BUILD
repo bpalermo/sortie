@@ -1,0 +1,34 @@
+load("@envoy//bazel:envoy_build_system.bzl", "envoy_package")
+load("@nh_pip3//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_test")
+
+licenses(["notice"])  # Apache 2
+
+envoy_package()
+
+py_test(
+    name = "test_nighthawk_test_server",
+    srcs = ["test_nighthawk_test_server.py"],
+    deps = [
+        "//engine/test/integration:integration_test_base_lean",
+    ],
+)
+
+py_test(
+    name = "test_utility",
+    srcs = ["test_utility.py"],
+    deps = [
+        "//engine/test/integration:utility_lib",
+        "@rules_python//python/runfiles",
+        requirement("pytest"),
+        requirement("pyyaml"),
+    ],
+)
+
+py_test(
+    name = "test_subprocess_mixin",
+    srcs = ["test_subprocess_mixin.py"],
+    deps = [
+        "//engine/test/integration:integration_test_base_lean",
+    ],
+)

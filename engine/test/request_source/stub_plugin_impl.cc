@@ -1,0 +1,49 @@
+#include "engine/test/request_source/stub_plugin_impl.h"
+
+#include "source/common/protobuf/message_validator_impl.h"
+#include "source/common/protobuf/protobuf.h"
+#include "source/common/protobuf/utility.h"
+#include "source/exe/platform_impl.h"
+
+#include "engine/api/client/options.pb.h"
+
+#include "engine/source/common/request_impl.h"
+#include "engine/source/common/request_source_impl.h"
+
+namespace Nighthawk {
+
+std::string StubRequestSourcePluginConfigFactory::name() const {
+  return "nighthawk.stub-request-source-plugin";
+}
+
+Envoy::ProtobufTypes::MessagePtr StubRequestSourcePluginConfigFactory::createEmptyConfigProto() {
+  return std::make_unique<nighthawk::request_source::StubPluginConfig>();
+}
+
+RequestSourcePtr StubRequestSourcePluginConfigFactory::createRequestSourcePlugin(
+    const Envoy::Protobuf::Message& message, Envoy::Api::Api&, Envoy::Http::RequestHeaderMapPtr) {
+  const auto* any = Envoy::Protobuf::DynamicCastToGenerated<const Envoy::Protobuf::Any>(&message);
+  nighthawk::request_source::StubPluginConfig config;
+  THROW_IF_NOT_OK(Envoy::MessageUtil::unpackTo(*any, config));
+  return std::make_unique<StubRequestSource>(config);
+}
+
+REGISTER_FACTORY(StubRequestSourcePluginConfigFactory, RequestSourcePluginConfigFactory);
+
+StubRequestSource::StubRequestSource(const nighthawk::request_source::StubPluginConfig& config)
+    : test_value_{config.has_test_value() ? config.test_value().value() : 0} {}
+RequestGenerator StubRequestSource::get() {
+
+  RequestGenerator request_generator = [this]() {
+    Envoy::Http::RequestHeaderMapPtr header = Envoy::Http::RequestHeaderMapImpl::create();
+    header->setCopy(Envoy::Http::LowerCaseString("test_value"), std::to_string(test_value_));
+    auto returned_request_impl = std::make_unique<RequestImpl>(std::move(header));
+    return returned_request_impl;
+  };
+  return request_generator;
+}
+
+void StubRequestSource::initOnThread() {}
+void StubRequestSource::destroyOnThread() {}
+
+} // namespace Nighthawk

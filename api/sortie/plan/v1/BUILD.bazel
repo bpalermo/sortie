@@ -1,4 +1,4 @@
-load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
 load("@rules_go//go:def.bzl", "go_library")
 load("@rules_go//proto:def.bzl", "go_proto_library")
 
@@ -7,8 +7,8 @@ proto_library(
     srcs = ["plan.proto"],
     visibility = ["//visibility:public"],
     deps = [
-        "@com_google_protobuf//:duration_proto",
         "@nighthawk_api//:client_proto",
+        "@protobuf//:duration_proto",
         "@protovalidate//proto/protovalidate/buf/validate:validate_proto",
     ],
 )

@@ -1,0 +1,843 @@
+#include <vector>
+
+#include "source/common/common/random_generator.h"
+#include "source/common/config/utility.h"
+#include "source/common/http/header_map_impl.h"
+#include "source/common/network/utility.h"
+#include "source/common/runtime/runtime_impl.h"
+#include "source/common/stats/isolated_store_impl.h"
+#include "source/exe/process_wide.h"
+#include "test/mocks/buffer/mocks.h"
+#include "test/mocks/common.h"
+#include "test/mocks/runtime/mocks.h"
+#include "test/mocks/stream_info/mocks.h"
+#include "test/mocks/thread_local/mocks.h"
+#include "test/mocks/upstream/mocks.h"
+#include "test/test_common/network_utility.h"
+
+#include "engine/source/client/benchmark_client_impl.h"
+#include "engine/source/common/request_impl.h"
+#include "engine/source/common/statistic_impl.h"
+#include "engine/source/common/uri_impl.h"
+#include "engine/source/common/utility.h"
+
+#include "engine/test/test_common/proto_matchers.h"
+#include "engine/test/user_defined_output/fake_plugin/fake_user_defined_output.h"
+#include "engine/test/user_defined_output/fake_plugin/fake_user_defined_output.pb.h"
+
+#include "gtest/gtest.h"
+
+using namespace testing;
+
+namespace Nighthawk {
+
+namespace {
+
+using ::envoy::config::core::v3::TypedExtensionConfig;
+using ::Envoy::Protobuf::TextFormat;
+
+// Helper function to get headers in a set that should be verified during the test.
+std::string getPathFromRequest(const Envoy::Http::RequestHeaderMap& header) {
+  return std::string(header.getPathValue());
+}
+
+// This struct contains necessary information for setting up benchmark client to get requests in
+// verifyBenchmarkClientProcessesExpectedInflightRequests.
+struct ClientSetupParameters {
+  // max_pending corresponds to the number of max_pending requests. connection limit corresponds to
+  // the number of maximum connections allowed. amount refers to the number of requests expected.
+  // The generator is a function that returns requests.
+  ClientSetupParameters(const uint64_t max_pending, const uint64_t connection_limit,
+                        const uint64_t amount, const RequestGenerator& generator)
+      : max_pending_requests(max_pending), max_connection_limit(connection_limit),
+        amount_of_requests(amount), request_generator(generator) {}
+  const uint64_t max_pending_requests;
+  const uint64_t max_connection_limit;
+  const uint64_t amount_of_requests;
+  const RequestGenerator& request_generator;
+};
+
+ACTION(ReturnNewHostSelectionResponse) { return Envoy::Upstream::HostSelectionResponse(nullptr); }
+} // namespace
+
+class BenchmarkClientHttpTest : public Test {
+public:
+  BenchmarkClientHttpTest()
+      : api_(Envoy::Api::createApiForTest(time_system_)),
+        dispatcher_(api_->allocateDispatcher("test_thread")),
+        cluster_manager_(std::make_unique<Envoy::Upstream::MockClusterManager>()),
+        cluster_info_(std::make_unique<Envoy::Upstream::MockClusterInfo>()),
+        tracer_(std::make_unique<Envoy::Tracing::MockTracer>()), response_code_("200"),
+        statistic_(std::make_unique<StreamingStatistic>(), std::make_unique<StreamingStatistic>(),
+                   std::make_unique<StreamingStatistic>(), std::make_unique<StreamingStatistic>(),
+                   std::make_unique<StreamingStatistic>(), std::make_unique<StreamingStatistic>(),
+                   std::make_unique<StreamingStatistic>(), std::make_unique<StreamingStatistic>(),
+                   std::make_unique<StreamingStatistic>(), std::make_unique<StreamingStatistic>(),
+                   std::make_unique<StreamingStatistic>(), std::make_unique<StreamingStatistic>()) {
+    auto header_map_param = std::initializer_list<std::pair<std::string, std::string>>{
+        {":scheme", "http"}, {":method", "GET"}, {":path", "/"}, {":host", "localhost"}};
+    default_header_map_ =
+        (std::make_shared<Envoy::Http::TestRequestHeaderMapImpl>(header_map_param));
+    EXPECT_CALL(cluster_manager(), getThreadLocalCluster(_))
+        .WillRepeatedly(Return(&thread_local_cluster_));
+    EXPECT_CALL(thread_local_cluster_, info()).WillRepeatedly(Return(cluster_info_));
+    EXPECT_CALL(thread_local_cluster_, chooseHost(_))
+        .WillRepeatedly(ReturnNewHostSelectionResponse());
+    EXPECT_CALL(thread_local_cluster_, httpConnPool(_, _, _, _))
+        .WillRepeatedly(Return(Envoy::Upstream::HttpPoolData([]() {}, &pool_)));
+
+    auto& tracer = static_cast<Envoy::Tracing::MockTracer&>(*tracer_);
+    EXPECT_CALL(tracer, startSpan_(_, _, _, _))
+        .WillRepeatedly([](const Envoy::Tracing::Config& config, Envoy::Tracing::TraceContext&,
+                           const Envoy::StreamInfo::StreamInfo&,
+                           const Envoy::Tracing::Decision) -> Envoy::Tracing::Span* {
+          EXPECT_EQ(Envoy::Tracing::OperationName::Egress, config.operationName());
+          auto* span = new NiceMock<Envoy::Tracing::MockSpan>();
+          return span;
+        });
+  }
+  // Default function for request generator when the content doesn't matter.
+  RequestGenerator getDefaultRequestGenerator() {
+    RequestGenerator request_generator = [this]() {
+      auto returned_request_impl = std::make_unique<RequestImpl>(default_header_map_);
+      return returned_request_impl;
+    };
+    return request_generator;
+  }
+  // Primary testing method. Confirms that connection limits are met and number of requests are
+  // correct. If header expectations is not null, also checks the header expectations, if null, it
+  // is ignored.
+  void verifyBenchmarkClientProcessesExpectedInflightRequests(
+      ClientSetupParameters& client_setup_parameters,
+      const absl::flat_hash_set<std::string>* header_expectations = nullptr) {
+    if (client_ == nullptr) {
+      setupBenchmarkClient(client_setup_parameters.request_generator);
+      cluster_info().resetResourceManager(client_setup_parameters.max_connection_limit,
+                                          client_setup_parameters.max_pending_requests, 1024, 0,
+                                          1024);
+    }
+    // This is where we store the properties of headers that are passed to the stream encoder. We
+    // verify later that these match expected headers.
+    absl::flat_hash_set<std::string> called_headers;
+    EXPECT_CALL(stream_encoder_, encodeHeaders(_, _)).Times(AtLeast(1));
+    ON_CALL(stream_encoder_, encodeHeaders(_, _))
+        .WillByDefault(
+            WithArgs<0>(([&called_headers](const Envoy::Http::RequestHeaderMap& specific_request) {
+              called_headers.insert(getPathFromRequest(specific_request));
+              return Envoy::Http::Status();
+            })));
+
+    EXPECT_CALL(pool_, newStream(_, _, _))
+        .WillRepeatedly([this](Envoy::Http::ResponseDecoder& decoder,
+                               Envoy::Http::ConnectionPool::Callbacks& callbacks,
+                               const Envoy::Http::ConnectionPool::Instance::StreamOptions&)
+                            -> Envoy::Http::ConnectionPool::Cancellable* {
+          decoders_.push_back(&decoder);
+          NiceMock<Envoy::StreamInfo::MockStreamInfo> stream_info;
+          callbacks.onPoolReady(stream_encoder_, Envoy::Upstream::HostDescriptionConstSharedPtr{},
+                                stream_info, {} /*std::optional<Envoy::Http::Protocol> protocol*/);
+          return nullptr;
+        });
+
+    client_->setMaxPendingRequests(client_setup_parameters.max_pending_requests);
+    client_->setConnectionLimit(client_setup_parameters.max_connection_limit);
+
+    EXPECT_CALL(cluster_info(), resourceManager(_))
+        .WillRepeatedly(
+            ReturnRef(cluster_info_->resourceManager(Envoy::Upstream::ResourcePriority::Default)));
+
+    const uint64_t amount = client_setup_parameters.amount_of_requests;
+    uint64_t inflight_response_count = 0;
+
+    Client::CompletionCallback f = [this, &inflight_response_count](bool, bool) {
+      --inflight_response_count;
+      if (inflight_response_count == 0) {
+        dispatcher_->exit();
+      }
+    };
+
+    for (uint64_t i = 0; i < amount; i++) {
+      if (client_->tryStartRequest(f)) {
+        inflight_response_count++;
+      }
+    }
+
+    const uint64_t max_in_flight_allowed =
+        client_setup_parameters.max_pending_requests + client_setup_parameters.max_connection_limit;
+    // If amount_of_request >= max_in_flight_allowed, we are not able to add more request.
+    if (amount >= max_in_flight_allowed) {
+      EXPECT_FALSE(client_->tryStartRequest(f));
+    }
+
+    dispatcher_->run(Envoy::Event::Dispatcher::RunType::Block);
+    // Expect inflight_response_count to be equal to min(amount, max_in_flight_allowed).
+    EXPECT_EQ(amount < max_in_flight_allowed ? amount : max_in_flight_allowed,
+              inflight_response_count);
+
+    for (Envoy::Http::ResponseDecoder* decoder : decoders_) {
+      Envoy::Http::ResponseHeaderMapPtr response_headers{
+          new Envoy::Http::TestResponseHeaderMapImpl{{":status", response_code_}}};
+      decoder->decodeHeaders(std::move(response_headers), false);
+      Envoy::Buffer::OwnedImpl buffer(std::string(97, 'a'));
+      decoder->decodeData(buffer, true);
+    }
+    decoders_.clear();
+    dispatcher_->run(Envoy::Event::Dispatcher::RunType::Block);
+    EXPECT_EQ(0, inflight_response_count);
+    // If we have no expectations, then we don't test.
+    if (header_expectations != nullptr) {
+      EXPECT_THAT((*header_expectations), UnorderedElementsAreArray(called_headers));
+    }
+  }
+
+  // Used to set up benchmarkclient. Especially from within
+  // verifyBenchmarkClientProcessesExpectedInflightRequests.
+  void setupBenchmarkClient(const RequestGenerator& request_generator) {
+    client_ = std::make_unique<Client::BenchmarkClientHttpImpl>(
+        *api_, *dispatcher_, *store_.rootScope(), statistic_, Envoy::Http::Protocol::Http11,
+        cluster_manager_, tracer_, "benchmark", request_generator,
+        /*provide_resource_backpressure*/ true,
+        /*response_header_with_latency_input=*/"", std::move(user_defined_output_plugins_));
+  }
+
+  uint64_t getCounter(absl::string_view name) {
+    return client_->scope().counterFromString(std::string(name)).value();
+  }
+
+  Envoy::Upstream::MockClusterManager& cluster_manager() {
+    return dynamic_cast<Envoy::Upstream::MockClusterManager&>(*cluster_manager_);
+  }
+  Envoy::Upstream::MockClusterInfo& cluster_info() {
+    return const_cast<Envoy::Upstream::MockClusterInfo&>(
+        dynamic_cast<const Envoy::Upstream::MockClusterInfo&>(*cluster_info_));
+  }
+
+  Envoy::Event::TestRealTimeSystem time_system_;
+  Envoy::Stats::IsolatedStoreImpl store_;
+  Envoy::Api::ApiPtr api_;
+  Envoy::Event::DispatcherPtr dispatcher_;
+  Envoy::Random::RandomGeneratorImpl generator_;
+  NiceMock<Envoy::ThreadLocal::MockInstance> tls_;
+  NiceMock<Envoy::Runtime::MockLoader> runtime_;
+  std::unique_ptr<Client::BenchmarkClientHttpImpl> client_;
+  Envoy::Upstream::ClusterManagerPtr cluster_manager_;
+  Envoy::Http::ConnectionPool::MockInstance pool_;
+  Envoy::ProcessWide process_wide;
+  std::vector<Envoy::Http::ResponseDecoder*> decoders_;
+  NiceMock<Envoy::Http::MockRequestEncoder> stream_encoder_;
+  Envoy::Upstream::MockThreadLocalCluster thread_local_cluster_;
+  Envoy::Upstream::ClusterInfoConstSharedPtr cluster_info_;
+  Envoy::Tracing::TracerSharedPtr tracer_;
+  std::string response_code_;
+  int worker_number_{0};
+  Client::BenchmarkClientStatistic statistic_;
+  std::shared_ptr<Envoy::Http::RequestHeaderMap> default_header_map_;
+  std::vector<UserDefinedOutputNamePluginPair> user_defined_output_plugins_{};
+};
+
+TEST_F(BenchmarkClientHttpTest, BasicTestH1200) {
+  response_code_ = "200";
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  auto client_setup_param = ClientSetupParameters(2, 3, 10, default_request_generator);
+  verifyBenchmarkClientProcessesExpectedInflightRequests(client_setup_param);
+  EXPECT_EQ(5, getCounter("http_2xx"));
+}
+
+TEST_F(BenchmarkClientHttpTest, BasicTestH1300) {
+  response_code_ = "300";
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  auto client_setup_param = ClientSetupParameters(0, 11, 10, default_request_generator);
+  verifyBenchmarkClientProcessesExpectedInflightRequests(client_setup_param);
+  EXPECT_EQ(10, getCounter("http_3xx"));
+}
+
+TEST_F(BenchmarkClientHttpTest, BasicTestH1404) {
+  response_code_ = "404";
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  auto client_setup_param = ClientSetupParameters(0, 1, 10, default_request_generator);
+  verifyBenchmarkClientProcessesExpectedInflightRequests(client_setup_param);
+  EXPECT_EQ(1, getCounter("http_4xx"));
+}
+
+TEST_F(BenchmarkClientHttpTest, WeirdStatus) {
+  response_code_ = "601";
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  auto client_setup_param = ClientSetupParameters(0, 1, 10, default_request_generator);
+  verifyBenchmarkClientProcessesExpectedInflightRequests(client_setup_param);
+  EXPECT_EQ(1, getCounter("http_xxx"));
+}
+
+TEST_F(BenchmarkClientHttpTest, EnableLatencyMeasurement) {
+  setupBenchmarkClient(getDefaultRequestGenerator());
+  EXPECT_EQ(false, client_->shouldMeasureLatencies());
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  auto client_setup_param = ClientSetupParameters(10, 1, 10, default_request_generator);
+  verifyBenchmarkClientProcessesExpectedInflightRequests(client_setup_param);
+  EXPECT_EQ(0, client_->statistics()["benchmark_http_client.queue_to_connect"]->count());
+  EXPECT_EQ(0, client_->statistics()["benchmark_http_client.request_to_response"]->count());
+  EXPECT_EQ(10, client_->statistics()["benchmark_http_client.response_header_size"]->count());
+  EXPECT_EQ(10, client_->statistics()["benchmark_http_client.response_body_size"]->count());
+  EXPECT_EQ(0, client_->statistics()["benchmark_http_client.latency_2xx"]->count());
+  client_->setShouldMeasureLatencies(true);
+
+  verifyBenchmarkClientProcessesExpectedInflightRequests(client_setup_param);
+  EXPECT_EQ(10, client_->statistics()["benchmark_http_client.queue_to_connect"]->count());
+  EXPECT_EQ(10, client_->statistics()["benchmark_http_client.request_to_response"]->count());
+  EXPECT_EQ(20, client_->statistics()["benchmark_http_client.response_header_size"]->count());
+  EXPECT_EQ(20, client_->statistics()["benchmark_http_client.response_body_size"]->count());
+  EXPECT_EQ(10, client_->statistics()["benchmark_http_client.latency_2xx"]->count());
+}
+
+TEST_F(BenchmarkClientHttpTest, ExportSuccessLatency) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  setupBenchmarkClient(default_request_generator);
+  uint64_t latency_ns = 10;
+  client_->exportLatency(/*response_code=*/200, latency_ns, std::nullopt);
+  client_->exportLatency(/*response_code=*/200, latency_ns, std::nullopt);
+  EXPECT_EQ(2, client_->statistics()["benchmark_http_client.latency_2xx"]->count());
+  EXPECT_DOUBLE_EQ(latency_ns, client_->statistics()["benchmark_http_client.latency_2xx"]->mean());
+}
+
+TEST_F(BenchmarkClientHttpTest, ExportErrorLatency) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  setupBenchmarkClient(default_request_generator);
+  client_->exportLatency(/*response_code=*/100, /*latency_ns=*/1, std::nullopt);
+  client_->exportLatency(/*response_code=*/300, /*latency_ns=*/3, std::nullopt);
+  client_->exportLatency(/*response_code=*/400, /*latency_ns=*/4, std::nullopt);
+  client_->exportLatency(/*response_code=*/500, /*latency_ns=*/5, std::nullopt);
+  client_->exportLatency(/*response_code=*/600, /*latency_ns=*/6, std::nullopt);
+  EXPECT_EQ(1, client_->statistics()["benchmark_http_client.latency_1xx"]->count());
+  EXPECT_DOUBLE_EQ(1, client_->statistics()["benchmark_http_client.latency_1xx"]->mean());
+  EXPECT_EQ(1, client_->statistics()["benchmark_http_client.latency_xxx"]->count());
+  EXPECT_DOUBLE_EQ(3, client_->statistics()["benchmark_http_client.latency_3xx"]->mean());
+  EXPECT_EQ(1, client_->statistics()["benchmark_http_client.latency_xxx"]->count());
+  EXPECT_DOUBLE_EQ(4, client_->statistics()["benchmark_http_client.latency_4xx"]->mean());
+  EXPECT_EQ(1, client_->statistics()["benchmark_http_client.latency_xxx"]->count());
+  EXPECT_DOUBLE_EQ(5, client_->statistics()["benchmark_http_client.latency_5xx"]->mean());
+  EXPECT_EQ(1, client_->statistics()["benchmark_http_client.latency_xxx"]->count());
+  EXPECT_DOUBLE_EQ(6, client_->statistics()["benchmark_http_client.latency_xxx"]->mean());
+}
+
+TEST_F(BenchmarkClientHttpTest, StatusTrackingInOnComplete) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  setupBenchmarkClient(default_request_generator);
+  Envoy::Http::ResponseHeaderMapPtr header = Envoy::Http::ResponseHeaderMapImpl::create();
+
+  header->setStatus(1);
+  client_->onComplete(true, *header, std::nullopt);
+  header->setStatus(100);
+  client_->onComplete(true, *header, std::nullopt);
+  header->setStatus(200);
+  client_->onComplete(true, *header, std::nullopt);
+  header->setStatus(300);
+  client_->onComplete(true, *header, std::nullopt);
+  header->setStatus(400);
+  client_->onComplete(true, *header, std::nullopt);
+  header->setStatus(500);
+  client_->onComplete(true, *header, std::nullopt);
+  header->setStatus(600);
+  client_->onComplete(true, *header, std::nullopt);
+  header->setStatus(200);
+  // Shouldn't be counted by status, should add to stream reset.
+  client_->onComplete(false, *header, std::nullopt);
+
+  EXPECT_EQ(1, getCounter("http_2xx"));
+  EXPECT_EQ(1, getCounter("http_3xx"));
+  EXPECT_EQ(1, getCounter("http_4xx"));
+  EXPECT_EQ(1, getCounter("http_5xx"));
+  EXPECT_EQ(2, getCounter("http_xxx"));
+  EXPECT_EQ(1, getCounter("stream_resets"));
+  // Without gRPC mode nothing is scored on grpc-status.
+  EXPECT_EQ(0, getCounter("grpc_error"));
+
+  client_.reset();
+}
+
+TEST_F(BenchmarkClientHttpTest, GrpcStatusTrackingInOnComplete) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  setupBenchmarkClient(default_request_generator);
+  client_->setGrpc(true);
+  Envoy::Http::ResponseHeaderMapPtr header = Envoy::Http::ResponseHeaderMapImpl::create();
+
+  // HTTP 200 + grpc-status 0: the only shape that is a success.
+  header->setStatus(200);
+  client_->onComplete(true, *header, 0);
+  EXPECT_EQ(1, getCounter("http_2xx"));
+  EXPECT_EQ(1, getCounter("grpc_status.0"));
+  EXPECT_EQ(0, getCounter("grpc_error"));
+
+  // HTTP 200 + grpc-status 13 (INTERNAL): a failed RPC, not a 2xx success.
+  client_->onComplete(true, *header, 13);
+  EXPECT_EQ(1, getCounter("http_2xx"));
+  EXPECT_EQ(1, getCounter("grpc_status.13"));
+  EXPECT_EQ(1, getCounter("grpc_error"));
+
+  // HTTP 200 without any grpc-status: not a gRPC success either.
+  client_->onComplete(true, *header, std::nullopt);
+  EXPECT_EQ(1, getCounter("http_2xx"));
+  EXPECT_EQ(1, getCounter("grpc_status.missing"));
+  EXPECT_EQ(2, getCounter("grpc_error"));
+
+  // A non-2xx (e.g. from a proxy) lands in its HTTP bucket and is a failed RPC.
+  header->setStatus(503);
+  client_->onComplete(true, *header, std::nullopt);
+  EXPECT_EQ(1, getCounter("http_5xx"));
+  EXPECT_EQ(2, getCounter("grpc_status.missing"));
+  EXPECT_EQ(3, getCounter("grpc_error"));
+
+  // A stream reset is a failed RPC as well.
+  header->setStatus(200);
+  client_->onComplete(false, *header, std::nullopt);
+  EXPECT_EQ(1, getCounter("stream_resets"));
+  EXPECT_EQ(4, getCounter("grpc_error"));
+  EXPECT_EQ(1, getCounter("http_2xx"));
+
+  client_.reset();
+}
+
+TEST_F(BenchmarkClientHttpTest, ExportGrpcOkLatency) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  setupBenchmarkClient(default_request_generator);
+  client_->setGrpc(true);
+  client_->exportLatency(/*response_code=*/200, /*latency_ns=*/10, 0);
+  client_->exportLatency(/*response_code=*/200, /*latency_ns=*/30, 0);
+  client_->exportLatency(/*response_code=*/200, /*latency_ns=*/1000, 13);
+  client_->exportLatency(/*response_code=*/200, /*latency_ns=*/1000, std::nullopt);
+  // latency_2xx keeps its HTTP meaning; latency_grpc_ok only sees successful calls.
+  EXPECT_EQ(4, client_->statistics()["benchmark_http_client.latency_2xx"]->count());
+  EXPECT_EQ(2, client_->statistics()["benchmark_http_client.latency_grpc_ok"]->count());
+  EXPECT_DOUBLE_EQ(20, client_->statistics()["benchmark_http_client.latency_grpc_ok"]->mean());
+}
+
+TEST_F(BenchmarkClientHttpTest, GrpcStatusIgnoredWhenGrpcModeIsOff) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  setupBenchmarkClient(default_request_generator);
+  client_->exportLatency(/*response_code=*/200, /*latency_ns=*/10, 0);
+  EXPECT_EQ(0, client_->statistics()["benchmark_http_client.latency_grpc_ok"]->count());
+  Envoy::Http::ResponseHeaderMapPtr header = Envoy::Http::ResponseHeaderMapImpl::create();
+  header->setStatus(200);
+  client_->onComplete(true, *header, 13);
+  EXPECT_EQ(1, getCounter("http_2xx"));
+  EXPECT_EQ(0, getCounter("grpc_error"));
+  client_.reset();
+}
+
+TEST_F(BenchmarkClientHttpTest, PoolFailures) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  setupBenchmarkClient(default_request_generator);
+  client_->onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason::LocalConnectionFailure);
+  client_->onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason::RemoteConnectionFailure);
+  client_->onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason::Overflow);
+  client_->onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason::Timeout);
+  EXPECT_EQ(1, getCounter("pool_overflow"));
+  EXPECT_EQ(2, getCounter("pool_connection_failure"));
+}
+
+TEST_F(BenchmarkClientHttpTest, RequestMethodPost) {
+  RequestGenerator request_generator = []() {
+    auto header = std::make_shared<Envoy::Http::TestRequestHeaderMapImpl>(
+        std::initializer_list<std::pair<std::string, std::string>>({{":scheme", "http"},
+                                                                    {":method", "POST"},
+                                                                    {":path", "/"},
+                                                                    {":host", "localhost"},
+                                                                    {"a", "b"},
+                                                                    {"c", "d"},
+                                                                    {"Content-Length", "1313"}}));
+    return std::make_unique<RequestImpl>(header);
+  };
+
+  EXPECT_CALL(stream_encoder_, encodeData(_, _));
+  auto client_setup_parameters = ClientSetupParameters(1, 1, 1, request_generator);
+  verifyBenchmarkClientProcessesExpectedInflightRequests(client_setup_parameters);
+  EXPECT_EQ(1, getCounter("http_2xx"));
+}
+
+TEST_F(BenchmarkClientHttpTest, BadContentLength) {
+  RequestGenerator request_generator = []() {
+    auto header = std::make_shared<Envoy::Http::TestRequestHeaderMapImpl>(
+        std::initializer_list<std::pair<std::string, std::string>>({{":scheme", "http"},
+                                                                    {":method", "POST"},
+                                                                    {":path", "/"},
+                                                                    {":host", "localhost"},
+                                                                    {"Content-Length", "-1313"}}));
+    return std::make_unique<RequestImpl>(header);
+  };
+
+  EXPECT_CALL(stream_encoder_, encodeData(_, _)).Times(0);
+  auto client_setup_parameters = ClientSetupParameters(1, 1, 1, request_generator);
+  verifyBenchmarkClientProcessesExpectedInflightRequests(client_setup_parameters);
+  EXPECT_EQ(1, getCounter("http_2xx"));
+}
+
+TEST_F(BenchmarkClientHttpTest, RequestGeneratorProvidingDifferentPathsSendsRequestsOnThosePaths) {
+  std::vector<HeaderMapPtr> requests_for_generator_to_send;
+  const std::initializer_list<std::pair<std::string, std::string>> header_map_for_first_request{
+      {":scheme", "http"},
+      {":method", "GET"},
+      {":path", "/a"},
+      {":host", "localhost"},
+      {"Content-Length", "1313"}};
+  const std::initializer_list<std::pair<std::string, std::string>> header_map_for_second_request{
+      {":scheme", "http"},
+      {":method", "GET"},
+      {":path", "/b"},
+      {":host", "localhost"},
+      {"Content-Length", "1313"}};
+  requests_for_generator_to_send.push_back(
+      std::make_shared<Envoy::Http::TestRequestHeaderMapImpl>(header_map_for_first_request));
+  requests_for_generator_to_send.push_back(
+      std::make_shared<Envoy::Http::TestRequestHeaderMapImpl>(header_map_for_second_request));
+  std::vector<HeaderMapPtr>::iterator request_iterator;
+  request_iterator = requests_for_generator_to_send.begin();
+  RequestGenerator request_generator = [&request_iterator]() {
+    return std::make_unique<RequestImpl>(*request_iterator++);
+  };
+  absl::flat_hash_set<std::string> expected_requests;
+  expected_requests.insert(
+      getPathFromRequest(Envoy::Http::TestRequestHeaderMapImpl(header_map_for_first_request)));
+  expected_requests.insert(
+      getPathFromRequest(Envoy::Http::TestRequestHeaderMapImpl(header_map_for_second_request)));
+
+  EXPECT_CALL(stream_encoder_, encodeData(_, _)).Times(2);
+
+  // Most of the testing happens inside of this call. Will confirm that the requests received match
+  // the expected requests vector.
+  auto client_setup_parameters = ClientSetupParameters(1, 1, 2, request_generator);
+  verifyBenchmarkClientProcessesExpectedInflightRequests(client_setup_parameters,
+                                                         &expected_requests);
+  EXPECT_EQ(2, getCounter("http_2xx"));
+}
+
+TEST_F(BenchmarkClientHttpTest, DrainTimeoutFires) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  setupBenchmarkClient(default_request_generator);
+  // Keep the test fast; the default drain timeout is 30 seconds of real time.
+  client_->setTimeout(std::chrono::seconds(2));
+  EXPECT_CALL(pool_, newStream(_, _, _))
+      .WillOnce([this](Envoy::Http::ResponseDecoder& decoder,
+                       Envoy::Http::ConnectionPool::Callbacks&,
+                       const Envoy::Http::ConnectionPool::Instance::StreamOptions&)
+                    -> Envoy::Http::ConnectionPool::Cancellable* {
+        // The decoder self-terminates in normal operation, but in this test that won't
+        // happen. Se we delete it ourselves. Note that we run our integration test with
+        // asan, so any leaks in real usage ought to be caught there.
+        delete &decoder;
+        client_->terminate();
+        return nullptr;
+      });
+  EXPECT_CALL(pool_, hasActiveConnections()).WillOnce([]() -> bool { return true; });
+  EXPECT_CALL(pool_, addIdleCallback(_));
+  // terminate() actively drains the pool; in this test no stream ever completes, so
+  // draining doesn't make the pool idle and the drain timeout still fires.
+  EXPECT_CALL(pool_, drainConnections(Envoy::ConnectionPool::DrainBehavior::DrainAndDelete));
+  // We don't expect the callback that we pass here to fire.
+  client_->tryStartRequest([](bool, bool) { EXPECT_TRUE(false); });
+  // To get past this, the drain timeout within the benchmark client must execute.
+  dispatcher_->run(Envoy::Event::Dispatcher::RunType::Block);
+  EXPECT_EQ(0, getCounter("http_2xx"));
+}
+
+// Regression test: BenchmarkClientHttpImpl::terminate() used to block for the full drain
+// timeout (timeout_) whenever an in-flight request completed onto a keep-alive connection
+// during the drain, because the pool idle callback never fired. terminate() now actively
+// drains the pool (drainConnections()), so completed keep-alive connections are closed,
+// the pool can become idle, and terminate() returns promptly.
+//
+// Background: terminate() registers an idle callback via HttpPoolData::addIdleCallback()
+// and then runs the dispatcher until either that callback or a drain timer (timeout_)
+// exits it. In Envoy (@ c821577, source/common/conn_pool/conn_pool_base.cc),
+// ConnPoolImplBase::isIdleImpl() is:
+//   pending_streams_.empty() && ready_clients_.empty() && busy_clients_.empty() &&
+//   connecting_clients_.empty() && early_data_clients_.empty()
+// and checkForIdleAndNotify() only invokes idle callbacks when that predicate holds.
+// When an in-flight request completes, its connection moves from busy_clients_ to
+// ready_clients_ (keep-alive) - so the pool never becomes idle unless something closes
+// the ready connections. Nighthawk never calls drainConnections(), so the idle callback
+// never fires and terminate() only returns when the drain timer hard-exits after the
+// full timeout, logging "Wait for the connection pool drain timed out...".
+//
+// The mock pool below models exactly those semantics: the captured idle callback is
+// invoked once the last stream has completed, but only if the pool was told to drain
+// (drainConnections()); without draining, a completed stream leaves a ready keep-alive
+// client behind and the pool stays non-idle forever, faithful to the real pool.
+TEST_F(BenchmarkClientHttpTest, TerminateReturnsPromptlyWhenRequestCompletesDuringDrain) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  setupBenchmarkClient(default_request_generator);
+  // Small drain timeout to bound the runtime of this test while it is red. The margin
+  // between the fast path (~0.25s) and the timeout path (5s) is seconds wide, so the
+  // timing assertion below is robust on loaded CI machines.
+  client_->setTimeout(std::chrono::seconds(5));
+
+  // Start a single request and capture its response decoder so we can complete the
+  // response later, while terminate() is draining.
+  Envoy::Http::ResponseDecoder* decoder = nullptr;
+  EXPECT_CALL(pool_, newStream(_, _, _))
+      .WillOnce([this, &decoder](Envoy::Http::ResponseDecoder& response_decoder,
+                                 Envoy::Http::ConnectionPool::Callbacks& callbacks,
+                                 const Envoy::Http::ConnectionPool::Instance::StreamOptions&)
+                    -> Envoy::Http::ConnectionPool::Cancellable* {
+        decoder = &response_decoder;
+        NiceMock<Envoy::StreamInfo::MockStreamInfo> stream_info;
+        callbacks.onPoolReady(stream_encoder_, Envoy::Upstream::HostDescriptionConstSharedPtr{},
+                              stream_info, {} /*std::optional<Envoy::Http::Protocol> protocol*/);
+        return nullptr;
+      });
+  EXPECT_CALL(stream_encoder_, encodeHeaders(_, _));
+
+  bool stream_completed = false;
+  ASSERT_TRUE(
+      client_->tryStartRequest([&stream_completed](bool, bool) { stream_completed = true; }));
+  ASSERT_NE(nullptr, decoder);
+
+  // Model of the real pool state, following ConnPoolImplBase::isIdleImpl() semantics
+  // described above: after the stream completes the connection becomes a ready
+  // keep-alive client, so the pool is only considered idle - and the idle callback is
+  // only invoked - if the pool has additionally been told to drain its connections.
+  bool drain_requested = false;
+  bool idle_callback_invoked = false;
+  Envoy::Http::ConnectionPool::Instance::IdleCb idle_cb;
+  auto maybe_fire_idle_callback = [&]() {
+    if (stream_completed && drain_requested && !idle_callback_invoked && idle_cb != nullptr) {
+      idle_callback_invoked = true;
+      idle_cb();
+    }
+  };
+  // One active stream exists when terminate() starts.
+  EXPECT_CALL(pool_, hasActiveConnections()).WillOnce([]() -> bool { return true; });
+  EXPECT_CALL(pool_, addIdleCallback(_))
+      .WillOnce([&idle_cb](Envoy::Http::ConnectionPool::Instance::IdleCb cb) { idle_cb = cb; });
+  // Only a DrainAndDelete drain closes stream-less keep-alive connections in the real
+  // pool, which is what allows the modeled pool to go idle once the last stream
+  // completes; requiring the exact behavior here guards against regressing to another
+  // enumerator.
+  EXPECT_CALL(pool_, drainConnections(Envoy::ConnectionPool::DrainBehavior::DrainAndDelete))
+      .Times(AnyNumber())
+      .WillRepeatedly([&](Envoy::ConnectionPool::DrainBehavior) {
+        drain_requested = true;
+        maybe_fire_idle_callback();
+      });
+
+  // Arm a timer that completes the in-flight response shortly after terminate() starts
+  // draining. This puts the pool in the exact state under test: zero active streams,
+  // one ready keep-alive connection.
+  Envoy::Event::TimerPtr response_timer = dispatcher_->createTimer([&]() {
+    Envoy::Http::ResponseHeaderMapPtr response_headers{
+        new Envoy::Http::TestResponseHeaderMapImpl{{":status", "200"}}};
+    decoder->decodeHeaders(std::move(response_headers), false);
+    Envoy::Buffer::OwnedImpl buffer(std::string(97, 'a'));
+    decoder->decodeData(buffer, true);
+    // The stream is done; the connection transitions busy -> ready (keep-alive).
+    maybe_fire_idle_callback();
+  });
+  response_timer->enableTimer(std::chrono::milliseconds(250));
+
+  const Envoy::MonotonicTime start_time = time_system_.monotonicTime();
+  client_->terminate();
+  const Envoy::MonotonicTime end_time = time_system_.monotonicTime();
+  const int64_t terminate_duration_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+
+  // Premise checks: the in-flight request really did complete during the drain.
+  EXPECT_TRUE(stream_completed);
+  EXPECT_EQ(1, getCounter("http_2xx"));
+  // Core assertion: terminate() must return comfortably before the 5s drain timeout,
+  // since the pool held zero active streams from ~250ms onwards. While the bug exists,
+  // terminate() blocks until the drain timer fires (~5000ms), failing this check.
+  EXPECT_LT(terminate_duration_ms, 2500);
+  // Second angle: the dispatcher should have been exited by the pool idle callback path
+  // rather than by the hard-shutdown drain timer path. While the bug exists the idle
+  // callback is never invoked (the pool is never drained, so it never goes idle).
+  EXPECT_TRUE(idle_callback_invoked);
+}
+
+UserDefinedOutputPluginPtr
+CreateTestUserDefinedOutputPlugin(const std::string& typed_config_textproto) {
+  TypedExtensionConfig typed_config;
+  std::ignore = TextFormat::ParseFromString(typed_config_textproto, &typed_config);
+
+  auto* factory = Envoy::Config::Utility::getAndCheckFactory<UserDefinedOutputPluginFactory>(
+      typed_config, false);
+  WorkerMetadata metadata{};
+  metadata.worker_number = 1;
+  return *factory->createUserDefinedOutputPlugin(typed_config.typed_config(), metadata);
+}
+
+TEST_F(BenchmarkClientHttpTest, CallsUserDefinedPluginHandleHeaders) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  Envoy::Http::TestResponseHeaderMapImpl headers({
+      {":status", "200"},
+      {"test_header_name", "test_header_value"},
+  });
+  UserDefinedOutputPluginPtr plugin = CreateTestUserDefinedOutputPlugin(R"(
+    name: "nighthawk.fake_user_defined_output",
+    typed_config {
+      [type.googleapis.com/nighthawk.FakeUserDefinedOutputConfig] {}
+    }
+  )");
+  UserDefinedOutputPlugin* plugin_ptr = plugin.get();
+  UserDefinedOutputNamePluginPair pair;
+  pair.first = "nighthawk.fake_user_defined_output";
+  pair.second = std::move(plugin);
+  user_defined_output_plugins_.push_back(std::move(pair));
+  setupBenchmarkClient(default_request_generator);
+
+  client_->onComplete(true, headers, std::nullopt);
+  client_->onComplete(true, headers, std::nullopt);
+  absl::StatusOr<Envoy::Protobuf::Any> output_any = plugin_ptr->getPerWorkerOutput();
+  ASSERT_TRUE(output_any.ok());
+  nighthawk::FakeUserDefinedOutput output;
+  ASSERT_TRUE(Envoy::MessageUtil::unpackTo(*output_any, output).ok());
+  EXPECT_EQ(output.headers_called(), 2);
+  EXPECT_EQ(getCounter("user_defined_plugin_handle_headers_failure"), 0);
+}
+
+TEST_F(BenchmarkClientHttpTest, IncrementsCounterWhenUserDefinedPluginHandleHeadersFails) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  Envoy::Http::TestResponseHeaderMapImpl headers({
+      {":status", "200"},
+      {"test_header_name", "test_header_value"},
+  });
+  UserDefinedOutputPluginPtr plugin = CreateTestUserDefinedOutputPlugin(R"(
+    name: "nighthawk.fake_user_defined_output",
+    typed_config {
+      [type.googleapis.com/nighthawk.FakeUserDefinedOutputConfig] {
+        fail_headers: true
+      }
+    }
+  )");
+  UserDefinedOutputPlugin* plugin_ptr = plugin.get();
+  UserDefinedOutputNamePluginPair pair;
+  pair.first = "nighthawk.fake_user_defined_output";
+  pair.second = std::move(plugin);
+  user_defined_output_plugins_.push_back(std::move(pair));
+  setupBenchmarkClient(default_request_generator);
+
+  client_->onComplete(true, headers, std::nullopt);
+  client_->onComplete(true, headers, std::nullopt);
+  absl::StatusOr<Envoy::Protobuf::Any> output_any = plugin_ptr->getPerWorkerOutput();
+  ASSERT_TRUE(output_any.ok());
+  nighthawk::FakeUserDefinedOutput output;
+  ASSERT_TRUE(Envoy::MessageUtil::unpackTo(*output_any, output).ok());
+  EXPECT_EQ(output.headers_called(), 2);
+  EXPECT_EQ(getCounter("user_defined_plugin_handle_headers_failure"), 2);
+}
+
+TEST_F(BenchmarkClientHttpTest, CallsUserDefinedPluginHandleData) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  Envoy::MockBuffer buffer;
+  buffer.add("notempty");
+  UserDefinedOutputPluginPtr plugin = CreateTestUserDefinedOutputPlugin(R"(
+    name: "nighthawk.fake_user_defined_output",
+    typed_config {
+      [type.googleapis.com/nighthawk.FakeUserDefinedOutputConfig] {}
+    }
+  )");
+  UserDefinedOutputPlugin* plugin_ptr = plugin.get();
+  UserDefinedOutputNamePluginPair pair;
+  pair.first = "nighthawk.fake_user_defined_output";
+  pair.second = std::move(plugin);
+  user_defined_output_plugins_.push_back(std::move(pair));
+  setupBenchmarkClient(default_request_generator);
+
+  client_->handleResponseData(buffer);
+  client_->handleResponseData(buffer);
+  absl::StatusOr<Envoy::Protobuf::Any> output_any = plugin_ptr->getPerWorkerOutput();
+  ASSERT_TRUE(output_any.ok());
+  nighthawk::FakeUserDefinedOutput output;
+  ASSERT_TRUE(Envoy::MessageUtil::unpackTo(*output_any, output).ok());
+  EXPECT_EQ(output.data_called(), 2);
+  EXPECT_EQ(getCounter("user_defined_plugin_handle_data_failure"), 0);
+}
+
+TEST_F(BenchmarkClientHttpTest, IncrementsCounterWhenUserDefinedPluginHandleDataFails) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  Envoy::MockBuffer buffer;
+  buffer.add("notempty");
+  UserDefinedOutputPluginPtr plugin = CreateTestUserDefinedOutputPlugin(R"(
+    name: "nighthawk.fake_user_defined_output",
+    typed_config {
+      [type.googleapis.com/nighthawk.FakeUserDefinedOutputConfig] {
+        fail_data: true
+      }
+    }
+  )");
+  UserDefinedOutputPlugin* plugin_ptr = plugin.get();
+  UserDefinedOutputNamePluginPair pair;
+  pair.first = "nighthawk.fake_user_defined_output";
+  pair.second = std::move(plugin);
+  user_defined_output_plugins_.push_back(std::move(pair));
+  setupBenchmarkClient(default_request_generator);
+
+  client_->handleResponseData(buffer);
+  client_->handleResponseData(buffer);
+  absl::StatusOr<Envoy::Protobuf::Any> output_any = plugin_ptr->getPerWorkerOutput();
+  ASSERT_TRUE(output_any.ok());
+  nighthawk::FakeUserDefinedOutput output;
+  ASSERT_TRUE(Envoy::MessageUtil::unpackTo(*output_any, output).ok());
+  EXPECT_EQ(output.data_called(), 2);
+  EXPECT_EQ(getCounter("user_defined_plugin_handle_data_failure"), 2);
+}
+
+TEST_F(BenchmarkClientHttpTest, GetUserDefinedOutputResultsReturnsResults) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  Envoy::Http::TestResponseHeaderMapImpl headers({
+      {":status", "200"},
+      {"test_header_name", "test_header_value"},
+  });
+  Envoy::MockBuffer buffer;
+  buffer.add("notempty");
+  UserDefinedOutputPluginPtr plugin = CreateTestUserDefinedOutputPlugin(R"(
+    name: "nighthawk.fake_user_defined_output",
+    typed_config {
+      [type.googleapis.com/nighthawk.FakeUserDefinedOutputConfig] {}
+    }
+  )");
+  UserDefinedOutputPlugin* plugin_ptr = plugin.get();
+  UserDefinedOutputNamePluginPair pair;
+  pair.first = "nighthawk.fake_user_defined_output";
+  pair.second = std::move(plugin);
+  user_defined_output_plugins_.push_back(std::move(pair));
+  setupBenchmarkClient(default_request_generator);
+
+  client_->onComplete(true, headers, std::nullopt);
+  client_->handleResponseData(buffer);
+  absl::StatusOr<Envoy::Protobuf::Any> expected_any = plugin_ptr->getPerWorkerOutput();
+  ASSERT_TRUE(expected_any.ok());
+  nighthawk::client::UserDefinedOutput expected_output;
+  *expected_output.mutable_typed_output() = *expected_any;
+  expected_output.set_plugin_name("nighthawk.fake_user_defined_output");
+
+  std::vector<nighthawk::client::UserDefinedOutput> outputs =
+      client_->getUserDefinedOutputResults();
+  EXPECT_EQ(outputs.size(), 1);
+  EXPECT_THAT(outputs[0], EqualsProto(expected_output));
+}
+
+TEST_F(BenchmarkClientHttpTest, GetUserDefinedOutputResultsIncludesErrorsWhenPluginsReturnErrors) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  UserDefinedOutputPluginPtr plugin = CreateTestUserDefinedOutputPlugin(R"(
+    name: "nighthawk.fake_user_defined_output",
+    typed_config {
+      [type.googleapis.com/nighthawk.FakeUserDefinedOutputConfig] {
+        fail_per_worker_output: true
+      }
+    }
+  )");
+  UserDefinedOutputNamePluginPair pair;
+  pair.first = "nighthawk.fake_user_defined_output";
+  pair.second = std::move(plugin);
+  user_defined_output_plugins_.push_back(std::move(pair));
+  setupBenchmarkClient(default_request_generator);
+
+  std::vector<nighthawk::client::UserDefinedOutput> outputs =
+      client_->getUserDefinedOutputResults();
+  EXPECT_EQ(outputs.size(), 1);
+
+  nighthawk::client::UserDefinedOutput expected_output;
+  expected_output.set_plugin_name("nighthawk.fake_user_defined_output");
+  *expected_output.mutable_error_message() =
+      "INTERNAL: Intentional FakeUserDefinedOutputPlugin failure on getting PerWorkerOutput";
+  EXPECT_THAT(outputs[0], EqualsProto(expected_output));
+}
+
+} // namespace Nighthawk

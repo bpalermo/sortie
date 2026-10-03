@@ -1,0 +1,122 @@
+#include "engine/source/client/client.h"
+
+#include <grpc++/grpc++.h>
+
+#include <chrono>
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <random>
+
+#include "envoy/stats/store.h"
+
+#include "nighthawk/client/output_collector.h"
+
+#include "source/common/common/cleanup.h"
+#include "source/common/event/dispatcher_impl.h"
+#include "source/common/event/real_time_system.h"
+#include "source/common/network/utility.h"
+#include "source/common/runtime/runtime_impl.h"
+#include "source/common/thread_local/thread_local_impl.h"
+
+#include "engine/api/client/output.pb.h"
+#include "engine/api/client/service.grpc.pb.h"
+
+#include "engine/source/client/client_worker_impl.h"
+#include "engine/source/client/factories_impl.h"
+#include "engine/source/client/options_impl.h"
+#include "engine/source/client/output_collector_impl.h"
+#include "engine/source/client/process_impl.h"
+#include "engine/source/client/remote_process_impl.h"
+#include "engine/source/common/frequency.h"
+#include "engine/source/common/signal_handler.h"
+#include "engine/source/common/uri_impl.h"
+#include "engine/source/common/utility.h"
+
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+
+using namespace std::chrono_literals;
+
+namespace Nighthawk {
+namespace Client {
+
+Main::Main(int argc, const char* const* argv)
+    : Main(std::make_unique<Client::OptionsImpl>(argc, argv)) {}
+
+Main::Main(Client::OptionsPtr&& options) : options_(std::move(options)) {}
+
+bool Main::run() {
+  Envoy::Thread::MutexBasicLockable log_lock;
+  const std::string lower = absl::AsciiStrToLower(
+      nighthawk::client::Verbosity::VerbosityOptions_Name(options_->verbosity()));
+  auto logging_context = std::make_unique<Envoy::Logger::Context>(
+      spdlog::level::from_str(lower), "[%T.%f][%t][%L] %v", log_lock, false);
+  Envoy::Event::RealTimeSystem time_system; // NO_CHECK_FORMAT(real_time)
+  ProcessPtr process;
+  std::unique_ptr<nighthawk::client::NighthawkService::Stub> stub;
+  std::shared_ptr<grpc::Channel> channel;
+
+  if (options_->nighthawkService() != "") {
+    UriPtr uri;
+
+    try {
+      uri = std::make_unique<UriImpl>(options_->nighthawkService());
+    } catch (const UriException&) {
+      ENVOY_LOG(error, "Bad service uri: {}", options_->nighthawkService());
+      return false;
+    }
+
+    channel = grpc::CreateChannel(fmt::format("{}:{}", uri->hostWithoutPort(), uri->port()),
+                                  grpc::InsecureChannelCredentials());
+    stub = std::make_unique<nighthawk::client::NighthawkService::Stub>(channel);
+    process = std::make_unique<RemoteProcessImpl>(*options_, *stub);
+  } else {
+    envoy::config::core::v3::TypedExtensionConfig typed_dns_resolver_config;
+    Envoy::Network::DnsResolverFactory& dns_resolver_factory =
+        Envoy::Network::createDefaultDnsResolverFactory(typed_dns_resolver_config);
+    absl::StatusOr<ProcessPtr> process_or_status = ProcessImpl::CreateProcessImpl(
+        *options_, dns_resolver_factory, std::move(typed_dns_resolver_config), time_system);
+    if (!process_or_status.ok()) {
+      ENVOY_LOG(error, "Unable to create ProcessImpl: {}", process_or_status.status().ToString());
+      return false;
+    }
+    process = std::move(*process_or_status);
+  }
+  OutputFormatterFactoryImpl output_formatter_factory;
+  OutputCollectorImpl output_collector(time_system, *options_);
+  bool result;
+  {
+    // The SignalHandler scope covers process->shutdown() as well: the shutdown/drain phase
+    // is the most likely to hang, and signals must keep being handled there. Requesting
+    // execution cancellation on an already-finished run is safe: worker cancellation and
+    // shutdown() serialize on the same lock inside ProcessImpl (encap subprocess
+    // termination is guarded by the runner's own mutex), and RemoteProcessImpl logs that
+    // cancellation is unsupported. The SignalHandler restores the previous (typically
+    // default) dispositions as soon as it consumes the first signal, so any further signal
+    // terminates the process (escalation) even if the cancellation callback blocks on a
+    // hung shutdown.
+    auto signal_handler =
+        std::make_unique<SignalHandler>([&process]() { process->requestExecutionCancellation(); });
+    result = process->run(output_collector);
+    auto formatter = output_formatter_factory.create(options_->outputFormat());
+    absl::StatusOr<std::string> formatted_proto =
+        formatter->formatProto(output_collector.toProto());
+    if (!formatted_proto.ok()) {
+      ENVOY_LOG(error, "An error occurred while formatting proto");
+      result = false;
+    } else {
+      std::cout << *formatted_proto;
+    }
+    process->shutdown();
+  }
+  if (!result) {
+    ENVOY_LOG(error, "An error occurred.");
+  } else {
+    ENVOY_LOG(info, "Done.");
+  }
+  return result;
+}
+
+} // namespace Client
+} // namespace Nighthawk

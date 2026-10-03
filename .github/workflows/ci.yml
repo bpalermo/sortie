@@ -39,8 +39,19 @@ jobs:
 
       # Lint runs as ordinary test targets (tags = ["lint"]), so this covers
       # both. There is no separate go vet or gofmt step.
+      # The engine is an Envoy build, offloaded to BuildBuddy remote execution
+      # (see the rbe-buildbuddy configs in .bazelrc). The key is a repository
+      # secret, so a pull request from a fork runs without it and fails here
+      # rather than compiling Envoy on the runner.
       - name: bazel test //...
-        run: bazel test //... --test_output=errors
+        run: |
+          bazel test //... \
+            --config=rbe-buildbuddy-amd64 \
+            --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_API_KEY }} \
+            --build_metadata=ROLE=CI \
+            --build_metadata=REPO_URL=https://github.com/${{ github.repository }} \
+            --build_metadata=COMMIT_SHA=${{ github.sha }} \
+            --test_output=errors
 
       # Gazelle generates the BUILD files, so a hand-edited or stale one is a
       # real failure mode: the Bazel build keeps working against the old graph

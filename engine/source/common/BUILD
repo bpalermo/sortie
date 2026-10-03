@@ -1,0 +1,161 @@
+load(
+    "@envoy//bazel:envoy_build_system.bzl",
+    "envoy_cc_library",
+    "envoy_package",
+)
+
+licenses(["notice"])  # Apache 2
+
+envoy_package()
+
+envoy_cc_library(
+    name = "nighthawk_service_client_impl",
+    srcs = [
+        "nighthawk_service_client_impl.cc",
+    ],
+    hdrs = [
+        "nighthawk_service_client_impl.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//engine/api/client:base_cc_proto",
+        "//engine/api/client:grpc_service_lib",
+        "//engine/include/nighthawk/common:nighthawk_service_client",
+        "@envoy//source/common/common:assert_lib_with_external_headers",
+        "@envoy//source/common/common:statusor_lib_with_external_headers",
+        "@envoy//source/common/protobuf:protobuf_with_external_headers",
+    ],
+)
+
+envoy_cc_library(
+    name = "request_impl_lib",
+    hdrs = [
+        "request_impl.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":nighthawk_common_lib",
+        "//engine/include/nighthawk/common:request_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "request_stream_grpc_client_lib",
+    srcs = ["request_stream_grpc_client_impl.cc"],
+    hdrs = ["request_stream_grpc_client_impl.h"],
+    deps = [
+        ":request_impl_lib",
+        "//engine/api/client:base_cc_proto",
+        "//engine/api/request_source:grpc_request_source_service_lib",
+        "//engine/include/nighthawk/common:base_includes",
+        "//engine/include/nighthawk/common:request_lib",
+        "@envoy//envoy/grpc:async_client_interface_with_external_headers",
+        "@envoy//envoy/grpc:async_client_manager_interface_with_external_headers",
+        "@envoy//envoy/upstream:cluster_manager_interface_with_external_headers",
+        "@envoy//source/common/common:assert_lib_with_external_headers",
+        "@envoy//source/common/common:minimal_logger_lib_with_external_headers",
+        "@envoy//source/common/grpc:typed_async_client_lib_with_external_headers",
+        "@envoy//source/common/http:header_map_lib_with_external_headers",
+        "@envoy//source/common/http:headers_lib_with_external_headers",
+        "@envoy_api//envoy/api/v2/core:pkg_cc_proto",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
+    ],
+)
+
+envoy_cc_library(
+    name = "request_source_impl_lib",
+    srcs = [
+        "request_source_impl.cc",
+    ],
+    hdrs = [
+        "request_source_impl.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":nighthawk_common_lib",
+        ":request_impl_lib",
+        ":request_stream_grpc_client_lib",
+        "//engine/include/nighthawk/common:request_source_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "version_linkstamp",
+    srcs = ["version_linkstamp.cc"],
+    deps = [
+        "@envoy//source/common/version:version_includes",
+    ],
+)
+
+envoy_cc_library(
+    name = "thread_safe_monotonic_time_stopwatch_lib",
+    srcs = [
+        "thread_safe_monotonic_time_stopwatch.cc",
+    ],
+    hdrs = [
+        "thread_safe_monotonic_time_stopwatch.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//engine/include/nighthawk/common:stopwatch_lib",
+        "@envoy//envoy/common:time_interface",
+        "@envoy//source/common/common:lock_guard_lib_with_external_headers",
+        "@envoy//source/common/common:thread_lib_with_external_headers",
+    ],
+)
+
+envoy_cc_library(
+    name = "nighthawk_common_lib",
+    srcs = [
+        "phase_impl.cc",
+        "rate_limiter_impl.cc",
+        "sequencer_impl.cc",
+        "signal_handler.cc",
+        "statistic_impl.cc",
+        "termination_predicate_impl.cc",
+        "uri_impl.cc",
+        "utility.cc",
+        "version_info.cc",
+        "worker_impl.cc",
+    ],
+    hdrs = [
+        "cached_time_source_impl.h",
+        "frequency.h",
+        "phase_impl.h",
+        "platform_util_impl.h",
+        "rate_limiter_impl.h",
+        "sequencer_impl.h",
+        "signal_handler.h",
+        "statistic_impl.h",
+        "termination_predicate_impl.h",
+        "uri_impl.h",
+        "utility.h",
+        "version_info.h",
+        "worker_impl.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//engine/api/client:base_cc_proto",
+        "//engine/api/client:grpc_service_lib",
+        "//engine/api/rate_limiter:rate_limiter_plugin_cc_proto",
+        "//engine/include/nighthawk/client:client_includes",
+        "//engine/include/nighthawk/common:base_includes",
+        "//engine/internal_proto/statistic:statistic_cc_proto",
+        "@com_google_absl//absl/random",
+        "@com_google_absl//absl/strings",
+        "@dep_hdrhistogram_c//:hdrhistogram_c",
+        "@envoy//source/common/common:assert_lib_with_external_headers",
+        "@envoy//source/common/common:lock_guard_lib_with_external_headers",
+        "@envoy//source/common/common:macros_with_external_headers",
+        "@envoy//source/common/common:minimal_logger_lib_with_external_headers",
+        "@envoy//source/common/common:thread_lib_with_external_headers",
+        "@envoy//source/common/http:utility_lib_with_external_headers",
+        "@envoy//source/common/network:utility_lib_with_external_headers",
+        "@envoy//source/common/protobuf:utility_lib_with_external_headers",
+        "@envoy//source/common/stats:histogram_lib_with_external_headers",
+        "@envoy//source/common/version:version_includes_with_external_headers",
+        "@envoy//source/exe:main_common_with_all_extensions_lib_with_external_headers",
+        "@envoy//source/server/config_validation:server_lib_with_external_headers",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
+    ],
+)

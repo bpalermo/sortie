@@ -1,0 +1,19 @@
+load(
+    "@envoy//bazel:envoy_build_system.bzl",
+    "envoy_cc_test_library",
+    "envoy_package",
+)
+
+licenses(["notice"])  # Apache 2
+
+envoy_package()
+
+envoy_cc_test_library(
+    name = "utility_lib",
+    srcs = ["utility.cc"],
+    hdrs = ["utility.h"],
+    deps = [
+        "//engine/source/client:nighthawk_client_lib",
+        "@envoy//test/test_common:utility_lib",
+    ],
+)

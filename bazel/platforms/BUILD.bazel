@@ -1,0 +1,26 @@
+# RBE execution platforms for BuildBuddy, derived from Envoy's. Envoy's RBE
+# platforms carry the build container image, docker capabilities and the
+# privileged flag, which BuildBuddy accepts, plus an EngFlow-only dockerNetwork
+# value it rejects ("Unsupported dockerNetwork property value: standard").
+# Hermetic actions need no network, so it is turned off here.
+platform(
+    name = "rbe_buildbuddy_amd64",
+    exec_properties = {
+        "dockerNetwork": "off",
+    },
+    parents = ["@envoy//bazel/platforms/rbe:linux_x64"],
+    visibility = ["//visibility:public"],
+)
+
+# BuildBuddy routes by Arch rather than by Envoy's EngFlow "arm" Pool. A native
+# arm64 build, driven from an arm64 host.
+platform(
+    name = "rbe_buildbuddy_arm64",
+    exec_properties = {
+        "dockerNetwork": "off",
+        "Pool": "",
+        "Arch": "arm64",
+    },
+    parents = ["@envoy//bazel/platforms/rbe:linux_arm64"],
+    visibility = ["//visibility:public"],
+)

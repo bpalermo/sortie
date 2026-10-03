@@ -81,17 +81,13 @@ bazel_dep(name = "protovalidate", version = "1.2.2")
 # protobuf owns proto_library now; rules_proto only re-exports it and is
 # deprecated, so the rule is loaded from the protobuf module directly. The
 # version is Envoy's, from its registry.
-bazel_dep(name = "protobuf", version = "35.1.bcr.envoy", repo_name = "com_google_protobuf")
+bazel_dep(name = "protobuf", version = "35.1.bcr.envoy")
 
 # Versions follow envoy_api's own, so the proto graph resolves to one copy of
 # each dependency rather than two.
 bazel_dep(name = "googleapis", version = "0.0.0-20251003-2193a2bf")
 bazel_dep(name = "googleapis-go", version = "1.0.0")
-bazel_dep(
-    name = "protoc-gen-validate",
-    version = "1.3.3.envoy",
-    repo_name = "com_envoyproxy_protoc_gen_validate",
-)
+bazel_dep(name = "protoc-gen-validate", version = "1.3.3.envoy")
 
 # The Go SDK and the Bazel version in .bazelversion track Envoy's pins (go_sdk
 # 1.27.1 and Bazel 8.8.0 at envoyproxy/envoy 3ded46e, 2026-10-01), so that the
@@ -154,6 +150,99 @@ go_deps.gazelle_override(
     build_file_generation = "off",
     path = "cel.dev/expr",
 )
+
+####################################################################################
+# Load engine (engine/): the Envoy-based Nighthawk fork
+####################################################################################
+
+# Modules the engine's BUILD files name directly, at the versions Envoy pins.
+bazel_dep(name = "rules_python", version = "2.3.3")
+bazel_dep(name = "proxy-wasm-cpp-host", version = "0.0.0-260704-f2db56a.envoy")
+bazel_dep(name = "googleurl", version = "0.0.0-221103-dd4080f.envoy")
+bazel_dep(name = "rules_rust", version = "0.74.0.envoy")
+bazel_dep(name = "grpc", version = "1.83.0.envoy")
+bazel_dep(name = "librdkafka", version = "2.15.0")
+bazel_dep(name = "quiche", version = "0.0.0-260922-7f07dc4.envoy")
+bazel_dep(name = "toolchains_llvm", version = "1.9.1.envoy")
+bazel_dep(name = "envoy_toolshed", version = "0.5.2.envoy")
+bazel_dep(name = "zlib-ng", version = "2.3.3.bcr.2")
+bazel_dep(name = "googletest", version = "1.18.0.bcr.1")
+bazel_dep(name = "re2", version = "2025-11-05.bcr.1")
+bazel_dep(name = "libsxg", version = "0.0.0-210708-beaa393.envoy")
+bazel_dep(name = "abseil-cpp", version = "20260817.0", repo_name = "com_google_absl")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "dep_hdrhistogram_c",
+    build_file_content = """
+cc_library(
+    name = "hdrhistogram_c",
+    srcs = [
+        "src/hdr_encoding.c",
+        "src/hdr_histogram.c",
+        "src/hdr_histogram_log.c",
+        "src/hdr_interval_recorder.c",
+        "src/hdr_malloc.h",
+        "src/hdr_thread.c",
+        "src/hdr_time.c",
+        "src/hdr_writer_reader_phaser.c",
+    ],
+    hdrs = [
+        "src/hdr_atomic.h",
+        "src/hdr_encoding.h",
+        "src/hdr_endian.h",
+        "include/hdr/hdr_histogram.h",
+        "include/hdr/hdr_histogram_log.h",
+        "include/hdr/hdr_interval_recorder.h",
+        "include/hdr/hdr_writer_reader_phaser.h",
+        "src/hdr_tests.h",
+        "include/hdr/hdr_thread.h",
+        "include/hdr/hdr_time.h",
+    ],
+    includes = ["include"],
+    copts = [
+        "-std=gnu99",
+        "-Wno-implicit-function-declaration",
+        "-Wno-error",
+    ],
+    deps = ["@zlib-ng"],
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "bb95351a6a8b242dc9be1f28562761a84d4cf0a874ffc90a9b630770a6468e94",
+    strip_prefix = "HdrHistogram_c-0.11.8",
+    url = "https://github.com/HdrHistogram/HdrHistogram_c/archive/0.11.8.tar.gz",
+)
+
+# rules_python only honours is_default from the root module, so the default
+# Python toolchain Envoy's tooling and the engine's integration tests need is
+# declared here.
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    is_default = True,
+    python_version = "3.12",
+)
+use_repo(python, "python_3_12", python = "python_versions")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "nh_pip3",
+    python_version = "3.12",
+    requirements_lock = "//engine/tools/base:requirements.txt",
+)
+use_repo(pip, "nh_pip3")
+
+llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
+use_repo(llvm, "llvm_toolchain")
+
+llvm_toolchain_alias_ext = use_extension("@envoy_toolshed//compile:extensions.bzl", "llvm_toolchain_alias_extension")
+use_repo(llvm_toolchain_alias_ext, "llvm_toolchain_llvm")
+
+# @clang_platform: the RBE host platform Envoy's remote-exec config names, and
+# the parent of the BuildBuddy platforms in //bazel/platforms.
+envoy_toolchains_ext = use_extension("@envoy//bazel:extensions.bzl", "envoy_toolchains_extension")
+use_repo(envoy_toolchains_ext, "clang_platform")
 
 # Helm's own binary, so the chart is built and linted with a pinned toolchain
 # rather than whatever is on a developer's PATH.
