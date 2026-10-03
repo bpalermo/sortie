@@ -220,10 +220,12 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 	if n := len(regexp.MustCompile(`(?m)^\s+\S+:\d+  \d+(\.\d+)?s  .*http_2xx \d+`).FindAll(out, -1)); n < 3 {
 		t.Errorf("expected at least three progress lines with an http_2xx count, found %d", n)
 	}
-	// Anchored on the count, so that 1500 or 2500 requests cannot satisfy it; the
+	// Anchored on the count, so that 1000 requests (the rate forwarded to each
+	// worker rather than divided) cannot satisfy it. Not exact: a request still
+	// in flight when the clock runs out makes it 499 on a slow runner. The
 	// duration is the backend's measured one and may read 5.001s.
-	if !regexp.MustCompile(`(?m)^\s+\S+: 500 requests in \S+$`).Match(out) {
-		t.Errorf("sortie output lacks the backend line with exactly 500 requests")
+	if !regexp.MustCompile(`(?m)^\s+\S+: (49[0-9]|50[0-9]) requests in \S+$`).Match(out) {
+		t.Errorf("sortie output lacks the backend line with about 500 requests")
 	}
 	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
 		t.Errorf("sortie output lacks the PASS verdict")
