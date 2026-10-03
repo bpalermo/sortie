@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -32,15 +33,24 @@ func Dial(ctx context.Context, addr string) (*grpc.ClientConn, error) {
 //
 // Nighthawk accepts only one execution at a time per service instance and
 // answers on a bidirectional stream, writing a single ExecutionResponse when
-// the run has finished. There is no progress on this stream and no way to stop
-// a run once it has started: the UpdateRequest and CancellationRequest members
-// of ExecutionRequest are declared in the proto but rejected by the service
-// with "Request is not supported yet" (envoyproxy/nighthawk#380). Cancelling
-// ctx therefore abandons the stream while the backend keeps generating load
-// until its configured duration elapses.
+// the run has finished. There is no progress on this stream.
+//
+// Cancelling ctx stops the run: a CancellationRequest goes out on the still-open
+// stream, the service ends the execution early and answers with what it
+// collected, and Execute returns that response together with ctx's error, so a
+// cancelled run is never evaluated as a complete one. The stream itself lives on
+// a context that ctx does not cancel, since the cancellation has to travel on it
+// after ctx is done. If the service does not answer within cancelGrace, the
+// stream is abandoned.
+// cancelGrace bounds how long a cancelled Execute waits for the service to
+// answer the cancellation with the run's partial response.
+const cancelGrace = 30 * time.Second
+
 func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLineOptions) (*client.ExecutionResponse, error) {
 	stub := client.NewNighthawkServiceClient(conn)
-	stream, err := stub.ExecutionStream(ctx)
+	streamCtx, closeStream := context.WithCancel(context.WithoutCancel(ctx))
+	defer closeStream()
+	stream, err := stub.ExecutionStream(streamCtx)
 	if err != nil {
 		return nil, fmt.Errorf("opening execution stream: %w", err)
 	}
@@ -53,11 +63,41 @@ func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLin
 	if err := stream.Send(req); err != nil {
 		return nil, fmt.Errorf("sending start request: %w", err)
 	}
+
+	type received struct {
+		resp *client.ExecutionResponse
+		err  error
+	}
+	first := make(chan received, 1)
+	go func() {
+		resp, err := stream.Recv()
+		first <- received{resp, err}
+	}()
+
+	var cancelled bool
+	var got received
+	select {
+	case got = <-first:
+	case <-ctx.Done():
+		cancelled = true
+		cancel := &client.ExecutionRequest{
+			CommandSpecificOptions: &client.ExecutionRequest_CancellationRequest{
+				CancellationRequest: &client.CancellationRequest{},
+			},
+		}
+		if err := stream.Send(cancel); err != nil {
+			return nil, fmt.Errorf("%w (and sending the cancellation failed: %v)", ctx.Err(), err)
+		}
+		select {
+		case got = <-first:
+		case <-time.After(cancelGrace):
+			return nil, fmt.Errorf("%w (the service did not answer the cancellation within %s)", ctx.Err(), cancelGrace)
+		}
+	}
 	if err := stream.CloseSend(); err != nil {
 		return nil, fmt.Errorf("closing send direction: %w", err)
 	}
-
-	resp, err := stream.Recv()
+	resp, err := got.resp, got.err
 	if err != nil {
 		if err == io.EOF {
 			return nil, fmt.Errorf("service closed the stream without returning a response")
@@ -81,6 +121,9 @@ func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLin
 		}
 	}
 
+	if cancelled {
+		return resp, fmt.Errorf("execution cancelled: %w", ctx.Err())
+	}
 	if detail := resp.GetErrorDetail(); detail != nil && detail.GetCode() != 0 {
 		return resp, fmt.Errorf("nighthawk reported failure: %s", detail.GetMessage())
 	}

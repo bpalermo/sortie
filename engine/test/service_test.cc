@@ -1,6 +1,7 @@
 #include <grpc++/grpc++.h>
 
 #include <chrono>
+#include <thread>
 
 #include "nighthawk/common/exception.h"
 
@@ -223,17 +224,95 @@ TEST_P(ServiceTest, UpdatesNotSupported) {
   EXPECT_FALSE(status.ok());
 }
 
-// We didn't implement cancellations yet, ensure we indicate so.
-TEST_P(ServiceTest, CancelNotSupported) {
+// A cancellation with nothing running is not an error: it races the end of a
+// run in practice, and the stream simply continues.
+TEST_P(ServiceTest, CancelWithoutExecutionIsIgnored) {
   request_ = nighthawk::client::ExecutionRequest();
   request_.mutable_cancellation_request();
   auto r = stub_->ExecutionStream(&context_);
-  r->Write(request_, {});
-  r->WritesDone();
+  EXPECT_TRUE(r->Write(request_, {}));
+  EXPECT_TRUE(r->WritesDone());
   EXPECT_FALSE(r->Read(&response_));
   auto status = r->Finish();
-  EXPECT_THAT(status.error_message(), HasSubstr("Request is not supported yet"));
-  EXPECT_FALSE(status.ok());
+  EXPECT_TRUE(status.ok());
+}
+
+// A cancellation ends the active execution early, and its response -- with
+// whatever was collected -- arrives on the same stream.
+TEST_P(ServiceTest, CancelStopsARunningExecution) {
+  auto options = request_.mutable_start_request()->mutable_options();
+  // Long enough that only a cancellation can end it in time. The target does
+  // not exist, so the default failure predicates would end the run at the
+  // first connection failure; a custom one keeps it going.
+  options->mutable_duration()->set_seconds(60);
+  (*options->mutable_failure_predicates())["benchmark.nonexistent"] = 0;
+  auto r = stub_->ExecutionStream(&context_);
+  EXPECT_TRUE(r->Write(request_, {}));
+  // Give the execution a moment to actually be running.
+  std::this_thread::sleep_for(std::chrono::seconds(2)); // NO_CHECK_FORMAT(real_time)
+  nighthawk::client::ExecutionRequest cancel;
+  cancel.mutable_cancellation_request();
+  EXPECT_TRUE(r->Write(cancel, {}));
+  EXPECT_TRUE(r->WritesDone());
+  const auto started = std::chrono::steady_clock::now(); // NO_CHECK_FORMAT(real_time)
+  EXPECT_TRUE(r->Read(&response_));
+  const auto waited = std::chrono::steady_clock::now() - started; // NO_CHECK_FORMAT(real_time)
+  EXPECT_LT(waited, std::chrono::seconds(30)) << "the response did not arrive promptly";
+  EXPECT_TRUE(response_.has_output());
+  EXPECT_FALSE(r->Read(&response_));
+  auto status = r->Finish();
+  EXPECT_TRUE(status.ok());
+}
+
+// Only the stream that started an execution can cancel it. Another client's
+// stream sending a cancellation is answered normally and changes nothing: a
+// start request on it afterwards is still refused as busy, and the owner's
+// own cancellation then ends the run.
+TEST_P(ServiceTest, CancelFromAnotherStreamIsIgnored) {
+  auto options = request_.mutable_start_request()->mutable_options();
+  options->mutable_duration()->set_seconds(60);
+  (*options->mutable_failure_predicates())["benchmark.nonexistent"] = 0;
+  auto owner = stub_->ExecutionStream(&context_);
+  EXPECT_TRUE(owner->Write(request_, {}));
+  std::this_thread::sleep_for(std::chrono::seconds(2)); // NO_CHECK_FORMAT(real_time)
+
+  nighthawk::client::ExecutionRequest cancel;
+  cancel.mutable_cancellation_request();
+  {
+    grpc::ClientContext other_context;
+    auto other = stub_->ExecutionStream(&other_context);
+    EXPECT_TRUE(other->Write(cancel, {}));
+    EXPECT_TRUE(other->WritesDone());
+    nighthawk::client::ExecutionResponse response;
+    EXPECT_FALSE(other->Read(&response));
+    EXPECT_TRUE(other->Finish().ok());
+  }
+  {
+    // Still running, so a new start is refused -- and refused promptly, not
+    // after the owner's run ends.
+    grpc::ClientContext other_context;
+    auto other = stub_->ExecutionStream(&other_context);
+    EXPECT_TRUE(other->Write(request_, {}));
+    EXPECT_TRUE(other->WritesDone());
+    nighthawk::client::ExecutionResponse response;
+    const auto started = std::chrono::steady_clock::now(); // NO_CHECK_FORMAT(real_time)
+    EXPECT_FALSE(other->Read(&response));
+    const auto status = other->Finish();
+    const auto waited = std::chrono::steady_clock::now() - started; // NO_CHECK_FORMAT(real_time)
+    EXPECT_FALSE(status.ok());
+    EXPECT_THAT(status.error_message(), HasSubstr("Only a single benchmark session"));
+    EXPECT_LT(waited, std::chrono::seconds(10)) << "busy was reported only after the run";
+  }
+
+  EXPECT_TRUE(owner->Write(cancel, {}));
+  EXPECT_TRUE(owner->WritesDone());
+  const auto started = std::chrono::steady_clock::now(); // NO_CHECK_FORMAT(real_time)
+  EXPECT_TRUE(owner->Read(&response_));
+  const auto waited = std::chrono::steady_clock::now() - started; // NO_CHECK_FORMAT(real_time)
+  EXPECT_LT(waited, std::chrono::seconds(30)) << "the response did not arrive promptly";
+  EXPECT_TRUE(response_.has_output());
+  EXPECT_FALSE(owner->Read(&response_));
+  EXPECT_TRUE(owner->Finish().ok());
 }
 
 TEST_P(ServiceTest, Unresolvable) {

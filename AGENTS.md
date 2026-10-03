@@ -103,11 +103,11 @@ not add an "aggregate p95".
 These are properties of the backend, not gaps to paper over. Documented in the
 README's Limitations section; keep the two in sync.
 
-- No mid-run control. `UpdateRequest` and `CancellationRequest` exist in
-  `api/client/service.proto` and the service rejects both
-  (envoyproxy/nighthawk#380). Interrupting a run abandons the gRPC streams while
-  the backends keep generating load. Do not write code or docs implying a clean
-  abort.
+- No mid-run updates. `UpdateRequest` exists in `engine/api/client/service.proto`
+  and the service rejects it. Cancellation works: `nh.Execute` sends a
+  `CancellationRequest` when its context is cancelled and returns the backend's
+  partial response with the context's error, so a cancelled run is never
+  evaluated as a complete one.
 - No progress during a run. An execution returns nothing until it finishes.
 - One execution per backend at a time; `nighthawk_service` refuses a second.
 - `RequestSource` never sees responses, so there is no session flow and no

@@ -45,12 +45,10 @@ func runPlan(parent context.Context, path string, asJSON bool, out string, stdou
 		parent = context.Background()
 	}
 
-	// Nighthawk cannot stop a run in flight (envoyproxy/nighthawk#380), so a
-	// signal abandons the streams and leaves the backends generating load until
-	// their configured duration elapses. Say so rather than implying a clean
-	// stop. The notice is driven off the signal itself rather than off
-	// ctx.Done, which also fires on the ordinary cancel at the end of a
-	// successful run.
+	// A signal cancels ctx, which sends each backend a CancellationRequest and
+	// waits for its partial response (see nh.Execute). The notice is driven off
+	// the signal itself rather than off ctx.Done, which also fires on the
+	// ordinary cancel at the end of a successful run.
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
@@ -60,8 +58,7 @@ func runPlan(parent context.Context, path string, asJSON bool, out string, stdou
 	go func() {
 		select {
 		case <-signals:
-			fmt.Fprintln(stderr,
-				"\nsortie: interrupted; Nighthawk backends keep running until their configured duration elapses")
+			fmt.Fprintln(stderr, "\nsortie: interrupted; cancelling the backends' executions")
 			cancel()
 		case <-ctx.Done():
 		}
