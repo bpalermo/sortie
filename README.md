@@ -345,6 +345,12 @@ grammar belongs to sortie rather than to protobuf.
 Durations follow protobuf's own JSON mapping — decimal seconds ending in `s`,
 so `90s` rather than Go's `1m30s`.
 
+## Attribution
+
+`engine/` is a fork of [envoyproxy/nighthawk](https://github.com/envoyproxy/nighthawk),
+Apache License 2.0; its `LICENSE` is kept in that directory and its README says
+what was changed. The rest of this repository is under the root `LICENSE`.
+
 ## Protos
 
 The engine's API protos live in `engine/api` and are compiled by Bazel for
