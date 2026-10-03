@@ -8,7 +8,7 @@ bazel_dep(name = "gazelle", version = "0.54.0")
 bazel_dep(name = "aspect_rules_lint", version = "2.9.0")
 
 # Named by //bazel/image for string_flag.
-bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "rules_img", version = "0.3.21")
 bazel_dep(name = "rules_helm", version = "0.32.0")
 
@@ -16,7 +16,7 @@ bazel_dep(name = "rules_helm", version = "0.32.0")
 # older versions reach it through rules_pkg and use the removed
 # incompatible_use_toolchain_transition keyword. Also fine on 8.8.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0")
-bazel_dep(name = "buildifier_prebuilt", version = "10.0.1")
+bazel_dep(name = "buildifier_prebuilt", version = "10.1.0")
 
 # Named directly by the select() in //bazel/lint that picks buildifier's
 # platform-appropriate binary.

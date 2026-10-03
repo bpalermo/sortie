@@ -70,6 +70,9 @@ resolve the Bazel-only proto packages.
 `bazel run //:gazelle` regenerates BUILD files after adding or renaming a Go
 file. CI fails if it leaves a diff.
 
+The engine's Envoy dependency is pinned by commit; `bazel/bump-envoy.sh <commit>`
+moves the pin and everything that has to move with it (see `AGENTS.md`).
+
 ## Commands
 
 | Command | What it does |
