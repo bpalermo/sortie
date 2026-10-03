@@ -68,7 +68,12 @@ new mode of the existing one:
   a TCP connection delivers in order, so echoes are correlated FIFO against
   the bytes sent -- on the next connection and times the echo. With
   `expect_echo: false` nothing is timed: a write only queues bytes locally,
-  so the run counts sends and reports no latency. This is its own field, not
+  so the run counts sends and reports no latency. Backpressure is the
+  connection's own watermarks: a send scheduled while a connection is above
+  its write high watermark is dropped and counted (`tcp_deferred`,
+  `tcp_write_blocked`), never queued, so a slow target shows up in the
+  counters instead of in a buffer that grows for the whole run -- the rule
+  every client here follows. This is its own field, not
   `Scenario.connections`: that one is the HTTP pool's circuit-breaker cap
   (default 100), and a TCP mode wants a small, exact, eagerly opened pool --
   default 1 per worker, the way `websocket.streams` is exact.
