@@ -40,6 +40,11 @@ jobs:
     # with a certificate the verification identity below accepts, making it
     # indistinguishable from a publication from main.
     if: github.ref == 'refs/heads/main'
+    # After the engine: the chart published here names the engine image tag
+    # stamped with this commit, so that tag has to exist before the chart does.
+    # The cost is that a failed engine build publishes no sortie image either,
+    # which is what releasing the two in sync means.
+    needs: [engine-index]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -351,6 +356,22 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same guard as the publish job: re-running an old run would move the
+      # mutable engine:dev tag back onto a superseded commit and sign it.
+      - name: Refuse to tag a commit that is no longer main's tip
+        run: |
+          set -euo pipefail
+          tip="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1)"
+          if [ -z "${tip}" ]; then
+            echo "::error::could not read main's tip" >&2
+            exit 1
+          fi
+          if [ "${tip}" != "${GITHUB_SHA}" ]; then
+            echo "::error::refusing to tag ${GITHUB_SHA}: main is now ${tip}" >&2
+            exit 1
+          fi
+          echo "tagging ${GITHUB_SHA}, which is main's tip"
 
       - name: Stitch and tag the index
         id: digest

@@ -2,7 +2,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "sortie.fullname" . }}-engine
+  name: {{ include "sortie.engineName" . }}
   labels:
     {{- include "sortie.labels" . | nindent 4 }}
     app.kubernetes.io/component: engine

@@ -38,8 +38,11 @@ plan: |
 #
 #   services: ["<release>-sortie-engine:8443"]
 #
-# One execution runs per backend at a time, so replicas are parallel backends
-# for a plan's pool, not redundancy.
+# A plan opens one connection per address it lists, and a ClusterIP is one
+# address that reaches one pod, so more replicas behind this Service are
+# neither parallel backends nor redundancy: one execution runs per backend at a
+# time, and a second replica would only ever be picked by chance. Parallel
+# backends are separate addresses in the plan.
 engine:
   enabled: false
   image:
@@ -48,9 +51,9 @@ engine:
     ref: "ghcr.io/bpalermo/sortie/engine:dev-{STABLE_GIT_COMMIT}"
     pullPolicy: IfNotPresent
   replicas: 1
+  # The generated load runs on this pod's CPUs: give it the cores a plan's
+  # concurrency asks for.
   resources: {}
-  # nighthawk_service is single-threaded until a plan sets concurrency; the
-  # generated load runs on the pod's CPUs, so give it the cores a plan asks for.
   nodeSelector: {}
   affinity: {}
 
