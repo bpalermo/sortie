@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,5 +68,50 @@ func TestExecuteCancelsTheRunWhenTheContextIsCancelled(t *testing.T) {
 	case <-fake.cancelled:
 	default:
 		t.Fatal("the service never received a CancellationRequest")
+	}
+}
+
+// A backend that starts a moment after the dial is waited for; one that never
+// does is reported, with the wait bounded.
+func TestDialWaitsForTheBackend(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	// Not serving yet: close it and reopen the same port after a delay.
+	_ = listener.Close()
+	server := grpc.NewServer()
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Errorf("relisten: %v", err)
+			return
+		}
+		_ = server.Serve(l)
+	}()
+	defer server.Stop()
+
+	started := time.Now()
+	conn, err := nh.DialTimeout(context.Background(), addr, 10*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	_ = conn.Close()
+	if waited := time.Since(started); waited < 400*time.Millisecond || waited > 8*time.Second {
+		t.Errorf("waited %s; want roughly the backend's half-second start", waited)
+	}
+
+	started = time.Now()
+	_, err = nh.DialTimeout(context.Background(), "127.0.0.1:1", time.Second)
+	if err == nil {
+		t.Fatal("dialled a port nothing listens on")
+	}
+	if !strings.Contains(err.Error(), "not reachable within 1s") {
+		t.Errorf("error = %v; want the bounded wait reported", err)
+	}
+	if waited := time.Since(started); waited > 5*time.Second {
+		t.Errorf("gave up after %s; want about the 1s bound", waited)
 	}
 }

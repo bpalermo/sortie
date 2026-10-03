@@ -1,0 +1,40 @@
+# Values for the kind test (run.sh): both images as `kind load` named them,
+# the engine on, and a plan that loads the `target` Service from target.yaml
+# through the chart's engine Service. The release is named `sortie` and so is
+# the chart, so the engine Service is `sortie-sortie-engine`.
+image:
+  ref: localhost/sortie:e2e
+  pullPolicy: Never
+engine:
+  enabled: true
+  image:
+    ref: localhost/sortie/engine:e2e
+    pullPolicy: Never
+job:
+  # The script reads the verdict from the Job and its logs; nothing may delete
+  # them first.
+  ttlSecondsAfterFinished: null
+# 100 rps for 5 s over two workers is 500 requests exactly, which run.sh
+# asserts: forwarding the aggregate rate to each worker would make it 1000.
+plan: |
+  version: v1
+  pools:
+    - name: engine
+      services: ["sortie-sortie-engine:8443"]
+  defaults:
+    pool: engine
+    target: http://target:8080/
+    protocol: http1
+    concurrency: "2"
+    connections: 4
+  thresholds:
+    - "counter:benchmark.http_5xx == 0"
+    - "counter:benchmark.pool_connection_failure == 0"
+  scenarios:
+    - name: e2e
+      executor:
+        type: constant-rate
+        rate: 100
+        duration: 5s
+      thresholds:
+        - "latency_2xx.p99 < 500ms"

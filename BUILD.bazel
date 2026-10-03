@@ -59,6 +59,7 @@ go_image(
         "org.opencontainers.image.licenses": "Apache-2.0",
         "org.opencontainers.image.source": "https://github.com/bpalermo/sortie",
     },
+    load_tag = "localhost/sortie:e2e",
     registry = "ghcr.io",
     repository = "bpalermo/sortie",
 )

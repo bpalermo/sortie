@@ -5,6 +5,7 @@ load(
 )
 load("@rules_img//img:image.bzl", "image_manifest")
 load("@rules_img//img:layer.bzl", "file_metadata", "image_layer")
+load("@rules_img//img:load.bzl", "image_load")
 load("@rules_img//img:push.bzl", "image_push")
 
 licenses(["notice"])  # Apache 2
@@ -134,4 +135,13 @@ image_push(
     registry = "ghcr.io",
     repository = "bpalermo/sortie/engine",
     visibility = ["//visibility:public"],
+)
+
+# Loads this platform's manifest into the local daemon, for the chart's kind
+# test (test/chart) and for running the engine by hand. The name is local on
+# purpose: nothing but a `kind load` or a `docker run` on this host reads it.
+image_load(
+    name = "image_load",
+    image = ":image_manifest",
+    tag = "localhost/sortie/engine:e2e",
 )

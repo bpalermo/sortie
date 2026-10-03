@@ -16,7 +16,14 @@ all of the load and is never modified from here.
 bazel test //...            # builds, tests and lints
 bazel run //:gazelle        # after adding, removing or renaming any .go file
 bazel mod tidy              # after changing go.mod or a bazel_dep
+test/chart/run.sh           # the chart on a kind cluster (needs kind, kubectl, helm)
 ```
+
+`test/e2e` runs a plan through the binaries on the host; `test/chart` installs
+the chart for real on a kind cluster you create first (`kind create cluster
+--name sortie-e2e`), loading both images from `//:image_load` and
+`//engine:image_load` as OCI archives. Not a Bazel test: it needs a cluster
+and a daemon, so CI runs it as its own job after the Bazel one.
 
 Bazel is the only build. `go build` and `go mod tidy` cannot resolve the
 Nighthawk proto packages, which exist only as Bazel targets — do not reach for
