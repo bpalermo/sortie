@@ -44,10 +44,10 @@ export ENVOY_DOCKER_IMAGE_TO_TEST="envoyproxy/envoy-dev:74290ef76a76fbbf50f072dc
 # Envoy is called 'Envoy' in the Envoy Docker image.
 export ENVOY_PATH="envoy"
 
-# run all static configuration benchmark tests starting with test_http_h1_small in benchmarks/
-bazel-bin/engine/benchmarks/static_benchmarks --log-cli-level=info -vvvv -k test_http_h1_small benchmarks/test/
+# run all static configuration benchmark tests starting with test_http_h1_small in engine/benchmarks/
+bazel-bin/engine/benchmarks/static_benchmarks --log-cli-level=info -vvvv -k test_http_h1_small engine/benchmarks/test/
 # run all dynamic configuration benchmark tests
-bazel-bin/engine/benchmarks/dynamic_benchmarks --log-cli-level=info -vvvv  benchmarks/dynamic_test/
+bazel-bin/engine/benchmarks/dynamic_benchmarks --log-cli-level=info -vvvv  engine/benchmarks/dynamic_test/
 ```
 
 ## Example: running with binaries
