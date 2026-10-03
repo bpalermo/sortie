@@ -1,6 +1,10 @@
 #pragma once
 
+#include <optional>
+
 #include "nighthawk/client/output_collector.h"
+
+#include "engine/api/client/output.pb.h"
 
 namespace Nighthawk {
 namespace Client {
@@ -28,6 +32,16 @@ public:
    * Will request all workers to cancel execution asap.
    */
   virtual bool requestExecutionCancellation() PURE;
+
+  /**
+   * Snapshots the execution in flight: the live counters and a copy of every worker's
+   * statistics, as an Output with one "global" result whose execution_duration is the time
+   * since the workers started. Safe to call from any thread while run() is in progress.
+   *
+   * @return the snapshot, or nullopt when no workers are running: before they start, after
+   * they finish, or when the implementation cannot snapshot.
+   */
+  virtual std::optional<nighthawk::client::Output> snapshot() PURE;
 };
 
 using ProcessPtr = std::unique_ptr<Process>;

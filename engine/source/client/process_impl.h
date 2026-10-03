@@ -96,6 +96,8 @@ public:
 
   bool requestExecutionCancellation() override;
 
+  std::optional<nighthawk::client::Output> snapshot() override;
+
 private:
   // Use CreateProcessImpl to construct an instance of ProcessImpl.
   ProcessImpl(const Options& options, Envoy::Event::TimeSystem& time_system,
@@ -120,6 +122,10 @@ private:
   std::vector<StatisticPtr> vectorizeStatisticPtrMap(const StatisticPtrMap& statistics) const;
   std::vector<StatisticPtr>
   mergeWorkerStatistics(const std::vector<ClientWorkerPtr>& workers) const;
+  // Merges per-worker copies of statistics (as snapshotStatistics hands them out) the way
+  // mergeWorkerStatistics merges the live ones; workers that did not answer are empty and skipped.
+  std::vector<StatisticPtr>
+  mergeStatistics(const std::vector<std::vector<StatisticPtr>>& per_worker) const;
   void setupForHRTimers();
   /**
    * If there are sinks configured in bootstrap, populate stats_sinks with sinks
@@ -215,6 +221,10 @@ private:
   bool shutdown_{true};
   Envoy::Thread::MutexBasicLockable workers_lock_;
   bool cancelled_{false};
+  // Guarded by workers_lock_: true between the workers' start and their completion, which is
+  // when snapshot() has something to snapshot.
+  bool workers_running_{false};
+  Envoy::MonotonicTime workers_started_at_;
   std::unique_ptr<FlushWorkerImpl> flush_worker_;
   Envoy::Router::ContextImpl router_context_;
   Envoy::OptionsImpl envoy_options_;

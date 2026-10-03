@@ -1,5 +1,7 @@
 #include "engine/source/client/process_impl.h"
 
+#include "engine/source/client/output_collector_impl.h"
+
 #include <sys/file.h>
 
 #include <chrono>
@@ -813,6 +815,84 @@ ProcessImpl::mergeWorkerStatistics(const std::vector<ClientWorkerPtr>& workers) 
   return merged_statistics;
 }
 
+std::vector<StatisticPtr>
+ProcessImpl::mergeStatistics(const std::vector<std::vector<StatisticPtr>>& per_worker) const {
+  std::vector<StatisticPtr> merged;
+  for (const auto& worker_statistics : per_worker) {
+    if (worker_statistics.empty()) {
+      continue;
+    }
+    if (merged.empty()) {
+      for (const auto& statistic : worker_statistics) {
+        StatisticPtr fresh = statistic->createNewInstanceOfSameType();
+        fresh->setId(statistic->id());
+        merged.push_back(std::move(fresh));
+      }
+    }
+    for (size_t i = 0; i < worker_statistics.size() && i < merged.size(); i++) {
+      StatisticPtr combined = merged[i]->combine(*worker_statistics[i]);
+      combined->setId(merged[i]->id());
+      merged[i] = std::move(combined);
+    }
+  }
+  return merged;
+}
+
+std::optional<nighthawk::client::Output> ProcessImpl::snapshot() {
+  // Shared with the workers' callbacks rather than on this stack: a worker whose dispatcher
+  // has exited never runs its job, and one that is slow may run it after the wait below
+  // gave up, so nothing the callbacks touch may have gone away by then.
+  struct Pending {
+    Envoy::Thread::MutexBasicLockable lock;
+    Envoy::Thread::CondVar answered;
+    std::vector<std::vector<StatisticPtr>> copies;
+    size_t outstanding{0};
+  };
+  auto pending = std::make_shared<Pending>();
+  std::chrono::nanoseconds elapsed;
+  {
+    Envoy::Thread::LockGuard guard(workers_lock_);
+    if (!workers_running_) {
+      return std::nullopt;
+    }
+    elapsed = time_system_.monotonicTime() - workers_started_at_;
+    pending->copies.resize(workers_.size());
+    pending->outstanding = workers_.size();
+    for (size_t i = 0; i < workers_.size(); i++) {
+      workers_[i]->snapshotStatistics([pending, i](std::vector<StatisticPtr> copies) {
+        Envoy::Thread::LockGuard guard(pending->lock);
+        pending->copies[i] = std::move(copies);
+        pending->outstanding--;
+        pending->answered.notifyOne();
+      });
+    }
+  }
+  // Bounded: progress keeps flowing with the counters and whatever statistics arrived.
+  std::vector<std::vector<StatisticPtr>> copies(pending->copies.size());
+  {
+    Envoy::Thread::LockGuard guard(pending->lock);
+    const Envoy::MonotonicTime deadline = time_system_.monotonicTime() + std::chrono::seconds(1);
+    while (pending->outstanding > 0) {
+      const Envoy::MonotonicTime now = time_system_.monotonicTime();
+      if (now >= deadline) {
+        break;
+      }
+      pending->answered.waitFor(pending->lock, deadline - now); // NO_CHECK_FORMAT(real_time)
+    }
+    // Element by element, leaving the vector sized: a late callback then still has a slot.
+    for (size_t i = 0; i < copies.size(); i++) {
+      copies[i] = std::move(pending->copies[i]);
+      pending->copies[i].clear();
+    }
+  }
+  // The store's counters are safe to read from any thread, as the final report relies on too.
+  const std::map<std::string, uint64_t> counters = Utility().mapCountersFromStore(
+      store_root_, [](absl::string_view, uint64_t value) { return value > 0; });
+  OutputCollectorImpl collector(time_system_, options_);
+  collector.addResult("global", mergeStatistics(copies), counters, elapsed, std::nullopt, {});
+  return collector.toProto();
+}
+
 void ProcessImpl::addTracingCluster(envoy::config::bootstrap::v3::Bootstrap& bootstrap,
                                     const Uri& uri) const {
   auto* cluster = bootstrap.mutable_static_resources()->add_clusters();
@@ -1082,6 +1162,9 @@ bool ProcessImpl::runInternal(OutputCollector& collector, const UriPtr& tracing_
       for (auto& w : workers_) {
         w->start();
       }
+      // workers_lock_ is held here, by the guard above.
+      workers_running_ = true;
+      workers_started_at_ = time_system_.monotonicTime();
     }
   };
   absl::Status status = absl::OkStatus();
@@ -1107,6 +1190,10 @@ bool ProcessImpl::runInternal(OutputCollector& collector, const UriPtr& tracing_
 
   for (auto& w : workers_) {
     w->waitForCompletion();
+  }
+  {
+    Envoy::Thread::LockGuard guard(workers_lock_);
+    workers_running_ = false;
   }
 
   if (!options_.statsSinks().empty() && flush_worker_ != nullptr) {

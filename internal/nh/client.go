@@ -13,6 +13,8 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"google.golang.org/protobuf/types/known/durationpb"
+
 	client "github.com/bpalermo/sortie/engine/api/client"
 )
 
@@ -67,12 +69,10 @@ func waitReady(ctx context.Context, conn *grpc.ClientConn, timeout time.Duration
 	}
 }
 
-// Execute runs one benchmark against a single nighthawk_service and returns its
-// response.
-//
 // Nighthawk accepts only one execution at a time per service instance and
-// answers on a bidirectional stream, writing a single ExecutionResponse when
-// the run has finished. There is no progress on this stream.
+// answers on a bidirectional stream: interim ExecutionResponses carrying
+// `progress` when asked for, then exactly one without it when the run has
+// finished.
 //
 // Cancelling ctx stops the run: a CancellationRequest goes out on the still-open
 // stream, the service ends the execution early and answers with what it
@@ -85,7 +85,19 @@ func waitReady(ctx context.Context, conn *grpc.ClientConn, timeout time.Duration
 // answer the cancellation with the run's partial response.
 const cancelGrace = 30 * time.Second
 
-func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLineOptions) (*client.ExecutionResponse, error) {
+// Progress asks the service for interim responses while a run is in flight
+// and receives them: every Interval the service writes a snapshot of the run
+// so far (live counters, a copy of the latency statistics) and Fn gets it.
+// Snapshots are advisory; the final response is what a run is judged on.
+type Progress struct {
+	Interval time.Duration
+	// Fn runs on the goroutine reading the stream, so it should not block.
+	Fn func(elapsed time.Duration, out *client.Output)
+}
+
+// Execute runs one benchmark against a single nighthawk_service and returns
+// its final response; progress, when not nil, asks for interim ones on the way.
+func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLineOptions, progress *Progress) (*client.ExecutionResponse, error) {
 	stub := client.NewNighthawkServiceClient(conn)
 	streamCtx, closeStream := context.WithCancel(context.WithoutCancel(ctx))
 	defer closeStream()
@@ -94,10 +106,12 @@ func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLin
 		return nil, fmt.Errorf("opening execution stream: %w", err)
 	}
 
+	start := &client.StartRequest{Options: opts}
+	if progress != nil && progress.Interval > 0 {
+		start.ProgressInterval = durationpb.New(progress.Interval)
+	}
 	req := &client.ExecutionRequest{
-		CommandSpecificOptions: &client.ExecutionRequest_StartRequest{
-			StartRequest: &client.StartRequest{Options: opts},
-		},
+		CommandSpecificOptions: &client.ExecutionRequest_StartRequest{StartRequest: start},
 	}
 	if err := stream.Send(req); err != nil {
 		return nil, fmt.Errorf("sending start request: %w", err)
@@ -107,10 +121,25 @@ func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLin
 		resp *client.ExecutionResponse
 		err  error
 	}
+	// The reader hands interim responses to progress and delivers the final
+	// one -- the first without `progress` -- or the error that ended the stream.
 	first := make(chan received, 1)
 	go func() {
-		resp, err := stream.Recv()
-		first <- received{resp, err}
+		for {
+			resp, err := stream.Recv()
+			if err != nil {
+				first <- received{nil, err}
+				return
+			}
+			if resp.GetProgress() != nil {
+				if progress != nil && progress.Fn != nil {
+					progress.Fn(resp.GetProgress().GetElapsed().AsDuration(), resp.GetOutput())
+				}
+				continue
+			}
+			first <- received{resp, nil}
+			return
+		}
 	}()
 
 	var cancelled bool

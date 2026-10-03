@@ -6,7 +6,9 @@ go_library(
     importpath = "github.com/bpalermo/sortie/internal/report",
     visibility = ["//:__subpackages__"],
     deps = [
+        "//engine/api/client:base_go_proto",
         "//internal/compile",
+        "//internal/metric",
         "//internal/run",
     ],
 )

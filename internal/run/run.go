@@ -9,12 +9,12 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	client "github.com/bpalermo/sortie/engine/api/client"
 	"github.com/bpalermo/sortie/internal/compile"
 	"github.com/bpalermo/sortie/internal/nh"
 	"github.com/bpalermo/sortie/internal/plan"
 	"github.com/bpalermo/sortie/internal/result"
 	"github.com/bpalermo/sortie/internal/threshold"
-	client "github.com/bpalermo/sortie/engine/api/client"
 )
 
 // ExecutionReport is the verdict for one Nighthawk execution.
@@ -47,14 +47,23 @@ type Report struct {
 type Runner struct {
 	Plan *plan.Plan
 
-	// Observer, when set, is notified as executions start and finish so a CLI
-	// can report progress during a run that produces no output until it ends.
+	// Observer, when set, is notified as executions start and finish, and --
+	// with ProgressInterval -- as their backends report progress.
 	Observer Observer
+
+	// ProgressInterval, when positive, asks every service backend for a
+	// snapshot of its run this often and passes each to the Observer. Backends
+	// behind a distributor report nothing until they finish.
+	ProgressInterval time.Duration
 }
 
 // Observer receives progress callbacks.
 type Observer interface {
 	ExecutionStarted(e compile.Execution, backends []string)
+	// ExecutionProgress carries one backend's interim snapshot; elapsed is the
+	// time since that backend's workers started. Called from the goroutine
+	// reading the backend's stream.
+	ExecutionProgress(e compile.Execution, backend string, elapsed time.Duration, out *client.Output)
 	ExecutionFinished(r ExecutionReport)
 }
 
@@ -167,7 +176,16 @@ func (r *Runner) dispatch(
 				return err
 			}
 			defer conn.Close()
-			resp, err := nh.Execute(gctx, conn, perBackend[i])
+			var progress *nh.Progress
+			if r.ProgressInterval > 0 && r.Observer != nil {
+				progress = &nh.Progress{
+					Interval: r.ProgressInterval,
+					Fn: func(elapsed time.Duration, out *client.Output) {
+						r.Observer.ExecutionProgress(e, addr, elapsed, out)
+					},
+				}
+			}
+			resp, err := nh.Execute(gctx, conn, perBackend[i], progress)
 			if err != nil {
 				return fmt.Errorf("backend %s: %w", addr, err)
 			}

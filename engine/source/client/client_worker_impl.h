@@ -50,6 +50,8 @@ public:
 
   void requestExecutionCancellation() override;
 
+  void snapshotStatistics(std::function<void(std::vector<StatisticPtr>)> callback) override;
+
   /**
    * Returns additional output from any specified User Defined Output plugins.
    */

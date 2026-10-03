@@ -37,6 +37,9 @@ public:
 
   bool requestExecutionCancellation() override;
 
+  // The run is elsewhere; nothing to snapshot here.
+  std::optional<nighthawk::client::Output> snapshot() override { return std::nullopt; }
+
 private:
   const Options& options_;
   const std::unique_ptr<NighthawkServiceClient> service_client_;

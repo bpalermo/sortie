@@ -103,6 +103,19 @@ void ClientWorkerImpl::requestExecutionCancellation() {
       [this]() { worker_number_scope_->counterFromString("graceful_stop_requested").inc(); });
 }
 
+void ClientWorkerImpl::snapshotStatistics(
+    std::function<void(std::vector<StatisticPtr>)> callback) {
+  dispatcher_->post([this, callback = std::move(callback)]() {
+    std::vector<StatisticPtr> copies;
+    for (const auto& statistic : statistics()) {
+      StatisticPtr copy = statistic.second->createNewInstanceOfSameType()->combine(*statistic.second);
+      copy->setId(statistic.first);
+      copies.push_back(std::move(copy));
+    }
+    callback(std::move(copies));
+  });
+}
+
 StatisticPtrMap ClientWorkerImpl::statistics() const {
   StatisticPtrMap statistics;
   StatisticPtrMap s1 = benchmark_client_->statistics();

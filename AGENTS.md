@@ -115,7 +115,10 @@ README's Limitations section; keep the two in sync.
   `CancellationRequest` when its context is cancelled and returns the backend's
   partial response with the context's error, so a cancelled run is never
   evaluated as a complete one.
-- No progress during a run. An execution returns nothing until it finishes.
+- Progress is opt-in: `StartRequest.progress_interval` makes the engine write
+  interim responses (`progress` set, `output` a snapshot) that `nh.Execute`
+  hands to a `Progress.Fn`; `run.Observer.ExecutionProgress` and `--progress`
+  surface them. Nothing on the distributor path.
 - One execution per backend at a time; `nighthawk_service` refuses a second.
 - `RequestSource` never sees responses, so there is no session flow and no
   response correlation.

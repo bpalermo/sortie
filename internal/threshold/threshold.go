@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bpalermo/sortie/internal/metric"
 	client "github.com/bpalermo/sortie/engine/api/client"
+	"github.com/bpalermo/sortie/internal/metric"
 )
 
 // Op is a comparison operator.
