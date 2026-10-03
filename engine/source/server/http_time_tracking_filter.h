@@ -1,0 +1,88 @@
+#pragma once
+
+#include <string>
+
+#include "envoy/common/time.h"
+#include "envoy/server/filter_config.h"
+
+#include "nighthawk/common/stopwatch.h"
+
+#include "source/common/common/statusor.h"
+#include "source/common/protobuf/message_validator_impl.h"
+#include "source/common/protobuf/utility.h"
+#include "source/extensions/filters/http/common/pass_through_filter.h"
+
+#include "engine/api/server/time_tracking.pb.h"
+
+#include "engine/source/server/http_filter_config_base.h"
+
+namespace Nighthawk {
+namespace Server {
+
+/**
+ * Filter configuration container class for the time tracking extension.
+ * Instances of this class will be shared accross instances of HttpTimeTrackingFilter.
+ */
+class HttpTimeTrackingFilterConfig : public FilterConfigurationBase {
+public:
+  /**
+   * Constructs a new HttpTimeTrackingFilterConfig instance.
+   *
+   * @param proto_config The proto configuration of the filter.
+   */
+  HttpTimeTrackingFilterConfig(const nighthawk::server::TimeTrackingConfiguration& proto_config);
+
+  /**
+   * Gets the number of elapsed nanoseconds since the last call (server wide).
+   * Safe to use concurrently.
+   *
+   * @param time_source Time source that will be used to obain an updated monotonic time sample.
+   * @return uint64_t 0 on the first call, else the number of elapsed nanoseconds since the last
+   * call.
+   */
+  uint64_t getElapsedNanosSinceLastRequest(Envoy::TimeSource& time_source);
+
+  /**
+   * @return std::shared_ptr<const nighthawk::server::TimeTrackingConfiguration> the startup
+   * configuration for this filter, which may get overridden by in-flight headers.
+   */
+  std::shared_ptr<const nighthawk::server::TimeTrackingConfiguration>
+  getStartupFilterConfiguration();
+
+private:
+  std::unique_ptr<Stopwatch> stopwatch_;
+  std::shared_ptr<const nighthawk::server::TimeTrackingConfiguration> server_config_;
+};
+
+using HttpTimeTrackingFilterConfigSharedPtr = std::shared_ptr<HttpTimeTrackingFilterConfig>;
+
+/**
+ * Extension that tracks elapsed time between inbound requests.
+ */
+class HttpTimeTrackingFilter : public Envoy::Http::PassThroughFilter {
+public:
+  /**
+   * Construct a new Http Time Tracking Filter object.
+   *
+   * @param config Configuration of the extension.
+   */
+  HttpTimeTrackingFilter(HttpTimeTrackingFilterConfigSharedPtr config);
+
+  // Http::StreamDecoderFilter
+  Envoy::Http::FilterHeadersStatus decodeHeaders(Envoy::Http::RequestHeaderMap& headers,
+                                                 bool /*end_stream*/) override;
+  Envoy::Http::FilterDataStatus decodeData(Envoy::Buffer::Instance&, bool) override;
+  void setDecoderFilterCallbacks(Envoy::Http::StreamDecoderFilterCallbacks&) override;
+
+  // Http::StreamEncoderFilter
+  Envoy::Http::FilterHeadersStatus encodeHeaders(Envoy::Http::ResponseHeaderMap&, bool) override;
+
+private:
+  const HttpTimeTrackingFilterConfigSharedPtr config_;
+  absl::StatusOr<std::shared_ptr<const nighthawk::server::TimeTrackingConfiguration>>
+      effective_config_;
+  uint64_t last_request_delta_ns_;
+};
+
+} // namespace Server
+} // namespace Nighthawk

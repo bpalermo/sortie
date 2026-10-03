@@ -1,0 +1,57 @@
+#include <string>
+
+#include "envoy/registry/registry.h"
+
+#include "source/common/protobuf/message_validator_impl.h"
+
+#include "engine/api/server/time_tracking.pb.h"
+#include "engine/api/server/time_tracking.pb.validate.h"
+
+#include "engine/source/server/configuration.h"
+#include "engine/source/server/http_time_tracking_filter.h"
+
+namespace Nighthawk {
+namespace Server {
+namespace Configuration {
+
+class HttpTimeTrackingFilterConfig
+    : public Envoy::Server::Configuration::NamedHttpFilterConfigFactory {
+public:
+  absl::StatusOr<Envoy::Http::FilterFactoryCb>
+  createFilterFactoryFromProto(const Envoy::Protobuf::Message& proto_config, const std::string&,
+                               Envoy::Server::Configuration::FactoryContext& context) override {
+    Envoy::ProtobufMessage::ValidationVisitor& validation_visitor =
+        Envoy::ProtobufMessage::getStrictValidationVisitor();
+    const nighthawk::server::TimeTrackingConfiguration& time_tracking_configuration =
+        Envoy::MessageUtil::downcastAndValidate<
+            const nighthawk::server::TimeTrackingConfiguration&>(proto_config, validation_visitor);
+    return createFilter(time_tracking_configuration, context);
+  }
+
+  Envoy::ProtobufTypes::MessagePtr createEmptyConfigProto() override {
+    return Envoy::ProtobufTypes::MessagePtr{new nighthawk::server::TimeTrackingConfiguration()};
+  }
+
+  std::string name() const override { return "time-tracking"; }
+
+private:
+  absl::StatusOr<Envoy::Http::FilterFactoryCb>
+  createFilter(const nighthawk::server::TimeTrackingConfiguration& proto_config,
+               Envoy::Server::Configuration::FactoryContext&) {
+    Nighthawk::Server::HttpTimeTrackingFilterConfigSharedPtr config =
+        std::make_shared<Nighthawk::Server::HttpTimeTrackingFilterConfig>(
+            Nighthawk::Server::HttpTimeTrackingFilterConfig(proto_config));
+
+    return [config](Envoy::Http::FilterChainFactoryCallbacks& callbacks) -> void {
+      auto* filter = new Nighthawk::Server::HttpTimeTrackingFilter(config);
+      callbacks.addStreamFilter(Envoy::Http::StreamFilterSharedPtr{filter});
+    };
+  }
+};
+
+static Envoy::Registry::RegisterFactory<HttpTimeTrackingFilterConfig,
+                                        Envoy::Server::Configuration::NamedHttpFilterConfigFactory>
+    register_;
+} // namespace Configuration
+} // namespace Server
+} // namespace Nighthawk

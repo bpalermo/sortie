@@ -15,7 +15,7 @@
 # from the genproto module that grpc-go already pulls in, while its .proto comes
 # from @googleapis, and why validate uses envoy_api's choice of target.
 
-load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
 load("@rules_go//proto:def.bzl", "go_proto_library")
 
 package(default_visibility = ["//visibility:public"])
@@ -30,15 +30,15 @@ proto_library(
         "api/client/service.proto",
     ],
     deps = [
-        "@com_envoyproxy_protoc_gen_validate//validate:validate_proto",
-        "@com_google_protobuf//:any_proto",
-        "@com_google_protobuf//:duration_proto",
-        "@com_google_protobuf//:timestamp_proto",
-        "@com_google_protobuf//:wrappers_proto",
         "@envoy_api//envoy/config/core/v3:pkg",
         "@envoy_api//envoy/config/metrics/v3:pkg",
         "@envoy_api//envoy/extensions/transport_sockets/tls/v3:pkg",
         "@googleapis//google/rpc:status_proto",
+        "@protobuf//:any_proto",
+        "@protobuf//:duration_proto",
+        "@protobuf//:timestamp_proto",
+        "@protobuf//:wrappers_proto",
+        "@protoc-gen-validate//validate:validate_proto",
     ],
 )
 
@@ -51,11 +51,11 @@ go_proto_library(
     importpath = "github.com/envoyproxy/nighthawk/api/client",
     proto = ":client_proto",
     deps = [
-        "@com_envoyproxy_protoc_gen_validate//validate:go_default_library",
         "@envoy_api//envoy/config/core/v3:pkg_go_proto",
         "@envoy_api//envoy/config/metrics/v3:pkg_go_proto",
         "@envoy_api//envoy/extensions/transport_sockets/tls/v3:pkg_go_proto",
         "@org_golang_google_genproto_googleapis_rpc//status",
+        "@protoc-gen-validate//validate:go_default_library",
     ],
 )
 
@@ -64,9 +64,9 @@ proto_library(
     srcs = ["api/distributor/distributor.proto"],
     deps = [
         ":client_proto",
-        "@com_envoyproxy_protoc_gen_validate//validate:validate_proto",
         "@envoy_api//envoy/config/core/v3:pkg",
         "@googleapis//google/rpc:status_proto",
+        "@protoc-gen-validate//validate:validate_proto",
     ],
 )
 
@@ -80,9 +80,9 @@ go_proto_library(
     proto = ":distributor_proto",
     deps = [
         ":client_go_proto",
-        "@com_envoyproxy_protoc_gen_validate//validate:go_default_library",
         "@envoy_api//envoy/config/core/v3:pkg_go_proto",
         "@org_golang_google_genproto_googleapis_rpc//status",
+        "@protoc-gen-validate//validate:go_default_library",
     ],
 )
 
@@ -90,8 +90,8 @@ proto_library(
     name = "rate_limiter_proto",
     srcs = ["api/rate_limiter/linear_ramping_rate_limiter.proto"],
     deps = [
-        "@com_envoyproxy_protoc_gen_validate//validate:validate_proto",
-        "@com_google_protobuf//:duration_proto",
+        "@protobuf//:duration_proto",
+        "@protoc-gen-validate//validate:validate_proto",
     ],
 )
 
@@ -99,5 +99,5 @@ go_proto_library(
     name = "rate_limiter_go_proto",
     importpath = "github.com/envoyproxy/nighthawk/api/rate_limiter",
     proto = ":rate_limiter_proto",
-    deps = ["@com_envoyproxy_protoc_gen_validate//validate:go_default_library"],
+    deps = ["@protoc-gen-validate//validate:go_default_library"],
 )

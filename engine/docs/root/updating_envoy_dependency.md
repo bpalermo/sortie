@@ -1,0 +1,466 @@
+# Updating Nighthawk's Envoy Dependency
+
+This document aims to assist [maintainers](/OWNERS.md).
+
+For general information about maintainer responsibilities in the Nighthawk codebase, see [MAINTAINERS.md](/MAINTAINERS.md).
+
+## Background
+
+We aim to synchronize our Envoy dependency with the latest revision **weekly**
+([PRs](https://github.com/envoyproxy/nighthawk/pulls?utf8=%E2%9C%93&q=is%3Apr+is%3Aclosed+%22update+envoy%22+)).
+
+Nighthawk reuses large parts of Envoy's build
+system and codebase, so keeping Nighthawk up to date with Envoy's changes is an
+important maintenance task.
+
+## Update Procedure
+
+The text of each step is **official**, but the example shell commands are **suggestions**.
+Feel free to accomplish each step in any way you prefer, and please update the
+text or commands if you notice any issues.
+
+It is highly recommended to perform the shell commands in a `screen` or `tmux`
+session to avoid losing the shell variables that are accumulated across commands.
+
+All example commands in this document are **ready to paste**.
+
+### Step 0
+
+Ensure you are in the directory expected by the steps in this guide:
+
+```bash
+ls -d .git api ci docs include source || (echo "These steps should be executed in a directory containing .git, api, ci, docs, include, source, etc.")
+```
+
+Ensure you have replaced Bazel with Bazelisk:
+
+```bash
+file `which bazel`
+```
+
+Example output: `/usr/bin/bazel: symbolic link to /home/xyz/go/bin/bazelisk`
+
+### Step 1
+
+Create a fork of Nighthawk, or fetch upstream and merge changes into your fork if you already have one.
+
+#### Example commands
+
+The following commands assume that you already have a fork and that the remote of `https://github.com/envoyproxy/nighthawk` is named `upstream`.
+
+```bash
+git fetch
+git fetch upstream
+git checkout main
+git merge upstream/main
+git push
+```
+
+### Step 2
+
+Create a new branch from `main`, e.g. `envoy-update-123456789`.
+
+#### Example commands
+
+```bash
+git checkout main
+branch="envoy-update-$(date +%s)"
+git checkout -b $branch
+```
+
+### Step 3
+
+Clone the Envoy repo (https://github.com/envoyproxy/envoy.git) into a temp directory.
+
+#### Example commands
+
+```bash
+envoy_clone_dir=$(mktemp -d -t envoy-XXXXXXXXXX)
+pushd $envoy_clone_dir
+git clone https://github.com/envoyproxy/envoy.git
+popd
+
+envoy_dir="$envoy_clone_dir/envoy"
+
+pushd $envoy_dir
+envoy_commit=$(git log --pretty=%H | head -1)
+popd
+
+echo "envoy_clone_dir=$envoy_clone_dir"
+echo "envoy_dir=$envoy_dir"
+echo "envoy_commit=$envoy_commit"
+echo "Click here: https://github.com/envoyproxy/envoy/commit/$envoy_commit"
+```
+
+Click the link in the terminal to double check the date of the Envoy commit to which we will be updating Nighthawk.
+
+### Step 4
+
+Edit [MODULE.bazel](/MODULE.bazel):
+
+Update the `ENVOY_COMMIT` variable with the target Envoy commit hash:
+
+```bash
+sed -i -e "s/ENVOY_COMMIT =.*/ENVOY_COMMIT = \"${envoy_commit}\"/" MODULE.bazel
+```
+
+> **Note:** `MODULE.bazel.lock` will be re-generated in Step 11 after updating `.bazelrc` with Envoy's pinned registry SHA and syncing the `bazel_dep` pins.
+
+### Step 5
+
+Sync (copy) [.bazelversion](/.bazelversion) from
+[Envoy's version](https://github.com/envoyproxy/envoy/blob/main/.bazelversion)
+to ensure we are using the same build system version.
+
+#### Example commands
+
+```bash
+cp -v "$envoy_dir/.bazelversion" ".bazelversion"
+```
+
+### Step 6
+
+Sync (copy) [.github/config.yml](/.github/config.yml) from
+[Envoy's version](https://github.com/envoyproxy/envoy/blob/main/.github/config.yml)
+to ensure build image SHAs and CI configurations are in sync with Envoy.
+
+#### Example commands
+
+```bash
+cp -v "$envoy_dir/.github/config.yml" ".github/config.yml"
+```
+
+### Step 7
+
+Sync (copy) [ci/envoy_build_sha.sh](/ci/envoy_build_sha.sh) from
+[Envoy's version](https://github.com/envoyproxy/envoy/blob/main/ci/envoy_build_sha.sh)
+to ensure the build container resolution logic matches Envoy.
+
+#### Example commands
+
+```bash
+cp -v "$envoy_dir/ci/envoy_build_sha.sh" "ci/envoy_build_sha.sh"
+```
+
+### Step 8
+
+Sync (copy) [ci/run_envoy_docker.sh](/ci/run_envoy_docker.sh) from
+[Envoy's version](https://github.com/envoyproxy/envoy/blob/main/ci/run_envoy_docker.sh).
+
+#### Example commands
+
+```bash
+cp -v "$envoy_dir/ci/run_envoy_docker.sh" "ci/run_envoy_docker.sh"
+```
+
+### Step 9
+
+Set up a Bash function `merge_from_envoy` that will be used repeatedly in the example commands in steps 10-13.
+
+Paste the following into the shell:
+
+```bash
+merge_from_envoy() {
+  # $1 = relative path to Nighthawk file derived from a version in the Envoy repo
+  relpath=$1
+
+  pushd $envoy_dir
+  git log $relpath | head
+  popd
+
+  diff $envoy_dir/$relpath $relpath || true
+
+  echo "Determine if $relpath needs to be manually merged:"
+  echo "  Any differences not marked with '# unique'?"
+  echo "  If so, edit $relpath in another terminal before continuing."
+}
+```
+
+This will only work in a shell where `$envoy_dir` was previously set and we
+cloned Envoy locally (see Step 3).
+
+When running this function, in the terminal you will see:
+
+- commit id of Envoy's version of the file (e.g. c9d883afbd9bf5046f6bb6dbfab724bbcc104123)
+- a diff of Envoy (left) and Nighthawk (right)
+
+Our goal is to transfer changes from Envoy to Nighthawk, preserving certain Nighthawk-specific changes marked with `#unique`.
+
+To take a closer look at an Envoy commit, visit `https://github.com/envoyproxy/envoy/commit/INSERT_COMMIT_ID_HERE`. This is helpful when it's hard to tell from the diff how the file should look.
+
+Updates in the Envoy file should be selectively pasted into the Nighthawk file using a text editor, possibly in a second terminal.
+
+Once you have done some partial work, save the file and repeat the `merge_from_envoy` command in the original terminal to check the diff again. This can be done iteratively.
+
+### Step 10
+
+Sync (copy) [.bazelrc](/.bazelrc) from
+[Envoy's version](https://github.com/envoyproxy/envoy/blob/main/.bazelrc) to
+update our build configurations. Be sure to retain our local modifications,
+all lines that are unique to Nighthawk are marked with comment `# unique`.
+
+#### Example commands
+
+```bash
+merge_from_envoy ".bazelrc"
+```
+
+#### Syncing ci.bazelrc
+
+Envoy's `.bazelrc` imports [ci.bazelrc](/ci.bazelrc), which holds the CI and
+remote execution configs that Nighthawk's CI uses (`--config=rbe`,
+`--config=remote-ci`, `--config=bes`). Copy it verbatim from
+[Envoy's version](https://github.com/envoyproxy/envoy/blob/main/ci.bazelrc):
+
+```bash
+cp -v "$envoy_dir/ci.bazelrc" "ci.bazelrc"
+```
+
+#### Updating the Bazel Registry SHA
+
+Envoy pins `bazel-registry` in `.bazelrc` to a specific commit SHA. Update Nighthawk's `.bazelrc` with the pinned registry SHA from Envoy:
+
+```bash
+registry_sha=$(sed -n 's|.*raw.githubusercontent.com/envoyproxy/bazel-registry/\([0-9a-fA-F]\{40\}\).*|\1|p' "$envoy_dir/.bazelrc")
+sed -i "s|raw.githubusercontent.com/envoyproxy/bazel-registry/[0-9a-fA-F]\{40\}|raw.githubusercontent.com/envoyproxy/bazel-registry/$registry_sha|g" .bazelrc
+```
+
+`MODULE.bazel.lock` will be re-generated in Step 11, after the `bazel_dep` pins are synced.
+
+### Step 11
+
+Sync the `bazel_dep` versions in [MODULE.bazel](/MODULE.bazel) with
+[Envoy's version](https://github.com/envoyproxy/envoy/blob/main/MODULE.bazel) to
+keep our dependency pins consistent with Envoy. Modules that are only used by
+Nighthawk should be left unchanged.
+
+Step 4 only updates `ENVOY_COMMIT`, and nothing else updates our `bazel_dep`
+versions automatically. If they fall behind Envoy's, the build will fail either
+because the pinned version is no longer available in the registry (e.g.
+`module librdkafka@2.6.0.envoy not found in registries`), or because Envoy
+requires a newer version (e.g. `the root module requires module version
+rules_python@2.2.0, but got rules_python@2.3.3`).
+
+#### Example commands
+
+```bash
+grep -oP '^bazel_dep\(name = "\K[^"]+' MODULE.bazel | while read -r dep; do
+  nighthawk_version=$(grep -oP "^bazel_dep\(name = \"$dep\", version = \"\K[^\"]+" MODULE.bazel)
+  envoy_version=$(grep -oP "^bazel_dep\(name = \"$dep\", version = \"\K[^\"]+" "$envoy_dir/MODULE.bazel")
+  if [[ -n "$envoy_version" && "$nighthawk_version" != "$envoy_version" ]]; then
+    echo "$dep: $nighthawk_version -> $envoy_version"
+    sed -i "s|^bazel_dep(name = \"$dep\", version = \"[^\"]*\"|bazel_dep(name = \"$dep\", version = \"$envoy_version\"|" MODULE.bazel
+  fi
+done
+git diff MODULE.bazel
+```
+
+After updating `MODULE.bazel`, re-generate `MODULE.bazel.lock` to resolve dependencies against the new registry commit and pins:
+
+```bash
+bazel mod deps --lockfile_mode=refresh
+```
+
+`refresh` is used instead of `update` because the lockfile caches modules that
+were previously not found in a registry, and only `refresh` checks the
+registries again.
+
+### Step 12
+
+Sync (copy) [tools/gen_compilation_database.py](/tools/gen_compilation_database.py) from
+[Envoy's version](https://github.com/envoyproxy/envoy/blob/main/tools/gen_compilation_database.py) to
+update our build configurations. Be sure to retain our local modifications,
+all lines that are unique to Nighthawk are marked with comment `# unique`.
+
+#### Example commands
+
+```bash
+merge_from_envoy "tools/gen_compilation_database.py"
+```
+
+### Step 13
+
+Sync (copy) [tools/code_format/config.yaml](/tools/code_format/config.yaml) from
+[Envoy's version](https://github.com/envoyproxy/envoy/blob/main/tools/code_format/config.yaml) to
+update our format checker configuration. Be sure to retain our local modifications,
+all lines that are unique to Nighthawk are marked with comment `# unique`.
+
+#### Example commands
+
+```bash
+merge_from_envoy "tools/code_format/config.yaml"
+```
+
+### Step 14
+
+The Python dependencies need to be updated regularly. The list of packages
+the Nighthawk codebase uses is listed in
+[tools/base/requirements.in](/tools/base/requirements.in). This file specifies
+version constraints and it is our goal to use the latest but still compatible
+version of every package. Ideally all constraints are in the `>=` format. If an
+incompatibility is found, you can pin a package by specifying a `<=` constraint.
+These should always be accompanied with a comment explaining them. Avoid using
+`==` constraint to the extent possible.
+
+Update the dependencies by running:
+
+```bash
+ci/do_ci.sh fix_requirements
+```
+
+This will use the configuration from
+[tools/base/requirements.in](/tools/base/requirements.in) and update the lock
+file [tools/base/requirements.txt](/tools/base/requirements.txt).
+
+### Step 15
+
+Run:
+
+```bash
+ci/do_ci.sh build
+```
+
+Sometimes the dependency update comes with changes
+that break our build. Include any changes required to Nighthawk to fix that
+in the same PR.
+
+If there are build failures, you will need to fix them at this point.
+
+Then ensure that unit and integration tests pass:
+
+```bash
+ci/do_ci.sh test
+```
+
+Some test failures require code changes to fix.
+
+See [Troubleshooting](#troubleshooting) for tips.
+
+If you removed any pins or updated Python dependencies in the previous step, you
+may see new failures due to these updates. Re-introduce dependency pins as necessary and execute the update
+command Step 14 again. Repeat this until the tests pass and document the need for any
+pins in [tools/base/requirements.in](/tools/base/requirements.in).
+
+If you updated the Python dependencies, update the date at the top of the
+[tools/base/requirements.in](/tools/base/requirements.in) file.
+
+### Step 16
+
+If the PR ends up modifying any C++ files, execute:
+
+```bash
+ci/do_ci.sh fix_format
+```
+
+to reformat the files and avoid a CI format check failure.
+
+If you get a Python error message not related to the purpose of the script, this can sometimes be fixed by:
+
+```bash
+rm -rf tools/pyformat/
+```
+
+and retrying the format command.
+
+### Step 17
+
+If Nighthawk command line flags have been changed, execute:
+
+```bash
+ci/do_ci.sh fix_docs
+```
+
+to regenerate the
+portion of our documentation that captures the CLI help output. This will
+prevent a CI failure in case any flags changed in the PR or upstream.
+
+### Step 18
+
+Create a PR with a title like `Update Envoy to 9753819 (Jan 24th 2021)`,
+describe all performed changes in the PR's description ([example PR
+description](https://github.com/envoyproxy/nighthawk/pull/758)).
+
+#### Example commands
+
+Check how we are doing:
+
+```bash
+git diff
+```
+
+Create the commit locally:
+
+```bash
+git add .
+git commit -m "Update Envoy to $(echo $envoy_commit | cut -c 1-7) ($(date +'%b %d, %Y'))"
+```
+
+Upload the commit to your fork on GitHub:
+
+```bash
+git push --set-upstream origin $branch
+```
+
+Now go to https://github.com/envoyproxy/nighthawk and create a draft PR.
+
+When the CI is passing, convert it to a regular PR and send it for review.
+
+## Cleanup
+
+```bash
+rm -rf $envoy_clone_dir
+
+git checkout main
+```
+
+## Troubleshooting
+
+### Bazel Python Error
+
+If you encounter an error that looks like:
+
+```
+ERROR: REDACTED/nighthawk/test/integration/BUILD:32:11: no such package '@nh_pip3//pypi__more_itertools':
+BUILD file not found in directory 'pypi__more_itertools' of external repository @nh_pip3. Add a BUILD
+file to a directory to mark it as a package. and referenced by '//engine/test/integration:integration_test_base_lean'
+```
+
+Then we are missing a dependency from `requirements.txt`. This may happen due to changing other
+dependencies.
+
+The name of the dependency to add is everything after `pypi__`, in the above case `more_itertools`.
+
+### Identifying an Envoy commit that introduced a breakage
+
+#### Background
+
+Sometimes CI tests fail after updating Nighthawk to an Envoy dependency. If the
+root cause is hard to be identified, the bisect could be worth a try.
+
+#### How to bisect
+
+The bisect is used to find the problematic Envoy commit between the commit from
+the last successful Nighthawk update and the current commit that Nighthawk needs
+to be updated to.
+
+Following the
+[update process](/MAINTAINERS.md#updates-to-the-envoy-dependency) to update Nighthawk to a
+specific Envoy commit for each Envoy commit being tested in the bisect. Generally, you can
+do this by only changing the `ENVOY_COMMIT` and leaving `ENVOY_SHA` blank in the
+`repositories.bzl` file.
+
+- Usually the local `do_ci.sh` test is enough and the most efficient.
+- If you do need to test in github CI (e.g. the local `do_ci.sh` passes while the
+  github CI fails), creating a draft PR to execute the CI tests. See an example PR
+  for bisecting [here](https://github.com/envoyproxy/nighthawk/pull/874).
+
+#### Optimizations to speed up testing
+
+- You can just test the failed tests by commenting out the others. For testing
+  locally, modifying `ci/do_ci.sh`. For testing in the github CI, modifying
+  `.azure-pipelines/pipelines.yml` (See this [example](https://github.com/envoyproxy/nighthawk/pull/874/files)).
+
+- If it is the unit test or integration test that fails, you can modify the
+  test code to only run the failure tests. See `test/python_test.cc` in this
+  [PR](https://github.com/envoyproxy/nighthawk/pull/874/files) for running the selected Nighthawk python integration tests.
+

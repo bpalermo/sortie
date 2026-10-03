@@ -1,0 +1,1430 @@
+#include "engine/source/client/options_impl.h"
+
+#include <algorithm>
+#include <cerrno>
+#include <cstdint>
+#include <exception>
+#include <fstream>
+#include <iterator>
+#include <optional>
+
+#include "source/common/common/utility.h"
+#include "source/common/protobuf/message_validator_impl.h"
+#include "source/common/protobuf/protobuf.h"
+#include "source/common/protobuf/utility.h"
+
+#include "engine/api/client/options.pb.validate.h"
+
+#include "engine/source/client/output_formatter_impl.h"
+#include "engine/source/common/uri_impl.h"
+#include "engine/source/common/utility.h"
+#include "engine/source/common/version_info.h"
+
+#include "absl/strings/numbers.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_split.h"
+#include "fmt/ranges.h"
+
+namespace Nighthawk {
+namespace Client {
+
+using ::envoy::config::core::v3::Http3ProtocolOptions;
+using ::nighthawk::client::Protocol;
+
+#define TCLAP_SET_IF_SPECIFIED(command, value_member)                                              \
+  ((value_member) = (((command).isSet()) ? ((command).getValue()) : (value_member)))
+
+OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
+  setNonTrivialDefaults();
+  // Override some defaults, we are in CLI-mode.
+  verbosity_ = nighthawk::client::Verbosity::INFO;
+  output_format_ = nighthawk::client::OutputFormat::HUMAN;
+
+  // TODO(oschaaf): Purge the validation we perform here. Most of it should have become
+  // redundant now that we also perform validation of the resulting proto.
+  const char* descr = "L7 (HTTP/HTTPS/HTTP2) performance characterization tool.";
+  TCLAP::CmdLine cmd(descr, ' ', VersionInfo::version()); // NOLINT
+
+  // Any default values we pass into TCLAP argument declarations are arbitrary, as we do not rely on
+  // TCLAP for providing default values. Default values are declared in and sourced from
+  // options_impl.h, modulo non-trivial data types (see setNonTrivialDefaults()).
+  TCLAP::ValueArg<uint32_t> requests_per_second(
+      "", "rps",
+      fmt::format("The target requests-per-second rate. Default: {}.", requests_per_second_), false,
+      0, "uint32_t", cmd);
+  TCLAP::ValueArg<uint32_t> connections(
+      "", "connections",
+      fmt::format("The maximum allowed number of concurrent connections per event loop. HTTP/1 "
+                  "only. Default: {}.",
+                  connections_),
+      false, 0, "uint32_t", cmd);
+  TCLAP::ValueArg<uint32_t> duration(
+      "", "duration",
+      fmt::format("The number of seconds that the test should run. "
+                  "Default: {}. Mutually exclusive with --no-duration.",
+                  duration_),
+      false, 0, "uint32_t", cmd);
+  TCLAP::ValueArg<uint32_t> timeout(
+      "", "timeout",
+      fmt::format("Connection connect timeout period in seconds. Also used as the upper bound "
+                  "on the time spent draining in-flight requests during shutdown. Default: {}.",
+                  timeout_),
+      false, 0, "uint32_t", cmd);
+
+  TCLAP::SwitchArg h2(
+      "", "h2",
+      "DEPRECATED, use --protocol instead. Encapsulate requests in HTTP/2. Mutually "
+      "exclusive with --protocol. Requests are encapsulated in HTTP/1 by default when "
+      "neither of --h2 or --protocol is used.",
+      cmd);
+  std::vector<std::string> protocols = {"http1", "http2", "http3"};
+  TCLAP::ValuesConstraint<std::string> protocols_allowed(protocols);
+  TCLAP::ValueArg<std::string> protocol(
+      "p", "protocol",
+      fmt::format(
+          "The protocol to encapsulate requests in. Possible values: [http1, http2, "
+          "http3]. The default protocol is '{}' when neither of --h2 or "
+          "--protocol is used. Mutually exclusive with --h2.",
+          absl::AsciiStrToLower(nighthawk::client::Protocol_ProtocolOptions_Name(protocol_))),
+      false, "", &protocols_allowed, cmd);
+  TCLAP::ValueArg<std::string> http3_protocol_options(
+      "", "http3-protocol-options",
+      "HTTP3 protocol options (envoy::config::core::v3::Http3ProtocolOptions) in json. If "
+      "specified, Nighthawk uses these HTTP3 protocol options when sending requests. Only valid "
+      "with --protocol http3. Mutually exclusive with any other command line option that would "
+      "modify the http3 protocol options, e.g. --max-concurrent-streams. Example (json): "
+      "{quic_protocol_options:{max_concurrent_streams:1}}",
+      false, "", "string", cmd);
+
+  std::vector<std::string> tunnel_protocols = {"http1", "http2", "http3"};
+  TCLAP::ValuesConstraint<std::string> tunnel_protocols_allowed(tunnel_protocols);
+  TCLAP::ValueArg<std::string> tunnel_protocol(
+      "", "tunnel-protocol",
+      fmt::format(
+          "The protocol for setting up tunnel encapsulation. Possible values: [http1, http2, "
+          "http3]. The default protocol is '{}' "
+          "Combinations not supported currently are protocol = HTTP3 and tunnel_protocol = HTTP1."
+          " and protocol = HTTP3 and tunnel_protocol = HTTP3."
+          " When protocol is set to HTTP3 and tunneling is enabled, the CONNECT-UDP method is used"
+          " Otherwise, the HTTP CONNECT method is used",
+          absl::AsciiStrToLower(
+              nighthawk::client::Protocol_ProtocolOptions_Name(tunnel_protocol_))),
+      false, "", &tunnel_protocols_allowed, cmd);
+  TCLAP::ValueArg<std::string> tunnel_uri(
+      "", "tunnel-uri",
+      fmt::format(
+          "The address of the proxy. Possible values: [http1, http2, "
+          "http3]. The default protocol is '{}' ",
+          absl::AsciiStrToLower(nighthawk::client::Protocol_ProtocolOptions_Name(protocol_))),
+      false, "", "string", cmd);
+  TCLAP::ValueArg<std::string> tunnel_tls_context(
+      "", "tunnel-tls-context",
+      "Upstream TlS context configuration in json."
+      " Required to encapsulate in HTTP3"
+      " Example (json): "
+      " {common_tls_context:{tls_params:{cipher_suites:[\"-ALL:ECDHE-RSA-AES128-SHA\"]}}}",
+      false, "", "string", cmd);
+
+  TCLAP::ValueArg<std::string> concurrency(
+      "", "concurrency",
+      fmt::format(
+          "The number of concurrent event loops that should be used. Specify 'auto' to let "
+          "Nighthawk leverage all vCPUs that have affinity to the Nighthawk process. Note that "
+          "increasing this results in an effective load multiplier combined with the configured "
+          "--rps and --connections values. Default: {}. ",
+          concurrency_),
+      false, "", "string", cmd);
+
+  std::vector<std::string> log_levels = {"trace", "debug", "info", "warn", "error", "critical"};
+  TCLAP::ValuesConstraint<std::string> verbosities_allowed(log_levels);
+
+  TCLAP::ValueArg<std::string> verbosity(
+      "v", "verbosity",
+      fmt::format(
+          "Verbosity of the output. Possible values: [trace, debug, info, warn, error, "
+          "critical]. The "
+          "default level is '{}'.",
+          absl::AsciiStrToLower(nighthawk::client::Verbosity_VerbosityOptions_Name(verbosity_))),
+      false, "", &verbosities_allowed, cmd);
+
+  std::vector<std::string> output_formats = OutputFormatterImpl::getLowerCaseOutputFormats();
+  TCLAP::ValuesConstraint<std::string> output_formats_allowed(output_formats);
+  TCLAP::ValueArg<std::string> output_format(
+      "", "output-format",
+      fmt::format("Output format. Possible values: {}. The "
+                  "default output format is '{}'.",
+                  output_formats,
+                  absl::AsciiStrToLower(
+                      nighthawk::client::OutputFormat_OutputFormatOptions_Name(output_format_))),
+      false, "", &output_formats_allowed, cmd);
+
+  TCLAP::SwitchArg prefetch_connections(                     // NOLINT
+      "", "prefetch-connections",                            // NOLINT
+      "Use proactive connection prefetching (HTTP/1 only).", // NOLINT
+      cmd);                                                  // NOLINT
+
+  // Note: we allow a burst size of 1, which intuitively may not make sense. However, allowing it
+  // doesn't hurt either, and it does allow one to use a the same code-execution-paths in test
+  // series that ramp up burst sizes.
+  TCLAP::ValueArg<uint32_t> burst_size(
+      "", "burst-size",
+      fmt::format("Release requests in bursts of the specified size (default: {}).", burst_size_),
+      false, 0, "uint32_t", cmd);
+  std::vector<std::string> address_families = {"auto", "v4", "v6"};
+  TCLAP::ValuesConstraint<std::string> address_families_allowed(address_families);
+  TCLAP::ValueArg<std::string> address_family(
+      "", "address-family",
+      fmt::format("Network address family preference. Possible values: [auto, v4, v6]. The "
+                  "default output format is '{}'.",
+                  nighthawk::client::AddressFamily::AddressFamilyOptions_Name(address_family_)),
+      false, "", &address_families_allowed, cmd);
+
+  std::vector<std::string> request_methods = {"GET",    "HEAD",    "POST",    "PUT",
+                                              "DELETE", "CONNECT", "OPTIONS", "TRACE"};
+  TCLAP::ValuesConstraint<std::string> request_methods_allowed(request_methods);
+  TCLAP::ValueArg<std::string> request_method("", "request-method",
+                                              "Request method used when sending requests. The "
+                                              "default is 'GET'.",
+                                              false, "GET", &request_methods_allowed, cmd);
+
+  TCLAP::MultiArg<std::string> request_headers("", "request-header",
+                                               "Raw request headers in the format of 'name: value' "
+                                               "pairs. This argument may specified multiple times.",
+                                               false, "string", cmd);
+  TCLAP::ValueArg<uint32_t> request_body_size(
+      "", "request-body-size",
+      "Size of the request body to send. NH will send a number of consecutive 'a' characters equal "
+      "to the number specified here. (default: 0, no data).",
+      false, 0, "uint32_t", cmd);
+  TCLAP::ValueArg<std::string> request_body_file(
+      "", "request-body-file",
+      "Path to a file whose bytes are sent verbatim as the request body on every request (binary "
+      "safe). No Content-Type is set for it; pass one with --request-header if needed. Mutually "
+      "exclusive with --request-body-size. With --grpc-mode unary the bytes are treated as a "
+      "single "
+      "serialized protobuf message and wrapped in a gRPC length-prefixed frame.",
+      false, "", "string", cmd);
+  std::vector<std::string> grpc_modes = {"unary", "bidi-stream"};
+  TCLAP::ValuesConstraint<std::string> grpc_modes_allowed(grpc_modes);
+  TCLAP::ValueArg<std::string> grpc_mode(
+      "", "grpc-mode",
+      "gRPC load generation mode. Possible values: [unary, bidi-stream]. "
+      "'unary' issues gRPC unary calls instead of plain HTTP requests: implies --protocol http2 "
+      "(prior knowledge on http:// URIs) and --request-method POST, adds 'content-type: "
+      "application/grpc' and 'te: trailers', frames the --request-body-file bytes as a gRPC "
+      "message, and scores responses on the grpc-status trailer: status 0 counts as success (also "
+      "recorded in the benchmark_http_client.latency_grpc_ok statistic), any other or missing "
+      "status increments benchmark.grpc_error and benchmark.grpc_status.<code> and is not counted "
+      "as a 2xx success. The URI path (or a ':path' request header) selects the method, e.g. "
+      "http://host:8080/pkg.Service/Method. "
+      "'bidi-stream' opens --streams long-lived bidi streams to the URI path, spread evenly over "
+      "the "
+      "workers, and sends the --request-body-file message on them at an AGGREGATE rate of --rps "
+      "messages per second (round-robin over the streams, absolute schedule: late sends fire "
+      "immediately and are never rescheduled). The server must echo one message per message in "
+      "order on the same stream; message latency is measured from send to echo "
+      "(benchmark_stream.message_latency). Sends scheduled for a stream that already has "
+      "--max-inflight-per-stream unanswered messages are dropped and counted in "
+      "benchmark.stream_deferred. Requires a numeric --concurrency that divides --streams and "
+      "--rps. At the end every stream is half-closed and echoes are collected for "
+      "--stream-drain-duration; the grpc-status of each closed stream is counted in "
+      "benchmark.stream_grpc_status.<code>.",
+      false, "", &grpc_modes_allowed, cmd);
+  TCLAP::ValueArg<uint32_t> streams(
+      "", "streams",
+      "Total number of gRPC bidi streams to open in --grpc-mode bidi-stream "
+      "mode (default: 20).",
+      false, 20, "uint32_t", cmd);
+  TCLAP::ValueArg<uint32_t> max_inflight_per_stream(
+      "", "max-inflight-per-stream",
+      "Maximum unanswered messages per stream in --grpc-mode bidi-stream before scheduled sends "
+      "are "
+      "deferred (default: 256).",
+      false, 256, "uint32_t", cmd);
+  TCLAP::ValueArg<std::string> stream_drain_duration(
+      "", "stream-drain-duration",
+      "Time to wait for outstanding echoes after half-closing the streams in --grpc-mode "
+      "bidi-stream, "
+      "as a duration string (default: 0.5s).",
+      false, "0.5s", "string", cmd);
+
+  TCLAP::ValueArg<std::string> tls_context(
+      "", "tls-context",
+      "DEPRECATED, use --transport-socket instead. "
+      "TlS context configuration in json. "
+      "Mutually exclusive with --transport-socket. Example (json): "
+      "{common_tls_context:{tls_params:{cipher_suites:[\"-ALL:ECDHE-RSA-AES128-SHA\"]}}}",
+      false, "", "string", cmd);
+
+  TCLAP::ValueArg<std::string> upstream_bind_config(
+      "", "upstream-bind-config",
+      "BindConfig in json. If specified, this configuration is used to bind newly "
+      "established upstream connections. "
+      "Allows selecting the source address, port and socket options used when sending requests. "
+      "Example (json): "
+      "{source_address:{address:\"127.0.0.1\",port_value:0}}",
+      false, "", "string", cmd);
+
+  TCLAP::ValueArg<std::string> transport_socket(
+      "", "transport-socket",
+      "Transport socket configuration in json. "
+      "Mutually exclusive with --tls-context. Example (json): "
+      "{name:\"envoy.transport_sockets.tls\",typed_config:{"
+      "\"@type\":\"type.googleapis.com/"
+      "envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext\","
+      "common_tls_context:{tls_params:{cipher_suites:[\"-ALL:ECDHE-RSA-AES128-SHA\"]}}}}",
+      false, "", "string", cmd);
+
+  TCLAP::ValueArg<uint32_t> max_pending_requests(
+      "", "max-pending-requests",
+      fmt::format("Max pending requests (default: {}, no client side queuing. Specifying any other "
+                  "value will "
+                  "allow client-side queuing of requests).",
+                  max_pending_requests_),
+      false, 0, "uint32_t", cmd);
+
+  TCLAP::ValueArg<uint32_t> max_active_requests(
+      "", "max-active-requests",
+      fmt::format(
+          "The maximum allowed number of concurrently active requests. HTTP/2 only. (default: {}).",
+          max_active_requests_),
+      false, 0, "uint32_t", cmd);
+  // NOLINTNEXTLINE
+  TCLAP::ValueArg<uint32_t> max_requests_per_connection(
+      "", "max-requests-per-connection",
+      fmt::format("Max requests per connection (default: {}).", max_requests_per_connection_),
+      false, 0, "uint32_t", cmd);
+  TCLAP::ValueArg<uint32_t> max_concurrent_streams(
+      "", "max-concurrent-streams",
+      fmt::format("Max concurrent streams allowed on one HTTP/2 or HTTP/3 connection. Does not "
+                  "apply to HTTP/1. (default: {}).",
+                  max_concurrent_streams_),
+      false, 0, "uint32_t", cmd);
+
+  std::vector<std::string> sequencer_idle_strategies = {"spin", "poll", "sleep"};
+  TCLAP::ValuesConstraint<std::string> sequencer_idle_strategies_allowed(sequencer_idle_strategies);
+  TCLAP::ValueArg<std::string> sequencer_idle_strategy(
+      "", "sequencer-idle-strategy",
+      fmt::format(
+          "Choose between using a busy spin/yield loop or have the thread poll or sleep while "
+          "waiting for the next scheduled request (default: {}).",
+          absl::AsciiStrToLower(
+              nighthawk::client::SequencerIdleStrategy_SequencerIdleStrategyOptions_Name(
+                  sequencer_idle_strategy_))),
+      false, "", &sequencer_idle_strategies_allowed, cmd);
+
+  TCLAP::ValueArg<std::string> trace(
+      "", "trace", "Trace uri. Example: zipkin://localhost:9411/api/v2/spans. Default is empty.",
+      false, "", "uri format", cmd);
+  TCLAP::MultiArg<std::string> termination_predicates(
+      "", "termination-predicate",
+      "Termination predicate. Allows specifying a counter name plus threshold value for "
+      "terminating execution.",
+      false, "string:uint64_t", cmd);
+  TCLAP::MultiArg<std::string> failure_predicates(
+      "", "failure-predicate",
+      "Failure predicate. Allows specifying a counter name plus threshold value for "
+      "failing execution. Defaults to not tolerating error status codes and connection errors. "
+      "Example: benchmark.http_5xx:4294967295.",
+      false, "string:uint64_t", cmd);
+  TCLAP::SwitchArg no_default_failure_predicates(
+      "", "no-default-failure-predicates",
+      "Disables the default failure predicates, indicating that Nighthawk should continue sending "
+      "load after observing error status codes and connection errors.",
+      cmd);
+
+  std::vector<std::string> h1_connection_reuse_strategies = {"mru", "lru"};
+  TCLAP::ValuesConstraint<std::string> h1_connection_reuse_strategies_allowed(
+      h1_connection_reuse_strategies);
+  TCLAP::ValueArg<std::string> experimental_h1_connection_reuse_strategy(
+      "", "experimental-h1-connection-reuse-strategy",
+      fmt::format(
+          "Choose picking the most recently used, or least-recently-used connections for re-use."
+          "(default: {}). WARNING: this option is experimental and may be removed or changed in "
+          "the future!",
+          absl::AsciiStrToLower(
+              nighthawk::client::H1ConnectionReuseStrategy_H1ConnectionReuseStrategyOptions_Name(
+                  experimental_h1_connection_reuse_strategy_))),
+      false, "", &h1_connection_reuse_strategies_allowed, cmd);
+  TCLAP::SwitchArg open_loop(
+      "", "open-loop",
+      "Enable open loop mode. When enabled, the benchmark client will not provide backpressure "
+      "when resource limits are hit.",
+      cmd);
+  TCLAP::ValueArg<std::string> jitter_uniform(
+      "", "jitter-uniform",
+      "Add uniformly distributed absolute request-release timing jitter. For example, to add 10 us "
+      "of jitter, specify .00001s. Default is empty / no uniform jitter.",
+      false, "", "duration", cmd);
+  TCLAP::ValueArg<std::string> nighthawk_service(
+      "", "nighthawk-service",
+      "Nighthawk service uri. Example: grpc://localhost:8843/. Default is empty.", false, "",
+      "uri format", cmd);
+  TCLAP::SwitchArg h2_use_multiple_connections(
+      "", "experimental-h2-use-multiple-connections",
+      "DO NOT USE: This option is deprecated, if this behavior is desired, set "
+      "--max-concurrent-streams to one instead.",
+      cmd);
+
+  TCLAP::MultiArg<std::string> multi_target_endpoints(
+      "", "multi-target-endpoint",
+      "Target endpoint in the form IPv4:port, [IPv6]:port, or DNS:port. "
+      "This argument is intended to be specified multiple times. "
+      "Nighthawk will spread traffic across all endpoints with "
+      "round robin distribution. "
+      "Mutually exclusive with providing a URI.",
+      false, "string", cmd);
+  TCLAP::ValueArg<std::string> multi_target_path(
+      "", "multi-target-path",
+      "The single absolute path Nighthawk should request from each target endpoint. "
+      "Required when using --multi-target-endpoint. "
+      "Mutually exclusive with providing a URI.",
+      false, "", "string", cmd);
+  TCLAP::SwitchArg multi_target_use_https(
+      "", "multi-target-use-https",
+      "Use HTTPS to connect to the target endpoints. Otherwise HTTP is used. "
+      "Mutually exclusive with providing a URI.",
+      cmd);
+
+  TCLAP::MultiArg<std::string> labels("", "label",
+                                      "Label. Allows specifying multiple labels which will be "
+                                      "persisted in structured output formats.",
+                                      false, "string", cmd);
+
+  TCLAP::UnlabeledValueArg<std::string> uri(
+      "uri",
+      "URI to benchmark. http:// and https:// are supported, "
+      "but in case of https no certificates are validated. "
+      "Provide a URI when you need to benchmark a single endpoint. For multiple "
+      "endpoints, set --multi-target-* instead.",
+      false, "", "uri format", cmd);
+
+  TCLAP::ValueArg<std::string> request_source(
+      "", "request-source",
+      "Remote gRPC source that will deliver to-be-replayed traffic. Each worker will separately "
+      "connect to this source. For example grpc://127.0.0.1:8443/. "
+      "Mutually exclusive with --request_source_plugin_config.",
+      false, "", "uri format", cmd);
+  TCLAP::ValueArg<std::string> request_source_plugin_config(
+      "", "request-source-plugin-config",
+      "[Request "
+      "Source](https://github.com/envoyproxy/nighthawk/blob/main/docs/root/"
+      "overview.md#requestsource) plugin configuration in json. "
+      "Mutually exclusive with --request-source. Example (json): "
+      "{name:\"nighthawk.stub-request-source-plugin\",typed_config:{"
+      "\"@type\":\"type.googleapis.com/nighthawk.request_source.StubPluginConfig\","
+      "test_value:\"3\"}}",
+      false, "", "string", cmd);
+
+  TCLAP::ValueArg<std::string> rate_limiter_plugin_config(
+      "", "rate-limiter-plugin-config",
+      "Rate Limiter plugin configuration in json. "
+      "Mutually exclusive with --burst-size and --jitter-uniform. "
+      "Possible configurations located in api/rate_limiter. "
+      "Example (json): "
+      "{name:\"nighthawk.linear-ramping-rate-limiter-plugin\",typed_config:{"
+      "\"@type\":\"type.googleapis.com/nighthawk.rate_limiter.LinearRampingRateLimiterConfig\","
+      "\"ramp_time\":\"5.5s\"}}",
+      false, "", "string", cmd);
+
+  TCLAP::SwitchArg simple_warmup(
+      "", "simple-warmup",
+      "Perform a simple single warmup request (per worker) before starting execution. Note that "
+      "this will be reflected in the counters that Nighthawk writes to the output. Default is "
+      "false.",
+      cmd);
+  TCLAP::SwitchArg no_duration(
+      "", "no-duration",
+      "Request infinite execution. Note that the default failure "
+      "predicates will still be added. Mutually exclusive with --duration.",
+      cmd);
+  TCLAP::MultiArg<std::string> stats_sinks(
+      "", "stats-sinks",
+      "Stats sinks (in json) where Nighthawk "
+      "metrics will be flushed. This argument is intended to "
+      "be specified multiple times. Example (json): "
+      "{name:\"envoy.stat_sinks.statsd\",typed_config:{\"@type\":\"type."
+      "googleapis.com/"
+      "envoy.config.metrics.v3.StatsdSink\",tcp_cluster_name:\"statsd\"}}",
+      false, "string", cmd);
+
+  TCLAP::ValueArg<uint32_t> stats_flush_interval(
+      "", "stats-flush-interval",
+      fmt::format(
+          "Time interval (in seconds) between flushes to configured "
+          "stats sinks. Mutually exclusive with --stats-flush-interval-duration. Default: {}.",
+          stats_flush_interval_),
+      false, 5, "uint32_t", cmd);
+  TCLAP::ValueArg<std::string> stats_flush_interval_duration(
+      "", "stats-flush-interval-duration",
+      "Time interval (in Duration) between flushes to configured stats sinks. For example '1s' or "
+      "'1.000000001s'. Mutually exclusive with --stats-flush-interval.",
+      false, "", "duration", cmd);
+
+  TCLAP::ValueArg<std::string> latency_response_header_name(
+      "", "latency-response-header-name",
+      "Set an optional header name that will be returned in responses, whose values will be "
+      "tracked in a latency histogram if set. "
+      "Can be used in tandem with the test server's response option "
+      "\"emit_previous_request_delta_in_response_header\" to record elapsed time between request "
+      "arrivals. "
+      "Default: \"\"",
+      false, "", "string", cmd);
+
+  // TODO(nbperry): Use better example when one exists.
+  TCLAP::MultiArg<std::string> user_defined_output_plugin_configs(
+      "", "user-defined-plugin-config",
+      "WIP - will throw unimplemented error. Optional configurations for plugins that collect data "
+      "about responses received by NH and attach a corresponding UserDefinedOutput to the Result. "
+      "Example (json): {name:\"nighthawk.fake_user_defined_output\",typed_config:{"
+      "\"@type\":\"type.googleapis.com/nighthawk.FakeUserDefinedOutputConfig\","
+      "fail_data:\"false\"}}",
+      false, "string", cmd);
+
+  Utility::parseCommand(cmd, argc, argv);
+
+  if (h2_use_multiple_connections.isSet()) {
+    throw MalformedArgvException("--experimental-h2-use-multiple-connections is deprecated, set "
+                                 "--max-concurrent-streams to one instead");
+  }
+
+  // --duration and --no-duration are mutually exclusive
+  // Would love to have used cmd.xorAdd here, but that prevents
+  // us from having a default duration when neither arg is specified,
+  // as specifying one of those became mandatory.
+  // That's why we manually validate this.
+  if (duration.isSet() && (no_duration.isSet() && no_duration.getValue() == true)) {
+    throw MalformedArgvException("--duration and --no-duration are mutually exclusive");
+  }
+
+  // --stats-flush-interval and --stats-flush-interval-duration are mutually exclusive.
+  if (stats_flush_interval.isSet() && stats_flush_interval_duration.isSet()) {
+    throw MalformedArgvException("--stats-flush-interval and --stats-flush-interval-duration are "
+                                 "mutually exclusive");
+  }
+
+  // Verify that if --stats-flush-interval or --stats-flush-interval-duration is
+  // set, then --stats-sinks must also be set.
+  if ((stats_flush_interval.isSet() || stats_flush_interval_duration.isSet()) &&
+      !stats_sinks.isSet()) {
+    throw MalformedArgvException(
+        "if --stats-flush-interval or --stats-flush-interval-duration is set, "
+        "then --stats-sinks must also be set");
+  }
+
+  TCLAP_SET_IF_SPECIFIED(requests_per_second, requests_per_second_);
+  TCLAP_SET_IF_SPECIFIED(connections, connections_);
+  TCLAP_SET_IF_SPECIFIED(duration, duration_);
+  TCLAP_SET_IF_SPECIFIED(timeout, timeout_);
+  if (uri.isSet()) {
+    uri_ = uri.getValue();
+  }
+
+  if (h2.isSet() && protocol.isSet()) {
+    throw MalformedArgvException("--h2 and --protocol are mutually exclusive");
+  }
+  if (grpc_mode.isSet()) {
+    grpc_mode_ = grpc_mode.getValue() == "unary" ? nighthawk::client::GrpcMode::UNARY
+                                                 : nighthawk::client::GrpcMode::BIDI_STREAM;
+  }
+  TCLAP_SET_IF_SPECIFIED(streams, streams_);
+  TCLAP_SET_IF_SPECIFIED(max_inflight_per_stream, max_inflight_per_stream_);
+  if (stream_drain_duration.isSet()) {
+    Envoy::Protobuf::Duration duration;
+    if (Envoy::Protobuf::util::TimeUtil::FromString(stream_drain_duration.getValue(), &duration) &&
+        duration.nanos() >= 0 && duration.seconds() >= 0) {
+      stream_drain_duration_ = std::chrono::nanoseconds(
+          Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(duration));
+    } else {
+      throw MalformedArgvException("Invalid value for --stream-drain-duration");
+    }
+  }
+  if (grpcEnabled() && !h2.isSet() && !protocol.isSet()) {
+    protocol_ = nighthawk::client::Protocol::HTTP2;
+  }
+  if (h2.isSet()) {
+    ENVOY_LOG(warn, "--h2 is deprecated, use --protocol http2 instead.");
+  }
+  TCLAP_SET_IF_SPECIFIED(h2, h2_);
+
+  TCLAP_SET_IF_SPECIFIED(concurrency, concurrency_);
+  // TODO(oschaaf): is there a generic way to set these enum values?
+  if (protocol.isSet()) {
+    std::string upper_cased = protocol.getValue();
+    absl::AsciiStrToUpper(&upper_cased);
+    RELEASE_ASSERT(nighthawk::client::Protocol::ProtocolOptions_Parse(upper_cased, &protocol_),
+                   "Failed to parse protocol");
+  }
+
+  if (!http3_protocol_options.getValue().empty()) {
+    if (protocol_ != Protocol::HTTP3) {
+      throw MalformedArgvException(
+          "--http3-protocol-options can only be used with --protocol http3");
+    }
+
+    if (max_concurrent_streams.isSet()) {
+      throw MalformedArgvException(
+          "--http3-protocol-options and --max-concurrent-streams are mutually exclusive");
+    }
+
+    try {
+      http3_protocol_options_.emplace(Http3ProtocolOptions());
+      Envoy::MessageUtil::loadFromJson(http3_protocol_options.getValue(),
+                                       http3_protocol_options_.value(),
+                                       Envoy::ProtobufMessage::getStrictValidationVisitor());
+    } catch (const Envoy::EnvoyException& e) {
+      throw MalformedArgvException(e.what());
+    }
+  }
+
+  if (verbosity.isSet()) {
+    std::string upper_cased = verbosity.getValue();
+    absl::AsciiStrToUpper(&upper_cased);
+    RELEASE_ASSERT(nighthawk::client::Verbosity::VerbosityOptions_Parse(upper_cased, &verbosity_),
+                   "Failed to parse verbosity");
+  }
+  if (output_format.isSet()) {
+    std::string upper_cased = output_format.getValue();
+    absl::AsciiStrToUpper(&upper_cased);
+    RELEASE_ASSERT(
+        nighthawk::client::OutputFormat::OutputFormatOptions_Parse(upper_cased, &output_format_),
+        "Failed to parse output format");
+  }
+  TCLAP_SET_IF_SPECIFIED(prefetch_connections, prefetch_connections_);
+  TCLAP_SET_IF_SPECIFIED(burst_size, burst_size_);
+  if (address_family.isSet()) {
+    std::string upper_cased = address_family.getValue();
+    absl::AsciiStrToUpper(&upper_cased);
+    RELEASE_ASSERT(
+        nighthawk::client::AddressFamily::AddressFamilyOptions_Parse(upper_cased, &address_family_),
+        "Failed to parse address family");
+  }
+  if (request_method.isSet()) {
+    std::string upper_cased = request_method.getValue();
+    absl::AsciiStrToUpper(&upper_cased);
+    RELEASE_ASSERT(envoy::config::core::v3::RequestMethod_Parse(upper_cased, &request_method_),
+                   "Failed to parse request method");
+  } else if (grpcEnabled()) {
+    request_method_ = envoy::config::core::v3::RequestMethod::POST;
+  }
+  TCLAP_SET_IF_SPECIFIED(request_headers, request_headers_);
+  TCLAP_SET_IF_SPECIFIED(request_body_size, request_body_size_);
+  if (request_body_file.isSet()) {
+    request_body_ = readRequestBodyFile(request_body_file.getValue());
+  }
+  TCLAP_SET_IF_SPECIFIED(max_pending_requests, max_pending_requests_);
+  raisePendingRequestsForStreams();
+  TCLAP_SET_IF_SPECIFIED(max_active_requests, max_active_requests_);
+  TCLAP_SET_IF_SPECIFIED(max_requests_per_connection, max_requests_per_connection_);
+  TCLAP_SET_IF_SPECIFIED(max_concurrent_streams, max_concurrent_streams_);
+  if (sequencer_idle_strategy.isSet()) {
+    std::string upper_cased = sequencer_idle_strategy.getValue();
+    absl::AsciiStrToUpper(&upper_cased);
+    RELEASE_ASSERT(nighthawk::client::SequencerIdleStrategy::SequencerIdleStrategyOptions_Parse(
+                       upper_cased, &sequencer_idle_strategy_),
+                   "Failed to parse sequencer idle strategy");
+  }
+  TCLAP_SET_IF_SPECIFIED(request_source, request_source_);
+
+  if (experimental_h1_connection_reuse_strategy.isSet()) {
+    std::string upper_cased = experimental_h1_connection_reuse_strategy.getValue();
+    absl::AsciiStrToUpper(&upper_cased);
+    const bool ok =
+        nighthawk::client::H1ConnectionReuseStrategy::H1ConnectionReuseStrategyOptions_Parse(
+            upper_cased, &experimental_h1_connection_reuse_strategy_);
+    // TCLAP validation ought to have caught this earlier.
+    RELEASE_ASSERT(ok, "Failed to parse h1 connection reuse strategy");
+  }
+
+  TCLAP_SET_IF_SPECIFIED(trace, trace_);
+  parsePredicates(termination_predicates, termination_predicates_);
+  TCLAP_SET_IF_SPECIFIED(no_default_failure_predicates, no_default_failure_predicates_);
+  if (no_default_failure_predicates_) {
+    failure_predicates_.clear();
+  }
+  parsePredicates(failure_predicates, failure_predicates_);
+  TCLAP_SET_IF_SPECIFIED(open_loop, open_loop_);
+  if (jitter_uniform.isSet()) {
+    Envoy::Protobuf::Duration duration;
+    if (Envoy::Protobuf::util::TimeUtil::FromString(jitter_uniform.getValue(), &duration)) {
+      if (duration.nanos() >= 0 && duration.seconds() >= 0) {
+        jitter_uniform_ = std::chrono::nanoseconds(
+            Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(duration));
+      } else {
+        throw MalformedArgvException("--jitter-uniform is out of range");
+      }
+    } else {
+      throw MalformedArgvException("Invalid value for --jitter-uniform");
+    }
+  }
+  TCLAP_SET_IF_SPECIFIED(nighthawk_service, nighthawk_service_);
+  TCLAP_SET_IF_SPECIFIED(multi_target_use_https, multi_target_use_https_);
+  TCLAP_SET_IF_SPECIFIED(multi_target_path, multi_target_path_);
+  if (multi_target_endpoints.isSet()) {
+    for (const std::string& host_port : multi_target_endpoints.getValue()) {
+      std::string host;
+      int port;
+      if (!Utility::parseHostPort(host_port, &host, &port)) {
+        throw MalformedArgvException(fmt::format("--multi-target-endpoint must be in the format "
+                                                 "IPv4:port, [IPv6]:port, or DNS:port. Got '{}'",
+                                                 host_port));
+      }
+      nighthawk::client::MultiTarget::Endpoint endpoint;
+      endpoint.mutable_address()->set_value(host);
+      endpoint.mutable_port()->set_value(port);
+      multi_target_endpoints_.push_back(endpoint);
+    }
+  }
+  TCLAP_SET_IF_SPECIFIED(labels, labels_);
+  TCLAP_SET_IF_SPECIFIED(simple_warmup, simple_warmup_);
+  TCLAP_SET_IF_SPECIFIED(no_duration, no_duration_);
+  if (stats_sinks.isSet()) {
+    for (const std::string& stats_sink : stats_sinks.getValue()) {
+      envoy::config::metrics::v3::StatsSink sink;
+      try {
+        Envoy::MessageUtil::loadFromJson(stats_sink, sink,
+                                         Envoy::ProtobufMessage::getStrictValidationVisitor());
+      } catch (const Envoy::EnvoyException& e) {
+        throw MalformedArgvException(e.what());
+      }
+      stats_sinks_.push_back(sink);
+    }
+  }
+  TCLAP_SET_IF_SPECIFIED(stats_flush_interval, stats_flush_interval_);
+  if (stats_flush_interval_duration.isSet()) {
+    if (Envoy::Protobuf::util::TimeUtil::FromString(stats_flush_interval_duration.getValue(),
+                                                    &stats_flush_interval_duration_)) {
+      if (stats_flush_interval_duration_.nanos() < 0 ||
+          stats_flush_interval_duration_.seconds() < 0) {
+        throw MalformedArgvException("--stats-flush-interval-duration is out of range");
+      }
+    } else {
+      throw MalformedArgvException("Invalid value for --stats-flush-interval-duration");
+    }
+  }
+  TCLAP_SET_IF_SPECIFIED(latency_response_header_name, latency_response_header_name_);
+
+  // CLI-specific tests.
+  // TODO(oschaaf): as per mergconflicts's remark, it would be nice to aggregate
+  // these and present everything we couldn't understand to the CLI user in on go.
+  if (requests_per_second_ > largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --rps");
+  }
+  if (connections_ > largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --connections");
+  }
+  if (duration_ > largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --duration");
+  }
+  if (timeout_ > largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --timeout");
+  }
+  if (request_body_size_ > largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --request-body-size");
+  }
+  if (burst_size_ > largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --burst-size");
+  }
+  if (max_pending_requests_ > largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --max-pending-requests");
+  }
+  if (max_active_requests_ > largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --max-active-requests");
+  }
+  if (max_requests_per_connection_ > largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --max-requests-per-connection");
+  }
+  if (max_concurrent_streams_ > largest_acceptable_concurrent_streams_value) {
+    throw MalformedArgvException(fmt::format(
+        "Invalid value {} for --max_concurrent_streams, the largest allowed value is {}.",
+        max_concurrent_streams_, largest_acceptable_concurrent_streams_value));
+  }
+  if (stats_flush_interval_ > largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --stats-flush-interval");
+  }
+
+  if (!tls_context.getValue().empty()) {
+    ENVOY_LOG(warn, "--tls-context is deprecated. "
+                    "It can be replaced by an equivalent --transport-socket. "
+                    "See --help for an example.");
+  }
+  if (!tls_context.getValue().empty() && !transport_socket.getValue().empty()) {
+    throw MalformedArgvException("--tls-context and --transport-socket cannot both be set.");
+  }
+  if (!tls_context.getValue().empty()) {
+    try {
+      Envoy::MessageUtil::loadFromJson(tls_context.getValue(), tls_context_,
+                                       Envoy::ProtobufMessage::getStrictValidationVisitor());
+    } catch (const Envoy::EnvoyException& e) {
+      throw MalformedArgvException(e.what());
+    }
+  }
+  if (!upstream_bind_config.getValue().empty()) {
+    try {
+      upstream_bind_config_.emplace(envoy::config::core::v3::BindConfig());
+      Envoy::MessageUtil::loadFromJson(upstream_bind_config.getValue(),
+                                       upstream_bind_config_.value(),
+                                       Envoy::ProtobufMessage::getStrictValidationVisitor());
+    } catch (const Envoy::EnvoyException& e) {
+      throw MalformedArgvException(e.what());
+    }
+  }
+  if (!transport_socket.getValue().empty()) {
+    try {
+      transport_socket_.emplace(envoy::config::core::v3::TransportSocket());
+      Envoy::MessageUtil::loadFromJson(transport_socket.getValue(), transport_socket_.value(),
+                                       Envoy::ProtobufMessage::getStrictValidationVisitor());
+    } catch (const Envoy::EnvoyException& e) {
+      throw MalformedArgvException(e.what());
+    }
+  }
+  if (!request_source.getValue().empty() && !request_source_plugin_config.getValue().empty()) {
+    throw MalformedArgvException(
+        "--request-source and --request_source_plugin_config cannot both be set.");
+  }
+  if (!request_source_plugin_config.getValue().empty()) {
+    try {
+      request_source_plugin_config_.emplace(envoy::config::core::v3::TypedExtensionConfig());
+      Envoy::MessageUtil::loadFromJson(request_source_plugin_config.getValue(),
+                                       request_source_plugin_config_.value(),
+                                       Envoy::ProtobufMessage::getStrictValidationVisitor());
+    } catch (const Envoy::EnvoyException& e) {
+      throw MalformedArgvException(e.what());
+    }
+  }
+  if (!rate_limiter_plugin_config.getValue().empty()) {
+    if (burst_size.isSet()) {
+      throw MalformedArgvException(
+          "--burst-size and --rate-limiter-plugin-config are mutually exclusive");
+    }
+    if (jitter_uniform.isSet()) {
+      throw MalformedArgvException(
+          "--jitter-uniform and --rate-limiter-plugin-config are mutually exclusive");
+    }
+
+    try {
+      rate_limiter_plugin_config_.emplace(envoy::config::core::v3::TypedExtensionConfig());
+      Envoy::MessageUtil::loadFromJson(rate_limiter_plugin_config.getValue(),
+                                       rate_limiter_plugin_config_.value(),
+                                       Envoy::ProtobufMessage::getStrictValidationVisitor());
+    } catch (const Envoy::EnvoyException& e) {
+      throw MalformedArgvException(e.what());
+    }
+  }
+  if (!user_defined_output_plugin_configs.getValue().empty()) {
+    for (const std::string& plugin_config_string : user_defined_output_plugin_configs.getValue()) {
+      try {
+        envoy::config::core::v3::TypedExtensionConfig typed_config;
+        Envoy::MessageUtil::loadFromJson(plugin_config_string, typed_config,
+                                         Envoy::ProtobufMessage::getStrictValidationVisitor());
+        user_defined_output_plugin_configs_.push_back(typed_config);
+      } catch (const Envoy::EnvoyException& e) {
+        throw MalformedArgvException(e.what());
+      }
+    }
+  }
+
+  if (tunnel_protocol.isSet()) {
+    std::string upper_cased = tunnel_protocol.getValue();
+    absl::AsciiStrToUpper(&upper_cased);
+    RELEASE_ASSERT(
+        nighthawk::client::Protocol::ProtocolOptions_Parse(upper_cased, &tunnel_protocol_),
+        "Failed to parse tunnel protocol");
+    if (!tunnel_uri.isSet()) {
+      throw MalformedArgvException("--tunnel-protocol requires --tunnel-uri");
+    }
+    tunnel_uri_ = tunnel_uri.getValue();
+    encap_port_ = Utility::GetAvailablePort(/*udp=*/protocol_ == Protocol::HTTP3, address_family_);
+
+  } else if (tunnel_uri.isSet() || tunnel_tls_context.isSet()) {
+    throw MalformedArgvException("tunnel flags require --tunnel-protocol");
+  }
+
+  if (!tunnel_tls_context.getValue().empty()) {
+    try {
+      tunnel_tls_context_.emplace(
+          envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext());
+      Envoy::MessageUtil::loadFromJson(tunnel_tls_context.getValue(), tunnel_tls_context_.value(),
+                                       Envoy::ProtobufMessage::getStrictValidationVisitor());
+    } catch (const Envoy::EnvoyException& e) {
+      throw MalformedArgvException(e.what());
+    }
+  } else if (tunnel_protocol_ == Protocol::HTTP3) {
+    throw MalformedArgvException("--tunnel-tls-context is required to use --tunnel-protocol http3");
+  }
+
+  if (tunnel_protocol.isSet()) {
+    if (tunnel_protocol_ == Protocol::HTTP3 && protocol_ == Protocol::HTTP3) {
+      throw MalformedArgvException(
+          "--protocol HTTP3 over --tunnel-protocol HTTP3 is not supported");
+    }
+    if (tunnel_protocol_ == Protocol::HTTP1 && protocol_ == Protocol::HTTP3) {
+      throw MalformedArgvException(
+          "--protocol HTTP3 over --tunnel-protocol HTTP1 is not supported");
+    }
+  }
+
+  validate();
+}
+
+Envoy::Http::Protocol OptionsImpl::protocol() const {
+  if (h2_ || protocol_ == Protocol::HTTP2) {
+    return Envoy::Http::Protocol::Http2;
+  } else if (protocol_ == Protocol::HTTP3) {
+    return Envoy::Http::Protocol::Http3;
+  } else {
+    return Envoy::Http::Protocol::Http11;
+  }
+}
+
+Envoy::Http::Protocol OptionsImpl::tunnelProtocol() const {
+  if (tunnel_protocol_ == Protocol::HTTP2) {
+    return Envoy::Http::Protocol::Http2;
+  } else if (tunnel_protocol_ == Protocol::HTTP3) {
+    return Envoy::Http::Protocol::Http3;
+  } else {
+    return Envoy::Http::Protocol::Http11;
+  }
+}
+
+void OptionsImpl::parsePredicates(const TCLAP::MultiArg<std::string>& arg,
+                                  TerminationPredicateMap& predicates) {
+  if (arg.isSet()) {
+    predicates.clear();
+  }
+  for (const auto& predicate : arg) {
+    std::vector<std::string> split_predicate =
+        absl::StrSplit(predicate, ':', absl::SkipWhitespace());
+    if (split_predicate.size() != 2) {
+      throw MalformedArgvException(
+          fmt::format("Termination predicate '{}' is badly formatted.", predicate));
+    }
+
+    uint64_t threshold = 0;
+    if (absl::SimpleAtoi(split_predicate[1], &threshold)) {
+      predicates[split_predicate[0]] = threshold;
+    } else {
+      throw MalformedArgvException(
+          fmt::format("Termination predicate '{}' has an out of range threshold.", predicate));
+    }
+  }
+}
+
+OptionsImpl::OptionsImpl(const nighthawk::client::CommandLineOptions& options) {
+  setNonTrivialDefaults();
+
+  requests_per_second_ =
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, requests_per_second, requests_per_second_);
+  if (options.has_duration()) {
+    duration_ = options.duration().seconds();
+  }
+  if (options.has_timeout()) {
+    timeout_ = options.timeout().seconds();
+  }
+  if (options.has_uri()) {
+    uri_ = options.uri().value();
+  } else {
+    multi_target_path_ =
+        PROTOBUF_GET_WRAPPED_OR_DEFAULT(options.multi_target(), path, multi_target_path_);
+    multi_target_use_https_ =
+        PROTOBUF_GET_WRAPPED_OR_DEFAULT(options.multi_target(), use_https, multi_target_use_https_);
+    for (const nighthawk::client::MultiTarget::Endpoint& endpoint :
+         options.multi_target().endpoints()) {
+      multi_target_endpoints_.push_back(endpoint);
+    }
+  }
+
+  h2_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, h2, h2_);
+  protocol_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, protocol, protocol_);
+  grpc_mode_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, grpc_mode, grpc_mode_);
+  if (options.has_grpc_stream()) {
+    const auto& stream_options = options.grpc_stream();
+    streams_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(stream_options, streams, streams_);
+    max_inflight_per_stream_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(
+        stream_options, max_inflight_per_stream, max_inflight_per_stream_);
+    if (stream_options.has_drain_duration()) {
+      stream_drain_duration_ = std::chrono::nanoseconds(
+          Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(stream_options.drain_duration()));
+    }
+  }
+  if (grpcEnabled() && !options.has_protocol() && !options.has_h2()) {
+    protocol_ = nighthawk::client::Protocol::HTTP2;
+  }
+
+  if (options.has_http3_protocol_options()) {
+    http3_protocol_options_.emplace(Http3ProtocolOptions());
+    http3_protocol_options_.value().MergeFrom(options.http3_protocol_options());
+  }
+
+  concurrency_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, concurrency, concurrency_);
+  verbosity_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, verbosity, verbosity_);
+  output_format_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, output_format, output_format_);
+  prefetch_connections_ =
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, prefetch_connections, prefetch_connections_);
+  burst_size_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, burst_size, burst_size_);
+  address_family_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, address_family, address_family_);
+
+  if (options.has_tunnel_options()) {
+    tunnel_protocol_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options.tunnel_options(), tunnel_protocol,
+                                                       tunnel_protocol_);
+    tunnel_uri_ = options.tunnel_options().tunnel_uri();
+
+    // we must find an available port for the encap listener
+    encap_port_ =
+        Utility::GetAvailablePort(/*is_udp=*/protocol_ == Protocol::HTTP3, address_family_);
+
+    tunnel_tls_context_->MergeFrom(options.tunnel_options().tunnel_tls_context());
+  }
+
+  if (options.has_request_options()) {
+    const auto& request_options = options.request_options();
+    for (const auto& header : request_options.request_headers()) {
+      std::string header_string =
+          fmt::format("{}:{}", header.header().key(), header.header().value());
+      request_headers_.push_back(header_string);
+    }
+    if (request_options.request_method() !=
+        envoy::config::core::v3::RequestMethod::METHOD_UNSPECIFIED) {
+      request_method_ = request_options.request_method();
+    } else if (grpcEnabled()) {
+      request_method_ = envoy::config::core::v3::RequestMethod::POST;
+    }
+    request_body_size_ =
+        PROTOBUF_GET_WRAPPED_OR_DEFAULT(request_options, request_body_size, request_body_size_);
+    request_body_ = request_options.request_body();
+  } else if (options.has_request_source()) {
+    const auto& request_source_options = options.request_source();
+    request_source_ = request_source_options.uri();
+  } else if (options.has_request_source_plugin_config()) {
+    request_source_plugin_config_.emplace(envoy::config::core::v3::TypedExtensionConfig());
+    request_source_plugin_config_.value().MergeFrom(options.request_source_plugin_config());
+  }
+  if (grpcEnabled() && !options.has_request_options()) {
+    request_method_ = envoy::config::core::v3::RequestMethod::POST;
+  }
+  raisePendingRequestsForStreams();
+
+  if (options.has_rate_limiter_plugin_config()) {
+    if (options.has_burst_size() && options.burst_size().value() != 0) {
+      throw MalformedArgvException(
+          "burst_size and rate_limiter_plugin_config are mutually exclusive");
+    }
+    if (options.has_jitter_uniform() &&
+        (options.jitter_uniform().seconds() != 0 || options.jitter_uniform().nanos() != 0)) {
+      throw MalformedArgvException(
+          "jitter_uniform and rate_limiter_plugin_config are mutually exclusive");
+    }
+
+    rate_limiter_plugin_config_.emplace(envoy::config::core::v3::TypedExtensionConfig());
+    rate_limiter_plugin_config_.value().MergeFrom(options.rate_limiter_plugin_config());
+  }
+
+  max_pending_requests_ =
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, max_pending_requests, max_pending_requests_);
+  max_active_requests_ =
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, max_active_requests, max_active_requests_);
+  max_requests_per_connection_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(
+      options, max_requests_per_connection, max_requests_per_connection_);
+  max_concurrent_streams_ =
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, max_concurrent_streams, max_concurrent_streams_);
+  connections_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, connections, connections_);
+  sequencer_idle_strategy_ =
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, sequencer_idle_strategy, sequencer_idle_strategy_);
+  trace_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, trace, trace_);
+  experimental_h1_connection_reuse_strategy_ =
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, experimental_h1_connection_reuse_strategy,
+                                      experimental_h1_connection_reuse_strategy_);
+  open_loop_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, open_loop, open_loop_);
+
+  tls_context_.MergeFrom(options.tls_context());
+
+  if (options.has_upstream_bind_config()) {
+    upstream_bind_config_.emplace(envoy::config::core::v3::BindConfig());
+    upstream_bind_config_.value().MergeFrom(options.upstream_bind_config());
+  }
+  if (options.has_transport_socket()) {
+    transport_socket_.emplace(envoy::config::core::v3::TransportSocket());
+    transport_socket_.value().MergeFrom(options.transport_socket());
+  }
+
+  if (options.has_no_default_failure_predicates()) {
+    no_default_failure_predicates_ = options.no_default_failure_predicates().value();
+  }
+  if (no_default_failure_predicates_ || !options.failure_predicates().empty()) {
+    failure_predicates_.clear();
+  }
+  for (const auto& predicate : options.failure_predicates()) {
+    failure_predicates_[predicate.first] = predicate.second;
+  }
+  for (const auto& predicate : options.termination_predicates()) {
+    termination_predicates_[predicate.first] = predicate.second;
+  }
+  if (options.has_jitter_uniform()) {
+    jitter_uniform_ = std::chrono::nanoseconds(
+        Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(options.jitter_uniform()));
+  }
+  for (const envoy::config::metrics::v3::StatsSink& stats_sink : options.stats_sinks()) {
+    stats_sinks_.push_back(stats_sink);
+  }
+  stats_flush_interval_ =
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, stats_flush_interval, stats_flush_interval_);
+  if (options.has_stats_flush_interval_duration()) {
+    stats_flush_interval_duration_ = options.stats_flush_interval_duration();
+  }
+  nighthawk_service_ =
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, nighthawk_service, nighthawk_service_);
+  h2_use_multiple_connections_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(
+      options, experimental_h2_use_multiple_connections, h2_use_multiple_connections_);
+  simple_warmup_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, simple_warmup, simple_warmup_);
+  if (options.has_no_duration()) {
+    no_duration_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, no_duration, no_duration_);
+  }
+  std::copy(options.labels().begin(), options.labels().end(), std::back_inserter(labels_));
+  latency_response_header_name_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(
+      options, latency_response_header_name, latency_response_header_name_);
+  if (options.has_scheduled_start()) {
+    const auto elapsed_since_epoch = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::nanoseconds(options.scheduled_start().nanos()) +
+        std::chrono::seconds(options.scheduled_start().seconds()));
+    scheduled_start_ =
+        Envoy::SystemTime(std::chrono::time_point<std::chrono::system_clock>(elapsed_since_epoch));
+  }
+  if (options.has_execution_id()) {
+    execution_id_ = options.execution_id().value();
+  }
+  for (const envoy::config::core::v3::TypedExtensionConfig& typed_config :
+       options.user_defined_plugin_configs()) {
+    user_defined_output_plugin_configs_.push_back(typed_config);
+  }
+  validate();
+}
+
+void OptionsImpl::setNonTrivialDefaults() {
+  concurrency_ = "1";
+  // By default, we don't tolerate error status codes and connection failures, and will report
+  // upon observing those.
+  failure_predicates_["benchmark.http_4xx"] = 0;
+  failure_predicates_["benchmark.http_5xx"] = 0;
+  failure_predicates_["benchmark.pool_connection_failure"] = 0;
+  failure_predicates_["benchmark.stream_resets"] = 0;
+  // Also, fail fast when a remote request source is specified that we can't connect to or otherwise
+  // fails.
+  failure_predicates_["requestsource.upstream_rq_5xx"] = 0;
+  jitter_uniform_ = std::chrono::nanoseconds(0);
+}
+
+std::string OptionsImpl::readRequestBodyFile(const std::string& path) {
+  std::ifstream file(path, std::ios::in | std::ios::binary);
+  if (!file) {
+    throw MalformedArgvException(fmt::format("Failed to open --request-body-file '{}': {}", path,
+                                             Envoy::errorDetails(errno)));
+  }
+  std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+  if (file.bad()) {
+    throw MalformedArgvException(fmt::format("Failed to read --request-body-file '{}'", path));
+  }
+  if (contents.size() > largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException(fmt::format(
+        "--request-body-file '{}' is larger than the maximum request body size of {} bytes", path,
+        largest_acceptable_uint32_option_value));
+  }
+  return contents;
+}
+
+void OptionsImpl::raisePendingRequestsForStreams() {
+  if (!grpcStreamEnabled()) {
+    return;
+  }
+  // All of a worker's streams are opened before the first connection is up, so they all sit in
+  // the pool's pending queue for a moment. The per-worker pending-request circuit breaker must
+  // hold them, otherwise the pool rejects all but the first with an overflow.
+  int parsed_concurrency = 1;
+  try {
+    parsed_concurrency = concurrency_ == "auto" ? 1 : std::max(1, std::stoi(concurrency_));
+  } catch (const std::exception&) {
+    parsed_concurrency = 1;
+  }
+  const uint32_t streams_per_worker = std::max<uint32_t>(1, streams_ / parsed_concurrency);
+  if (max_pending_requests_ < streams_per_worker) {
+    max_pending_requests_ = streams_per_worker;
+  }
+}
+
+void OptionsImpl::validate() const {
+  if (!request_body_.empty() && request_body_size_ > 0) {
+    throw MalformedArgvException(
+        "--request-body-file and --request-body-size are mutually exclusive");
+  }
+  if (grpcEnabled()) {
+    if (h2_) {
+      // --h2 is the deprecated spelling of --protocol http2; both are fine.
+    } else if (protocol_ != nighthawk::client::Protocol::HTTP2) {
+      throw MalformedArgvException("--grpc-mode requires --protocol http2");
+    }
+    if (request_method_ != envoy::config::core::v3::RequestMethod::POST) {
+      throw MalformedArgvException("--grpc-mode requires --request-method POST");
+    }
+    if (!request_source_.empty()) {
+      throw MalformedArgvException("--grpc-mode is not supported together with --request-source");
+    }
+  }
+  if (grpcStreamEnabled()) {
+    int parsed_concurrency = 0;
+    try {
+      parsed_concurrency = concurrency_ == "auto" ? 0 : std::stoi(concurrency_);
+    } catch (const std::exception&) {
+      parsed_concurrency = 0;
+    }
+    if (parsed_concurrency <= 0) {
+      throw MalformedArgvException(
+          "--grpc-mode bidi-stream requires a numeric --concurrency (streams and rps are divided "
+          "over the workers)");
+    }
+    if (streams_ == 0 || streams_ % parsed_concurrency != 0) {
+      throw MalformedArgvException("--streams must be a positive multiple of --concurrency");
+    }
+    if (requests_per_second_ % parsed_concurrency != 0) {
+      throw MalformedArgvException(
+          "--rps (aggregate message rate in --grpc-mode bidi-stream) must be a multiple of "
+          "--concurrency");
+    }
+    if (max_inflight_per_stream_ == 0) {
+      throw MalformedArgvException("--max-inflight-per-stream must be greater than 0");
+    }
+    if (streams_ / parsed_concurrency > max_active_requests_) {
+      throw MalformedArgvException(
+          fmt::format("--max-active-requests ({}) must be at least the number of streams per "
+                      "worker ({})",
+                      max_active_requests_, streams_ / parsed_concurrency));
+    }
+    if (request_source_plugin_config_.has_value()) {
+      throw MalformedArgvException(
+          "--grpc-mode bidi-stream is not supported together with --request-source-plugin-config");
+    }
+    if (!user_defined_output_plugin_configs_.empty()) {
+      throw MalformedArgvException(
+          "--grpc-mode bidi-stream is not supported together with --user-defined-plugin-config");
+    }
+    if (simple_warmup_) {
+      // The warmup request would be scheduled before the streams are open.
+      throw MalformedArgvException(
+          "--grpc-mode bidi-stream is not supported together with --simple-warmup");
+    }
+  }
+  if (h2_use_multiple_connections_) {
+    throw MalformedArgvException(
+        "The experimental_h2_use_multiple_connections option is deprecated, set "
+        "max_concurrent_streams to one instead.");
+  }
+  // concurrency must be either 'auto' or a positive integer.
+  if (concurrency_ != "auto") {
+    int parsed_concurrency;
+    try {
+      parsed_concurrency = std::stoi(concurrency_);
+    } catch (const std::invalid_argument& ia) {
+      throw MalformedArgvException("Invalid value for --concurrency");
+    } catch (const std::out_of_range& oor) {
+      throw MalformedArgvException("Value out of range: --concurrency");
+    }
+    if (parsed_concurrency <= 0) {
+      throw MalformedArgvException("Value for --concurrency should be greater then 0.");
+    }
+  }
+  if (request_source_ != "") {
+    try {
+      UriImpl uri(request_source_, "grpc");
+      if (uri.scheme() != "grpc") {
+        throw MalformedArgvException("Invalid replay source URI");
+      }
+    } catch (const UriException&) {
+      throw MalformedArgvException("Invalid replay source URI");
+    }
+  }
+  if (uri_.has_value()) {
+    try {
+      UriImpl uri(uri_.value());
+    } catch (const UriException&) {
+      throw MalformedArgvException(fmt::format("Invalid target URI: ''", uri_.value()));
+    }
+    if (!multi_target_endpoints_.empty() || !multi_target_path_.empty() ||
+        multi_target_use_https_) {
+      throw MalformedArgvException("URI and --multi-target-* options cannot both be specified.");
+    }
+  } else {
+    if (multi_target_endpoints_.empty()) {
+      throw MalformedArgvException("A URI or --multi-target-* options must be specified.");
+    }
+    if (multi_target_path_.empty()) {
+      throw MalformedArgvException("--multi-target-path must be specified.");
+    }
+  }
+
+  try {
+    Envoy::MessageUtil::validate(*toCommandLineOptionsInternal(),
+                                 Envoy::ProtobufMessage::getStrictValidationVisitor());
+  } catch (const Envoy::ProtoValidationException& e) {
+    throw MalformedArgvException(e.what());
+  }
+}
+
+CommandLineOptionsPtr OptionsImpl::toCommandLineOptions() const {
+  return toCommandLineOptionsInternal();
+}
+
+CommandLineOptionsPtr OptionsImpl::toCommandLineOptionsInternal() const {
+  CommandLineOptionsPtr command_line_options =
+      std::make_unique<nighthawk::client::CommandLineOptions>();
+
+  command_line_options->mutable_connections()->set_value(connections_);
+  if (!no_duration_) {
+    command_line_options->mutable_duration()->set_seconds(duration_);
+  }
+  command_line_options->mutable_requests_per_second()->set_value(requests_per_second_);
+  command_line_options->mutable_timeout()->set_seconds(timeout_);
+
+  if (h2_) {
+    command_line_options->mutable_h2()->set_value(h2_);
+  } else {
+    command_line_options->mutable_protocol()->set_value(protocol_);
+  }
+
+  if (http3_protocol_options_.has_value()) {
+    *(command_line_options->mutable_http3_protocol_options()) = http3_protocol_options_.value();
+  }
+
+  if (uri_.has_value()) {
+    command_line_options->mutable_uri()->set_value(uri_.value());
+  } else {
+    nighthawk::client::MultiTarget* multi_target = command_line_options->mutable_multi_target();
+    multi_target->mutable_path()->set_value(multi_target_path_);
+    multi_target->mutable_use_https()->set_value(multi_target_use_https_);
+    for (const nighthawk::client::MultiTarget::Endpoint& endpoint : multi_target_endpoints_) {
+      nighthawk::client::MultiTarget::Endpoint* proto_endpoint = multi_target->add_endpoints();
+      proto_endpoint->mutable_address()->set_value(endpoint.address().value());
+      proto_endpoint->mutable_port()->set_value(endpoint.port().value());
+    }
+  }
+  command_line_options->mutable_concurrency()->set_value(concurrency_);
+  command_line_options->mutable_verbosity()->set_value(verbosity_);
+  command_line_options->mutable_output_format()->set_value(output_format_);
+  command_line_options->mutable_prefetch_connections()->set_value(prefetch_connections_);
+  command_line_options->mutable_burst_size()->set_value(burst_size_);
+  command_line_options->mutable_address_family()->set_value(
+      static_cast<nighthawk::client::AddressFamily_AddressFamilyOptions>(address_family_));
+
+  if (requestSource() != "") {
+    auto request_source = command_line_options->mutable_request_source();
+    *request_source->mutable_uri() = request_source_;
+  } else if (request_source_plugin_config_.has_value()) {
+    *(command_line_options->mutable_request_source_plugin_config()) =
+        request_source_plugin_config_.value();
+  } else {
+    auto request_options = command_line_options->mutable_request_options();
+    request_options->set_request_method(request_method_);
+    for (const auto& header : request_headers_) {
+      auto header_value_option = request_options->add_request_headers();
+      // TODO(oschaaf): expose append option in CLI? For now we just set.
+      header_value_option->mutable_append()->set_value(false);
+      auto request_header = header_value_option->mutable_header();
+      // Skip past the first colon so we propagate ':authority: foo` correctly.
+      auto pos = header.empty() ? std::string::npos : header.find(':', 1);
+      if (pos != std::string::npos) {
+        request_header->set_key(std::string(absl::StripAsciiWhitespace(header.substr(0, pos))));
+        // Any visible char, including ':', is allowed in header values.
+        request_header->set_value(std::string(absl::StripAsciiWhitespace(header.substr(pos + 1))));
+      } else {
+        throw MalformedArgvException("A ':' is required in a header.");
+      }
+    }
+    request_options->mutable_request_body_size()->set_value(requestBodySize());
+    if (!request_body_.empty()) {
+      request_options->set_request_body(request_body_);
+    }
+  }
+  if (grpcEnabled()) {
+    command_line_options->mutable_grpc_mode()->set_value(grpc_mode_);
+  }
+  if (grpcStreamEnabled()) {
+    auto* stream_options = command_line_options->mutable_grpc_stream();
+    stream_options->mutable_streams()->set_value(streams_);
+    stream_options->mutable_max_inflight_per_stream()->set_value(max_inflight_per_stream_);
+    *stream_options->mutable_drain_duration() =
+        Envoy::Protobuf::util::TimeUtil::NanosecondsToDuration(stream_drain_duration_.count());
+  }
+
+  if (rate_limiter_plugin_config_.has_value()) {
+    *(command_line_options->mutable_rate_limiter_plugin_config()) =
+        rate_limiter_plugin_config_.value();
+  }
+
+  // Only set the tls context if needed, to avoid a warning being logged about field deprecation.
+  // Ideally this would follow the way transport_socket uses std::optional below.
+  // But as this field is about to get eliminated this minimal effort shortcut may be more suitable.
+  if (tls_context_.ByteSizeLong() > 0) {
+    *(command_line_options->mutable_tls_context()) = tls_context_;
+  }
+  if (upstream_bind_config_.has_value()) {
+    *(command_line_options->mutable_upstream_bind_config()) = upstream_bind_config_.value();
+  }
+  if (transport_socket_.has_value()) {
+    *(command_line_options->mutable_transport_socket()) = transport_socket_.value();
+  }
+  command_line_options->mutable_max_pending_requests()->set_value(max_pending_requests_);
+  command_line_options->mutable_max_active_requests()->set_value(max_active_requests_);
+  command_line_options->mutable_max_requests_per_connection()->set_value(
+      max_requests_per_connection_);
+  command_line_options->mutable_max_concurrent_streams()->set_value(max_concurrent_streams_);
+  command_line_options->mutable_sequencer_idle_strategy()->set_value(sequencer_idle_strategy_);
+  command_line_options->mutable_trace()->set_value(trace_);
+  command_line_options->mutable_experimental_h1_connection_reuse_strategy()->set_value(
+      experimental_h1_connection_reuse_strategy_);
+  auto termination_predicates_option = command_line_options->mutable_termination_predicates();
+  for (const auto& predicate : termination_predicates_) {
+    termination_predicates_option->insert({predicate.first, predicate.second});
+  }
+  auto failure_predicates_option = command_line_options->mutable_failure_predicates();
+  for (const auto& predicate : failure_predicates_) {
+    failure_predicates_option->insert({predicate.first, predicate.second});
+  }
+  command_line_options->mutable_no_default_failure_predicates()->set_value(
+      no_default_failure_predicates_);
+  command_line_options->mutable_open_loop()->set_value(open_loop_);
+  if (jitter_uniform_.count() > 0) {
+    *command_line_options->mutable_jitter_uniform() =
+        Envoy::Protobuf::util::TimeUtil::NanosecondsToDuration(jitter_uniform_.count());
+  }
+  command_line_options->mutable_nighthawk_service()->set_value(nighthawk_service_);
+  for (const auto& label : labels_) {
+    *command_line_options->add_labels() = label;
+  }
+  command_line_options->mutable_simple_warmup()->set_value(simple_warmup_);
+  if (no_duration_) {
+    command_line_options->mutable_no_duration()->set_value(no_duration_);
+  }
+  for (const envoy::config::metrics::v3::StatsSink& stats_sink : stats_sinks_) {
+    *command_line_options->add_stats_sinks() = stats_sink;
+  }
+  if (stats_flush_interval_duration_.seconds() > 0 || stats_flush_interval_duration_.nanos() > 0) {
+    *command_line_options->mutable_stats_flush_interval_duration() = stats_flush_interval_duration_;
+  } else {
+    command_line_options->mutable_stats_flush_interval()->set_value(stats_flush_interval_);
+  }
+  command_line_options->mutable_latency_response_header_name()->set_value(
+      latency_response_header_name_);
+  if (scheduled_start_.has_value()) {
+    *(command_line_options->mutable_scheduled_start()) =
+        Envoy::ProtobufUtil::TimeUtil::NanosecondsToTimestamp(
+            scheduled_start_.value().time_since_epoch().count());
+  }
+  if (execution_id_.has_value()) {
+    command_line_options->mutable_execution_id()->set_value(execution_id_.value());
+  }
+  for (const envoy::config::core::v3::TypedExtensionConfig& config :
+       user_defined_output_plugin_configs_) {
+    *command_line_options->add_user_defined_plugin_configs() = config;
+  }
+  return command_line_options;
+}
+
+} // namespace Client
+} // namespace Nighthawk

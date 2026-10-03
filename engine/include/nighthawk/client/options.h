@@ -1,0 +1,144 @@
+#pragma once
+
+#include <chrono>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+
+#include "envoy/common/pure.h"
+#include "envoy/common/time.h"
+#include "envoy/config/cluster/v3/cluster.pb.h"
+#include "envoy/config/core/v3/address.pb.h"
+#include "envoy/config/core/v3/base.pb.h"
+#include "envoy/config/core/v3/protocol.pb.h"
+#include "envoy/config/metrics/v3/stats.pb.h"
+#include "envoy/http/protocol.h"
+
+#include "nighthawk/common/termination_predicate.h"
+
+#include "source/common/protobuf/protobuf.h"
+
+#include "engine/api/client/options.pb.h"
+
+namespace Nighthawk {
+namespace Client {
+
+using CommandLineOptionsPtr = std::unique_ptr<nighthawk::client::CommandLineOptions>;
+using TerminationPredicateMap = std::map<std::string, uint64_t>;
+/**
+ * Abstract options interface.
+ */
+class Options {
+public:
+  virtual ~Options() = default;
+
+  virtual uint32_t requestsPerSecond() const PURE;
+  virtual uint32_t connections() const PURE;
+  virtual std::chrono::seconds duration() const PURE;
+  virtual std::chrono::seconds timeout() const PURE;
+  // URI is absent when the user specified --multi-target-* instead.
+  virtual std::optional<std::string> uri() const PURE;
+
+  // The protocol to encapsulate requests in.
+  // Defaults to HTTP/1.1 if the user doesn't make an explicit selection.
+  virtual Envoy::Http::Protocol protocol() const PURE;
+
+  // The following sets specific protocol options for http3.
+  virtual const std::optional<envoy::config::core::v3::Http3ProtocolOptions>&
+  http3ProtocolOptions() const PURE;
+
+  // HTTP CONNECT/CONNECT-UDP Tunneling related options.
+  virtual Envoy::Http::Protocol tunnelProtocol() const PURE;
+  virtual std::string tunnelUri() const PURE;
+  virtual uint32_t encapPort() const PURE;
+  virtual const std::optional<envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext>
+  tunnelTlsContext() const PURE;
+
+  virtual std::string concurrency() const PURE;
+  virtual nighthawk::client::Verbosity::VerbosityOptions verbosity() const PURE;
+  virtual nighthawk::client::OutputFormat::OutputFormatOptions outputFormat() const PURE;
+  virtual bool prefetchConnections() const PURE;
+  virtual uint32_t burstSize() const PURE;
+  virtual nighthawk::client::AddressFamily::AddressFamilyOptions addressFamily() const PURE;
+  virtual envoy::config::core::v3::RequestMethod requestMethod() const PURE;
+  virtual std::vector<std::string> requestHeaders() const PURE;
+  virtual uint32_t requestBodySize() const PURE;
+  /**
+   * @return const std::string& raw request body bytes (empty when not configured).
+   */
+  virtual const std::string& requestBody() const PURE;
+  /**
+   * @return nighthawk::client::GrpcMode::GrpcModeOptions the gRPC load generation mode; NONE for
+   * plain HTTP.
+   */
+  virtual nighthawk::client::GrpcMode::GrpcModeOptions grpcMode() const PURE;
+  /**
+   * @return uint32_t total number of gRPC bidi streams to open (BIDI_STREAM grpc mode).
+   */
+  virtual uint32_t streams() const PURE;
+  /**
+   * @return uint32_t maximum unanswered messages per stream before sends are deferred.
+   */
+  virtual uint32_t maxInflightPerStream() const PURE;
+  /**
+   * @return std::chrono::nanoseconds time to wait for echoes after half-closing the streams.
+   */
+  virtual std::chrono::nanoseconds streamDrainDuration() const PURE;
+  virtual const envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext&
+  tlsContext() const PURE;
+  virtual const std::optional<envoy::config::core::v3::BindConfig>& upstreamBindConfig() const PURE;
+  virtual const std::optional<envoy::config::core::v3::TransportSocket>&
+  transportSocket() const PURE;
+  virtual uint32_t maxPendingRequests() const PURE;
+  virtual uint32_t maxActiveRequests() const PURE;
+  virtual uint32_t maxRequestsPerConnection() const PURE;
+
+  // The maximum concurrent streams allowed on one HTTP/2 or HTTP/3 connection.
+  // Does not apply to HTTP/1.
+  virtual uint32_t maxConcurrentStreams() const PURE;
+
+  virtual nighthawk::client::SequencerIdleStrategy::SequencerIdleStrategyOptions
+  sequencerIdleStrategy() const PURE;
+  virtual std::string requestSource() const PURE;
+  virtual const std::optional<envoy::config::core::v3::TypedExtensionConfig>&
+  requestSourcePluginConfig() const PURE;
+  virtual const std::optional<envoy::config::core::v3::TypedExtensionConfig>&
+  rateLimiterPluginConfig() const PURE;
+  virtual std::string trace() const PURE;
+  virtual nighthawk::client::H1ConnectionReuseStrategy::H1ConnectionReuseStrategyOptions
+  h1ConnectionReuseStrategy() const PURE;
+  virtual TerminationPredicateMap terminationPredicates() const PURE;
+  virtual TerminationPredicateMap failurePredicates() const PURE;
+  virtual bool noDefaultFailurePredicates() const PURE;
+  virtual bool openLoop() const PURE;
+  virtual std::chrono::nanoseconds jitterUniform() const PURE;
+  virtual std::string nighthawkService() const PURE;
+  virtual std::vector<nighthawk::client::MultiTarget::Endpoint> multiTargetEndpoints() const PURE;
+  virtual std::string multiTargetPath() const PURE;
+  virtual bool multiTargetUseHttps() const PURE;
+  virtual std::vector<std::string> labels() const PURE;
+  virtual bool simpleWarmup() const PURE;
+  virtual bool noDuration() const PURE;
+  virtual std::vector<envoy::config::metrics::v3::StatsSink> statsSinks() const PURE;
+  virtual uint32_t statsFlushInterval() const PURE;
+  virtual Envoy::Protobuf::Duration statsFlushIntervalDuration() const PURE;
+  virtual std::string responseHeaderWithLatencyInput() const PURE;
+
+  virtual std::optional<Envoy::SystemTime> scheduled_start() const PURE;
+  virtual std::optional<std::string> executionId() const PURE;
+  virtual const std::vector<envoy::config::core::v3::TypedExtensionConfig>&
+  userDefinedOutputPluginConfigs() const PURE;
+
+  /**
+   * Converts an Options instance to an equivalent CommandLineOptions instance in terms of option
+   * values.
+   * @return CommandLineOptionsPtr
+   */
+  virtual CommandLineOptionsPtr toCommandLineOptions() const PURE;
+};
+
+using OptionsPtr = std::unique_ptr<Options>;
+
+} // namespace Client
+} // namespace Nighthawk
