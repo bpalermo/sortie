@@ -177,9 +177,11 @@ scenarios:
 | `bidi-stream` | `streams` long-lived bidirectional streams per backend; the message is sent round-robin at the executor's rate and each one is timed against its echo (`benchmark_stream.message_latency`). The server must echo one message per message, in order. A stream holding `max_inflight_per_stream` unanswered messages drops the next scheduled send into `benchmark.stream_deferred` -- the saturation signal. |
 
 In `bidi-stream` the engine spreads a backend's share of the rate over its own
-workers, so the plan's rate is divided between backends only, and each
-backend's share -- and `streams` -- must be a multiple of the scenario's
-`concurrency`, which has to be a number. `sortie compile` shows the result.
+workers, so sortie sends each backend its aggregate rather than a per-worker
+rate. The split is still made in per-worker units -- the plan's rate must be
+a multiple of the scenario's `concurrency`, which has to be a number, as must
+`streams` -- so 300 rps over two backends with four workers is 152 and 148.
+`sortie compile` shows the result.
 
 ## Anything this schema does not model
 

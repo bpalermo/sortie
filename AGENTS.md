@@ -115,10 +115,13 @@ template survives compilation.
 forces `protocol` http2 and `method` POST (the loader rejects anything else).
 The one subtlety is the rate: in `bidi-stream` the engine's
 `requests_per_second` is the backend's *aggregate* message rate, which it
-divides over its workers itself, so `compile.Divide` divides the plan's rate
-between backends only in that mode and requires each share to be a multiple of
-the concurrency. Everywhere else the engine's rate is per worker. Tests in
-`internal/compile` pin both behaviours; keep them when touching `Divide`.
+divides over its workers itself (`perWorkerRequestsPerSecond` in
+`engine/source/common/rate_limiter_impl.cc`, used by the linear and the
+ramping limiter alike). `compile.Divide` and `uniformShare` therefore split
+the plan's rate in per-worker units as always and, in that mode only,
+multiply each backend's share back up by the workers (`backendRate`).
+Everywhere else the engine's rate is per worker. Tests in `internal/compile`
+pin both behaviours; keep them when touching `Divide`.
 
 ## Protos
 

@@ -523,7 +523,9 @@ func TestDivideBidiStreamKeepsTheRatePerBackend(t *testing.T) {
 	}
 }
 
-func TestDivideBidiStreamRejectsAShareNotDivisibleByWorkers(t *testing.T) {
+// Shares are dealt in per-worker units, so an uneven split stays possible in
+// bidi-stream and every backend's aggregate is a multiple of its workers.
+func TestDivideBidiStreamSplitsInWorkerUnits(t *testing.T) {
 	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 300, Duration: dur(time.Second)})
 	s.Concurrency = "4"
 	s.Grpc = &plan.Grpc{Mode: "bidi-stream"}
@@ -531,8 +533,18 @@ func TestDivideBidiStreamRejectsAShareNotDivisibleByWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	opts, err := Divide(execs[0], 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []uint32{opts[0].GetRequestsPerSecond().GetValue(), opts[1].GetRequestsPerSecond().GetValue()}
+	if got[0] != 152 || got[1] != 148 {
+		t.Errorf("rps = %v, want [152 148] (300 rps in units of 4 workers: 38 and 37 units)", got)
+	}
+	s.Executor.Rate = 302
+	execs, _ = Expand(s)
 	if _, err := Divide(execs[0], 2); err == nil {
-		t.Fatal("300 over 2 backends is 150 per backend, not a multiple of 4 workers; want an error")
+		t.Fatal("302 is not a multiple of 4 workers; want an error")
 	}
 }
 
@@ -557,6 +569,25 @@ func TestForPoolDistributorBidiStreamKeepsTheRatePerTarget(t *testing.T) {
 	s.Executor.Rate = 302
 	execs, _ = Expand(s)
 	if _, _, err := ForPool(execs[0], pool); err == nil {
-		t.Fatal("302 over 2 targets is 151 per target, not a multiple of 2 workers; want an error")
+		t.Fatal("302 is not a multiple of 2 targets x 2 workers; want an error")
+	}
+}
+
+// A template's grpc_stream does not outlive the plan's grpc block: what the
+// plan leaves unset is the engine's default, as the loader assumed.
+func TestGrpcBlockDropsATemplateGrpcStream(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second)})
+	s.Concurrency = "4"
+	s.Grpc = &plan.Grpc{Mode: "bidi-stream"}
+	s.NighthawkTemplate = &client.CommandLineOptions{
+		GrpcStream: &client.CommandLineOptions_GrpcStreamOptions{Streams: wrapperspb.UInt32(10)},
+	}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execs[0].Options.GetGrpcStream() != nil {
+		t.Errorf("grpc_stream = %v, want none (the template's 10 streams would not divide over 4 workers)",
+			execs[0].Options.GetGrpcStream())
 	}
 }

@@ -319,6 +319,7 @@ TEST_P(SequencerFactoryTest, ValidRateLimiterPluginCreatesWorkingSequencer) {
   // LinearRampingRateLimiter specific. Adjust if test fails because of any
   // changes made to the LinearRampingRateLimiterImplFactory.
   EXPECT_CALL(options_, requestsPerSecond()).WillOnce(Return(100));
+  EXPECT_CALL(options_, grpcMode()).WillOnce(Return(nighthawk::client::GrpcMode::NONE));
   EXPECT_CALL(options_, noDuration()).WillOnce(Return(false));
   EXPECT_CALL(options_, duration()).WillOnce(Return(std::chrono::seconds(10)));
 

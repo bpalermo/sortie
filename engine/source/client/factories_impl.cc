@@ -110,11 +110,7 @@ SequencerPtr SequencerFactoryImpl::create(Envoy::TimeSource& time_source,
 
     // If no rate limiter plugin is set, use the default linear rate limiter.
   } else {
-    // In --grpc-mode bidi-stream --rps is the aggregate message rate, divided over the workers.
-    const uint32_t rps = options_.grpcMode() == nighthawk::client::GrpcMode::BIDI_STREAM
-                             ? options_.requestsPerSecond() / std::stoi(options_.concurrency())
-                             : options_.requestsPerSecond();
-    Frequency frequency(rps);
+    Frequency frequency(perWorkerRequestsPerSecond(options_));
     rate_limiter = std::make_unique<ScheduledStartingRateLimiter>(
         std::make_unique<LinearRateLimiter>(time_source, frequency), scheduled_starting_time);
     const uint64_t burst_size = options_.burstSize();

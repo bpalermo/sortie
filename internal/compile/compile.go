@@ -134,24 +134,17 @@ func uniformShare(e Execution, targets int) (*client.CommandLineOptions, error) 
 		return nil, fmt.Errorf("execution %q: %w", e.Label, err)
 	}
 
-	// Same rule as Divide: in bidi-stream the engine takes a backend's aggregate
-	// rate, so the division is by targets only and the share must be a multiple
-	// of the workers; elsewhere the rate is per worker.
 	divisor := uint32(targets) * uint32(workers)
-	bidi := e.Scenario.GetGrpc().GetMode() == "bidi-stream"
-	if bidi {
-		divisor = uint32(targets)
-	}
-	if e.Rate%divisor != 0 || (bidi && (e.Rate/divisor)%uint32(workers) != 0) {
+	if e.Rate%divisor != 0 {
 		return nil, fmt.Errorf(
 			"execution %q: rate %d is not divisible by %d targets x %d workers; "+
 				"a distributor sends every target the same options, so the rate must be "+
 				"a multiple of %d",
-			e.Label, e.Rate, targets, workers, uint32(targets)*uint32(workers))
+			e.Label, e.Rate, targets, workers, divisor)
 	}
 
 	clone := cloneOptions(e.Options)
-	clone.RequestsPerSecond = wrapperspb.UInt32(e.Rate / divisor)
+	clone.RequestsPerSecond = wrapperspb.UInt32(backendRate(e, e.Rate/divisor, workers))
 	return clone, nil
 }
 
@@ -175,22 +168,13 @@ func Divide(e Execution, backends int) ([]*client.CommandLineOptions, error) {
 		return nil, fmt.Errorf("execution %q: %w", e.Label, err)
 	}
 
-	// In bidi-stream mode the engine's rate is the backend's aggregate -- it
-	// spreads messages over its own workers -- so the plan's rate is divided
-	// between backends only, and each backend's share has to be a multiple of
-	// its workers, which the engine requires. Everywhere else the engine's rate
-	// is per worker, so the division is by backends x workers.
-	bidi := e.Scenario.GetGrpc().GetMode() == "bidi-stream"
-	perBackendTotal := e.Rate
-	if !bidi {
-		if e.Rate%uint32(workers) != 0 {
-			return nil, fmt.Errorf(
-				"execution %q: rate %d is not divisible by %d workers per backend; "+
-					"use a rate that is a multiple of %d, or set a different concurrency",
-				e.Label, e.Rate, workers, workers)
-		}
-		perBackendTotal = e.Rate / uint32(workers)
+	if e.Rate%uint32(workers) != 0 {
+		return nil, fmt.Errorf(
+			"execution %q: rate %d is not divisible by %d workers per backend; "+
+				"use a rate that is a multiple of %d, or set a different concurrency",
+			e.Label, e.Rate, workers, workers)
 	}
+	perBackendTotal := e.Rate / uint32(workers)
 
 	if uint32(backends) > perBackendTotal {
 		return nil, fmt.Errorf(
@@ -200,12 +184,6 @@ func Divide(e Execution, backends int) ([]*client.CommandLineOptions, error) {
 
 	base := perBackendTotal / uint32(backends)
 	remainder := perBackendTotal % uint32(backends)
-	if bidi && (base%uint32(workers) != 0 || remainder != 0) {
-		return nil, fmt.Errorf(
-			"execution %q: grpc bidi-stream needs each backend's share of rate %d over %d backends "+
-				"to be a multiple of its %d workers; use a rate that is a multiple of %d",
-			e.Label, e.Rate, backends, workers, backends*workers)
-	}
 
 	out := make([]*client.CommandLineOptions, 0, backends)
 	for i := range backends {
@@ -214,13 +192,28 @@ func Divide(e Execution, backends int) ([]*client.CommandLineOptions, error) {
 			share++
 		}
 		clone := cloneOptions(e.Options)
-		clone.RequestsPerSecond = wrapperspb.UInt32(share)
+		clone.RequestsPerSecond = wrapperspb.UInt32(backendRate(e, share, workers))
 		if backends > 1 {
 			clone.ExecutionId = wrapperspb.String(fmt.Sprintf("%s#%d", e.Label, i))
 		}
 		out = append(out, clone)
 	}
 	return out, nil
+}
+
+// backendRate turns a backend's per-worker share into the --rps it is sent.
+// That is the share itself, except in gRPC bidi-stream mode, where the engine
+// takes a backend's aggregate and divides it over the workers itself: sending
+// the per-worker share there would generate 1/workers of the load. Dividing in
+// per-worker units first and multiplying back keeps uneven splits possible --
+// 300 rps over two backends with four workers is 152 + 148 -- and guarantees
+// each backend's aggregate is a multiple of its workers, which the engine
+// requires.
+func backendRate(e Execution, perWorkerShare uint32, workers int) uint32 {
+	if e.Scenario.GetGrpc().GetMode() == "bidi-stream" {
+		return perWorkerShare * uint32(workers)
+	}
+	return perWorkerShare
 }
 
 // workersPerBackend reports how many worker threads each backend will run.
@@ -291,6 +284,11 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 			mode = client.GrpcMode_BIDI_STREAM
 		}
 		o.GrpcMode = &client.GrpcMode{Value: mode}
+		// The plan's grpc block is the whole of the stream configuration: a
+		// template's grpc_stream is dropped, so a field the plan leaves unset
+		// really is the engine's default -- the one the loader validated the
+		// concurrency against.
+		o.GrpcStream = nil
 		if g.Streams != nil || g.MaxInflightPerStream != nil || g.GetDrainDuration() != nil {
 			so := &client.CommandLineOptions_GrpcStreamOptions{}
 			if g.Streams != nil {

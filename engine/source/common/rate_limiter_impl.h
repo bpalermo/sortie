@@ -86,6 +86,17 @@ private:
   const int64_t total_ramp_requests_;
 };
 
+/**
+ * The rate one worker should generate for the given options. --rps is per
+ * worker, except in --grpc-mode bidi-stream where it is the aggregate message
+ * rate, divided over the workers. Every rate limiter a worker is given must
+ * take its frequency from here, or the modes disagree on what --rps means.
+ *
+ * @param options the options of the run; concurrency is numeric in bidi-stream mode.
+ * @return uint32_t the requests per second for one worker.
+ */
+uint32_t perWorkerRequestsPerSecond(const Nighthawk::Client::Options& options);
+
 // Factory class for creating LinearRampingRateLimiterImpl objects.
 class LinearRampingRateLimiterImplFactory
     : public virtual Nighthawk::RateLimiterPluginConfigFactory {
