@@ -36,16 +36,15 @@ spec:
             - name: grpc
               containerPort: 8443
               protocol: TCP
-          # nighthawk_service does not serve the gRPC health protocol, and the
-          # image has no shell or curl, so the probe is the kubelet's own TCP
-          # connect: it proves the listener is up, which is all there is to
-          # prove -- the service accepts one execution at a time regardless.
+          # nighthawk_service serves grpc.health.v1.Health, which is what the
+          # kubelet's gRPC probe queries; the image has no shell or curl, so a
+          # probe has to be one the kubelet performs itself.
           readinessProbe:
-            tcpSocket:
-              port: grpc
+            grpc:
+              port: 8443
           livenessProbe:
-            tcpSocket:
-              port: grpc
+            grpc:
+              port: 8443
             initialDelaySeconds: 10
           resources:
             {{- toYaml .Values.engine.resources | nindent 12 }}
