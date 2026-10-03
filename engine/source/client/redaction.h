@@ -22,6 +22,13 @@ nighthawk::client::ExecutionRequest
 redactedForLog(const nighthawk::client::ExecutionRequest& request);
 
 /**
+ * @return a copy of the response fit for a log line: the options echoed in its output have their
+ * client private keys redacted.
+ */
+nighthawk::client::ExecutionResponse
+redactedForLog(const nighthawk::client::ExecutionResponse& response);
+
+/**
  * @return a copy of the bootstrap fit for a log line: the clusters' transport sockets (TLS, or
  * QUIC wrapping TLS), which carry the options' tls_context, have their client private keys
  * redacted.

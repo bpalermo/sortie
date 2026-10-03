@@ -169,7 +169,7 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
 
 void ServiceImpl::writeResponse(Stream* stream,
                                 const nighthawk::client::ExecutionResponse& response) {
-  ENVOY_LOG(debug, "Write response: {}", absl::StrCat(response));
+  ENVOY_LOG(debug, "Write response: {}", absl::StrCat(redactedForLog(response)));
   if (!stream->Write(response)) {
     ENVOY_LOG(warn, "Failed to write response to the stream");
   }

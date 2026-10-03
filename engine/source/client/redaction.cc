@@ -35,6 +35,16 @@ redactedForLog(const nighthawk::client::ExecutionRequest& request) {
   return copy;
 }
 
+nighthawk::client::ExecutionResponse
+redactedForLog(const nighthawk::client::ExecutionResponse& response) {
+  nighthawk::client::ExecutionResponse copy = response;
+  if (copy.has_output() && copy.output().has_options() &&
+      copy.output().options().has_tls_context()) {
+    redactPrivateKeys(*copy.mutable_output()->mutable_options()->mutable_tls_context());
+  }
+  return copy;
+}
+
 envoy::config::bootstrap::v3::Bootstrap
 redactedForLog(const envoy::config::bootstrap::v3::Bootstrap& bootstrap) {
   envoy::config::bootstrap::v3::Bootstrap copy = bootstrap;

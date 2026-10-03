@@ -62,6 +62,16 @@ TEST(RedactionTest, ExecutionRequestLogCopyCarriesNoKey) {
                           .inline_bytes());
 }
 
+// The output echoes the options, key included; the response's log copy does not.
+TEST(RedactionTest, ExecutionResponseLogCopyCarriesNoKey) {
+  nighthawk::client::ExecutionResponse response;
+  *response.mutable_output()->mutable_options()->mutable_tls_context() = contextWithPair();
+  const std::string text = absl::StrCat(redactedForLog(response));
+  EXPECT_EQ(std::string::npos, text.find("SECRET")) << text;
+  EXPECT_NE(std::string::npos, text.find("redacted: 6 bytes")) << text;
+  EXPECT_NE(std::string::npos, absl::StrCat(response).find("SECRET"));
+}
+
 // The bootstrap packs the context into each cluster's transport socket, as TLS or as QUIC
 // wrapping TLS; both are redacted in the log copy.
 TEST(RedactionTest, BootstrapLogCopyCarriesNoKeyForTlsOrQuicTransports) {
