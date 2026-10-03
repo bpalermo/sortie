@@ -55,8 +55,8 @@ type (
 	WebSocket = planv1.WebSocket
 
 	Tls      = planv1.Tls
-	Executor  = planv1.Executor
-	Stage     = planv1.Stage
+	Executor = planv1.Executor
+	Stage    = planv1.Stage
 )
 
 // Load reads and validates a plan from path.

@@ -347,7 +347,6 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 			}
 		}
 	}
-	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil || s.GetWebsocket() != nil {
 	if t := s.GetTls(); t != nil {
 		tlsCtx, err := tlsContext(t)
 		if err != nil {
@@ -355,6 +354,7 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 		}
 		o.TlsContext = tlsCtx
 	}
+	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil || s.GetWebsocket() != nil {
 		reqOpts, err := requestOptions(s, o.GetRequestOptions())
 		if err != nil {
 			return nil, err
