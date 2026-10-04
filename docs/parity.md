@@ -14,6 +14,8 @@ the order the gaps get closed in.
 | gRPC unary | `grpc: {mode: unary}` + a serialized `body_file` | engine fork |
 | gRPC bidirectional streaming | `grpc: {mode: bidi-stream, streams, max_inflight_per_stream, drain_duration}`, `benchmark_stream.message_latency` | engine fork |
 | WebSocket (Envoy's upgrade path) | `websocket: {streams, max_inflight_per_stream, drain_duration, binary}`; the bidi-stream client's twin, same `benchmark.stream_*` counters and `benchmark_stream.message_latency` | #32 |
+| Raw TCP (`tcp_proxy`, TLS-terminating listeners) | `tcp://` / `tcps://` targets, `tcp: {connections, max_inflight_per_connection, expect_echo, drain_duration}`, `benchmark.tcp_*`, `benchmark_tcp.message_latency` | #33 |
+| UDP (`udp_proxy`) | `udp://` targets, `udp: {max_inflight, timeout}`, loss as `benchmark.udp_lost`, `benchmark_udp.message_latency` | #34 |
 | Request routing on headers, bodies | `headers`, `body`, `body_file`, `method` | sortie |
 | Rate shaping: constant, ramp, staircase; open and closed loop | `executor` | sortie |
 | Stats sinks (statsd, OTLP) from the client's own counters | `nighthawk.envoy_stats_sink_adapter` via `nighthawk_template` | engine fork |
@@ -55,7 +57,7 @@ its echo:
 Size: comparable to the gRPC bidi-stream work -- the client, the test-server
 filter, options and plan schema, validation, e2e.
 
-### 2. TCP -- in review (#33)
+### 2. TCP -- done (#33)
 
 Built as designed below; `tcp://` / `tcps://` targets, `Scenario.tcp`,
 `benchmark.tcp_*` counters, `benchmark_tcp.message_latency`.
@@ -92,7 +94,7 @@ new mode of the existing one:
 Size: smaller than WebSocket -- no framing, no handshake -- but it touches the
 engine's factories, since today they assume HTTP.
 
-### 3. UDP -- in review (#34)
+### 3. UDP -- done (#34)
 
 Built as designed below; `udp://` targets, `Scenario.udp`, `benchmark.udp_*`
 counters with loss as `benchmark.udp_lost`, `benchmark_udp.message_latency`.
