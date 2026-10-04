@@ -1349,10 +1349,12 @@ void OptionsImpl::validate() const {
         throw MalformedArgvException(
             "--tcp-connections and --tcp-max-inflight-per-connection must be greater than 0");
       }
-      if (request_source_plugin_config_.has_value() ||
+      if (!request_source_.empty() || request_source_plugin_config_.has_value() ||
           !user_defined_output_plugin_configs_.empty() || simple_warmup_) {
+        // The raw client takes the body once, in prepare(), and repeats it: a request source's
+        // replay would silently collapse into one message.
         throw MalformedArgvException("a tcp:// URI (raw TCP load) is not supported together "
-                                     "with --request-source-plugin-config, "
+                                     "with --request-source, --request-source-plugin-config, "
                                      "--user-defined-plugin-config or --simple-warmup");
       }
     }
