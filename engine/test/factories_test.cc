@@ -89,7 +89,7 @@ TEST_F(FactoriesTest, RawMessageGeneratorMaterializesASizedBody) {
   EXPECT_EQ("aaaa", request->body());
 
   StaticRequestSourceImpl with_body(std::make_unique<Envoy::Http::TestRequestHeaderMapImpl>(),
-                                    /*body=*/"ping");
+                                    /*max_yields=*/UINT64_MAX, /*body=*/"ping");
   request = BenchmarkClientFactoryImpl::rawMessageGenerator(with_body, 4)();
   ASSERT_NE(nullptr, request);
   EXPECT_EQ("ping", request->body());
