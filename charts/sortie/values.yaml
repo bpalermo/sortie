@@ -48,7 +48,7 @@ engine:
   image:
     # The engine image published by the same workflow run as this chart, so
     # the two always come from one commit. Stamped at package time.
-    ref: "ghcr.io/bpalermo/sortie/engine:dev-{STABLE_GIT_COMMIT}"
+    ref: "quay.io/sortie/engine:dev-{STABLE_GIT_COMMIT}"
     pullPolicy: IfNotPresent
   replicas: 1
   # The generated load runs on this pod's CPUs: give it the cores a plan's

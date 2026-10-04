@@ -30,6 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # The registry is one setting, bazel/registry.bzl; a literal anywhere
+      # else would survive a move and keep pointing at the old registry.
+      - name: The registry is spelled out in one place
+        run: scripts/check-registry-config.sh
+
       # No version is pinned here: bazelisk reads .bazelversion, so the
       # checkout is the single source of the Bazel version and CI cannot drift
       # from a local build.

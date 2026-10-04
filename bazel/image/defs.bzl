@@ -49,7 +49,7 @@ def go_image(
     Args:
       name: prefix for the generated targets.
       binary: the Go binary label to place in the image.
-      registry: registry host, e.g. "ghcr.io".
+      registry: registry host: IMAGE_REGISTRY of //bazel:registry.bzl.
       repository: repository path within the registry.
       labels: OCI labels. "org.opencontainers.image.revision" is added from the
         stamped commit unless already given.

@@ -1,0 +1,11 @@
+filegroup(
+    name = "starlark_srcs",
+    srcs = glob(
+        [
+            "*.bzl",
+            "*.bazel",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//:__pkg__"],
+)

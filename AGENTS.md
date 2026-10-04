@@ -219,8 +219,20 @@ comes back exact.
 ## Publishing
 
 `//:sortie` builds the binary and `//:image_push` its multi-arch image, `//charts/sortie` packages the Helm chart,
-and `.github/workflows/publish.yml` pushes and signs both on a push to main.
-Four things there are deliberate and easy to undo by accident:
+and `.github/workflows/publish.yml` pushes and signs both on a push to main,
+to Quay (`quay.io/sortie/...`; ghcr.io until 2026-10-04).
+These are deliberate and easy to undo by accident:
+
+- **The registry is one setting, `bazel/registry.bzl`.** Bazel loads it,
+  workflows and scripts read it through `scripts/registry.sh`, and
+  `scripts/check-registry-config.sh` (a CI step) fails on a registry literal
+  anywhere outside its allow-list. The chart's default engine reference in
+  `values.yaml` is data, so that check asserts it instead of deriving it.
+- **Quay is flat and its repositories are pre-created.** Everything is
+  `quay.io/sortie/<name>`; the chart is `chart-sortie` so it does not land on
+  the driver image's repository. The robot account behind `QUAY_USERNAME` /
+  `QUAY_TOKEN` (secrets of the `release` environment) can write and cannot
+  create: a new repository has to exist before the first push, or it 401s.
 
 - **`stamp = "force"` on the image rules**, not the default `"auto"`. `"auto"`
   defers to `--stamp`, which only a release build passes, so every other build
@@ -229,10 +241,9 @@ Four things there are deliberate and easy to undo by accident:
   `helm_package` always defers to the flag, so without it a chart carries
   `0.1.0-GIT-COMMIT` as its version.
 - **The signing step reads the digest from the build**, not from the registry.
-  Resolving it by listing tags would have to follow ghcr's pagination — it
-  returns 100 tags per page, ascending, so a freshly pushed tag sorts last and
-  is never on the first page — and re-resolving a mutable tag reintroduces a
-  time-of-check window. Bazel already wrote the digest it pushed.
+  Resolving it by listing tags would have to follow the registry's pagination
+  — a freshly pushed tag is not on the first page — and re-resolving a mutable
+  tag reintroduces a time-of-check window. Bazel already wrote the digest it pushed.
 - **Every workspace-status key is `STABLE_`.** Unprefixed keys land in
   volatile-status.txt, which Bazel treats as constant metadata: an action that
   embeds one is not invalidated when it changes, so a cached action can keep
@@ -247,50 +258,40 @@ Four things there are deliberate and easy to undo by accident:
   nothing. That is the better failure — a skipped commit is visible as a
   cancelled run and the commit that superseded it publishes seconds later, while
   a stale `dev` is silent.
-- **Do not add `cosign-release` to the cosign-installer step.** Pinning the
-  action pins the binary: at the pinned SHA the input defaults to the action's
-  own bootstrap version, so cosign is verified against a SHA-256 hardcoded in
-  the action and the install stops there. Any other value leaves that path for
-  one that fetches a release key over the network — sound in v4, which pins the
-  key's digest and fails closed, but more moving parts for nothing, and a value
-  that matches only today stops matching when the action is bumped.
-  (Until after the move to v4 this entry described v3.7.0's weaker variant,
-  `verify-blob --insecure-ignore-tlog` against an unpinned key, because the bump
-  changed the version numbers around it and not the mechanism. Read the action.)
+- **cosign is the Bazel-pinned one, `//bazel/cosign`.** It is the release
+  binary of the `rules_img_signer_cosign` bazel_dep, sha256-pinned in that
+  module, so the workflow and a workstation sign and verify with the same
+  build; `//bazel/cosign:version_test` fails until its expected version moves
+  with the dep. A cosign major can change the signature format on the
+  registry, so a bump of that dep is taken by hand, after establishing what the
+  new version writes.
 - **Third-party actions are pinned to commit SHAs**, with the version in a
-  comment. This job holds `packages: write` and `id-token: write`, and a
-  signature does not help: a swapped action would sign with this repository's
+  comment. These jobs hold the registry credential and `id-token: write`, and
+  a signature does not help: a swapped action would sign with this repository's
   genuine identity, so `cosign verify` would pass. `.github/dependabot.yml`
-  moves the SHA and the comment together so the pins stay current — except for
-  majors of cosign-installer, which it holds back deliberately, since those are
-  Cosign majors and can change the signature format on the registry.
-- **The chart push needs `HELM_REGISTRY_USERNAME`/`HELM_REGISTRY_PASSWORD`.**
-  `docker/login-action` is not enough: rules_helm pins `HELM_REGISTRY_CONFIG` to
-  a fresh temp directory per invocation, so Helm reads neither
-  `~/.docker/config.json` nor anything a prior `helm registry login` wrote. Its
-  pusher skips the login without failing when the variables are absent, so the
-  push fails with a 401 rather than a clear error.
+  moves the SHA and the comment together so the pins stay current.
+- **The chart is pushed by `//charts/sortie:sortie.chart_push` (oras), not by
+  rules_helm's push targets.** `helm push` appends the chart's name to the base
+  it is given, which on a flat registry is the driver image's repository.
+  `chart_push` (`//bazel/helm:defs.bzl`) writes the same OCI artifact helm
+  would to the repository it names, and reads the Docker config
+  `docker/login-action` wrote; `helm pull oci://...` reads it back. Set
+  `CHART_PUSH_REPOSITORY` and pass `-- --plain-http` to try it against a local
+  registry.
+- **The verify step asserts where signatures are published**, by asking the
+  registry (`scripts/verify-image-signatures.sh`): a referrer, and no
+  `sha256-<digest>` tag, for the index and every child. `cosign verify` cannot
+  be that gate, since it accepts every layout cosign has written; and it has
+  no `--recursive`, so the script walks the children itself.
 
-Signing cannot be done with rules_img's own support, and it is worth separating
-what is sourced from what is inferred, because the two were stated with equal
-confidence here before and one of them sent a reader re-deriving a settled call:
+Signing is a separate `cosign sign --recursive` step rather than rules_img's
+signing support: it signs exactly what was pushed, by digest, with the cosign
+the verifier runs. Quay serves the OCI Referrers API, so cosign 3 attaches each
+signature as a referrer and writes no tag. (ghcr.io does not serve that API --
+`404` for a real digest, measured -- which is why signatures there sat on
+`sha256-<digest>` fallback tags, and one reason for the move.)
 
-- **Measured:** ghcr does not implement the OCI Referrers API — `404` for a real
-  digest. And cosign works there anyway: rehearsed on a throwaway package, ghcr
-  404s the referrers endpoint and cosign signs and verifies the index and every
-  child regardless, because it falls back to a `sha256-<digest>` tag.
-- **Sourced:** rules_img pushes signatures as referrers. `signing_config`'s own
-  docstring: "The signature is then pushed to the image's repository as an OCI
-  referrer. `img` itself performs no cryptography." (Its `targets` attribute —
-  `roots`, `child_manifests`, `referrers` — is which *descriptors* get signed,
-  not where signatures land; reading it as the latter is what produced a wrong
-  "this claim is unfounded" correction.)
-- **Inferred, not established:** that it has no fallback. `img`'s referrer push
-  is a prebuilt Go binary that is not in the archive, so this cannot be read
-  from the source available. Without a fallback it cannot work on ghcr, which
-  is why the conclusion stands — but it is inference.
-
-Signatures are therefore in cosign's bundle format and need **cosign 3+** to
+Signatures are in cosign's bundle format and need **cosign 3+** to
 verify; a cosign 2 client reports `no signatures found`. That break was taken
 deliberately, while sortie had no consumers, rather than deferred to a point
 where it would cost something.
