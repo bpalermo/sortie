@@ -1029,7 +1029,8 @@ OptionsImpl::OptionsImpl(const nighthawk::client::CommandLineOptions& options) {
   }
   if (options.has_udp()) {
     const auto& udp_options = options.udp();
-    udp_max_inflight_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(udp_options, max_inflight, udp_max_inflight_);
+    udp_max_inflight_ =
+        PROTOBUF_GET_WRAPPED_OR_DEFAULT(udp_options, max_inflight, udp_max_inflight_);
     if (udp_options.has_timeout()) {
       udp_timeout_ = std::chrono::nanoseconds(
           Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(udp_options.timeout()));
