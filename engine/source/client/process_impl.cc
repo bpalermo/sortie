@@ -1,5 +1,11 @@
 #include "engine/source/client/process_impl.h"
 
+#include "engine/source/client/redaction.h"
+
+#include "envoy/extensions/transport_sockets/tls/v3/tls.pb.h"
+
+#include "envoy/extensions/transport_sockets/quic/v3/quic_transport.pb.h"
+
 #include "engine/source/client/output_collector_impl.h"
 
 #include <sys/file.h>
@@ -79,6 +85,7 @@ using namespace std::chrono_literals;
 
 namespace Nighthawk {
 namespace Client {
+
 namespace {
 
 using ::envoy::config::bootstrap::v3::Bootstrap;
@@ -1115,7 +1122,7 @@ bool ProcessImpl::runInternal(OutputCollector& collector, const UriPtr& tracing_
         setupTracingImplementation(bootstrap_, *tracing_uri);
         addTracingCluster(bootstrap_, *tracing_uri);
       }
-      ENVOY_LOG(debug, "Computed configuration: {}", absl::StrCat(bootstrap_));
+      ENVOY_LOG(debug, "Computed configuration: {}", absl::StrCat(redactedForLog(bootstrap_)));
       absl::StatusOr<Envoy::Upstream::ClusterManagerPtr> cluster_manager =
           cluster_manager_factory_->clusterManagerFromProto(bootstrap_);
       if (!cluster_manager.ok()) {
@@ -1151,7 +1158,7 @@ bool ProcessImpl::runInternal(OutputCollector& collector, const UriPtr& tracing_
       std::chrono::milliseconds stats_flush_interval = std::chrono::milliseconds(
           Envoy::DurationUtil::durationToMilliseconds(bootstrap_.stats_flush_interval()));
 
-      ENVOY_LOG(error, bootstrap_.DebugString());
+      ENVOY_LOG(error, redactedForLog(bootstrap_).DebugString());
 
       if (!options_.statsSinks().empty()) {
         // There should be only a single live flush worker instance at any time.

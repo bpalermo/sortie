@@ -48,7 +48,8 @@ generating any.`,
 							fmt.Fprintf(w, "# %s -> %s (backend %d/%d)\n",
 								e.Label, addrs[i], i+1, len(perBackend))
 						}
-						raw, err := marshal.Marshal(opts)
+						// Shown, not sent: a tls block's client key is redacted here.
+						raw, err := marshal.Marshal(compile.Redacted(opts))
 						if err != nil {
 							return err
 						}

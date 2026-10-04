@@ -2,10 +2,14 @@ package compile
 
 import (
 	"google.golang.org/protobuf/proto"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -685,5 +689,69 @@ func TestWebSocketBlockOptions(t *testing.T) {
 	execs, _ = Expand(s)
 	if got := execs[0].Options.GetConnections().GetValue(); got != 50 {
 		t.Errorf("connections = %d, want the plan's 50", got)
+	}
+}
+
+// A tls block becomes the engine's tls_context with the files inline: the
+// backend never sees a path.
+func TestTlsBlockBecomesAnInlineTlsContext(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{"ca.pem": "CA", "client.pem": "CERT", "client-key.pem": "KEY"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second)})
+	s.Target = "https://example.test/"
+	s.Tls = &plan.Tls{CaFile: filepath.Join(dir, "ca.pem"), CertFile: filepath.Join(dir, "client.pem"), KeyFile: filepath.Join(dir, "client-key.pem")}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := execs[0].Options.GetTlsContext()
+	if got := string(ctx.GetCommonTlsContext().GetValidationContext().GetTrustedCa().GetInlineBytes()); got != "CA" {
+		t.Errorf("trusted_ca = %q, want the CA file's bytes inline", got)
+	}
+	certs := ctx.GetCommonTlsContext().GetTlsCertificates()
+	if len(certs) != 1 || string(certs[0].GetCertificateChain().GetInlineBytes()) != "CERT" || string(certs[0].GetPrivateKey().GetInlineBytes()) != "KEY" {
+		t.Errorf("tls_certificates = %v, want the client pair inline", certs)
+	}
+	if ctx.GetSni() != "" {
+		t.Errorf("sni = %q; the engine derives it, sortie must not set it", ctx.GetSni())
+	}
+
+	s.Tls = &plan.Tls{CaFile: filepath.Join(dir, "missing.pem")}
+	if _, err := Expand(s); err == nil || !strings.Contains(err.Error(), "tls.ca_file") {
+		t.Errorf("err = %v, want the missing ca_file named", err)
+	}
+}
+
+// What sortie compile prints never carries the client key.
+func TestRedactedHidesTheClientKeyOnly(t *testing.T) {
+	o := &client.CommandLineOptions{TlsContext: &tlsv3.UpstreamTlsContext{CommonTlsContext: &tlsv3.CommonTlsContext{
+		TlsCertificates: []*tlsv3.TlsCertificate{{
+			CertificateChain: &corev3.DataSource{Specifier: &corev3.DataSource_InlineBytes{InlineBytes: []byte("CERT")}},
+			PrivateKey:       &corev3.DataSource{Specifier: &corev3.DataSource_InlineBytes{InlineBytes: []byte("SECRET")}},
+		}},
+	}}}
+	r := Redacted(o)
+	cert := r.GetTlsContext().GetCommonTlsContext().GetTlsCertificates()[0]
+	if string(cert.GetCertificateChain().GetInlineBytes()) != "CERT" {
+		t.Errorf("certificate chain = %q, want it kept", cert.GetCertificateChain().GetInlineBytes())
+	}
+	if got := cert.GetPrivateKey().GetInlineString(); got != "<redacted: 6 bytes>" {
+		t.Errorf("private key = %q, want redacted", got)
+	}
+	// A key given inline as a string is redacted the same.
+	o.GetTlsContext().GetCommonTlsContext().GetTlsCertificates()[0].PrivateKey =
+		&corev3.DataSource{Specifier: &corev3.DataSource_InlineString{InlineString: "STRINGSECRET"}}
+	if got := Redacted(o).GetTlsContext().GetCommonTlsContext().GetTlsCertificates()[0].GetPrivateKey().GetInlineString(); got != "<redacted: 12 bytes>" {
+		t.Errorf("private key = %q, want redacted", got)
+	}
+	o.GetTlsContext().GetCommonTlsContext().GetTlsCertificates()[0].PrivateKey =
+		&corev3.DataSource{Specifier: &corev3.DataSource_InlineBytes{InlineBytes: []byte("SECRET")}}
+	// The original is untouched: it is what gets sent.
+	if string(o.GetTlsContext().GetCommonTlsContext().GetTlsCertificates()[0].GetPrivateKey().GetInlineBytes()) != "SECRET" {
+		t.Error("the original options were modified")
 	}
 }

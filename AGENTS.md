@@ -126,6 +126,11 @@ README's Limitations section; keep the two in sync.
   `internal/compile`); `protocol` http1 and `method` GET are forced.
 - Protocol gaps and the designs for closing them (WebSocket, TCP, UDP) are in
   `docs/parity.md`; follow those designs rather than inventing a shape.
+- `Scenario.tls` (ca_file, cert_file, key_file) compiles to the engine's
+  `tls_context` with the files inline; the engine adds SNI and ALPN
+  (`createTransportSocket` in `engine/source/client/process_bootstrap.cc`).
+  Upstream deprecated `tls_context` for `transport_socket`; here it is the
+  modeled path and stays. Without `tls`, https verifies nothing.
 - One execution per backend at a time; `nighthawk_service` refuses a second.
 - `RequestSource` never sees responses, so there is no session flow and no
   response correlation.

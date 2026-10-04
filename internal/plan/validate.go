@@ -68,7 +68,31 @@ func validateBeyondSchema(p *Plan) error {
 		if err := validateWebSocket(p, s); err != nil {
 			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
 		}
+		if err := validateTls(p, s); err != nil {
+			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
+		}
 	}
+	return nil
+}
+
+// validateTls checks a tls block against the effective target: it means
+// nothing without https, and a client certificate comes with its key.
+func validateTls(p *Plan, s *Scenario) error {
+	t := s.GetTls()
+	if t == nil {
+		t = p.GetDefaults().GetTls()
+	}
+	if t == nil {
+		return nil
+	}
+	target := s.GetTarget()
+	if target == "" {
+		target = p.GetDefaults().GetTarget()
+	}
+	if !strings.HasPrefix(target, "https://") {
+		return fmt.Errorf("tls needs an https target (got %q)", target)
+	}
+	// cert_file and key_file going together is the schema's rule (a CEL constraint on Tls).
 	return nil
 }
 

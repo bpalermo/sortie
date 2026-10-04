@@ -262,9 +262,10 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
 
   TCLAP::ValueArg<std::string> tls_context(
       "", "tls-context",
-      "DEPRECATED, use --transport-socket instead. "
-      "TlS context configuration in json. "
-      "Mutually exclusive with --transport-socket. Example (json): "
+      "TLS context configuration in json, the base of the transport socket the client "
+      "generates for an https target: SNI and ALPN are added to it. "
+      "Mutually exclusive with --transport-socket, which replaces the whole socket. Example "
+      "(json): "
       "{common_tls_context:{tls_params:{cipher_suites:[\"-ALL:ECDHE-RSA-AES128-SHA\"]}}}",
       false, "", "string", cmd);
 
@@ -757,11 +758,6 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
     throw MalformedArgvException("Invalid value for --stats-flush-interval");
   }
 
-  if (!tls_context.getValue().empty()) {
-    ENVOY_LOG(warn, "--tls-context is deprecated. "
-                    "It can be replaced by an equivalent --transport-socket. "
-                    "See --help for an example.");
-  }
   if (!tls_context.getValue().empty() && !transport_socket.getValue().empty()) {
     throw MalformedArgvException("--tls-context and --transport-socket cannot both be set.");
   }
@@ -1410,9 +1406,8 @@ CommandLineOptionsPtr OptionsImpl::toCommandLineOptionsInternal() const {
         rate_limiter_plugin_config_.value();
   }
 
-  // Only set the tls context if needed, to avoid a warning being logged about field deprecation.
-  // Ideally this would follow the way transport_socket uses std::optional below.
-  // But as this field is about to get eliminated this minimal effort shortcut may be more suitable.
+  // Set only when it carries something: an empty message is the default, and leaving the field
+  // unset keeps the serialized options the same as before one was given.
   if (tls_context_.ByteSizeLong() > 0) {
     *(command_line_options->mutable_tls_context()) = tls_context_;
   }

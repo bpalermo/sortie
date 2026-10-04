@@ -284,9 +284,12 @@ message CommandLineOptions {
     // an in memory request source.
     envoy.config.core.v3.TypedExtensionConfig request_source_plugin_config = 37;
   }
-  // DEPRECATED, use --transport-socket instead. Tls context configuration in json or compact yaml.
-  // Mutually exclusive with --transport-socket.
-  envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext tls_context = 13 [deprecated = true];
+  // TLS context configuration, the base of the transport socket the client generates for an
+  // https target: SNI (from the target, or a Host header) and ALPN for the protocol are added
+  // to it. Mutually exclusive with --transport-socket, which replaces the whole transport
+  // socket. Upstream Nighthawk deprecated this in favour of transport_socket; here it is the
+  // modeled path (sortie's `tls` block) and stays.
+  envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext tls_context = 13;
   // Max pending requests (default: 0, no client side queuing. Specifying any other value will allow
   // client-side queuing of requests).
   google.protobuf.UInt32Value max_pending_requests = 14;

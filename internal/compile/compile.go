@@ -10,6 +10,7 @@ import (
 	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -346,6 +347,13 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 			}
 		}
 	}
+	if t := s.GetTls(); t != nil {
+		tlsCtx, err := tlsContext(t)
+		if err != nil {
+			return nil, fmt.Errorf("scenario %q: %w", s.GetName(), err)
+		}
+		o.TlsContext = tlsCtx
+	}
 	if s.GetMethod() != "" || len(s.GetHeaders()) > 0 || s.GetBody() != "" || s.GetBodyFile() != "" || s.GetGrpc() != nil || s.GetWebsocket() != nil {
 		reqOpts, err := requestOptions(s, o.GetRequestOptions())
 		if err != nil {
@@ -389,6 +397,37 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 		}
 	}
 	return o, nil
+}
+
+// tlsContext builds the engine's tls_context from a scenario's tls block,
+// with the files inline so the backend needs no access to them. The engine
+// adds SNI (from the target, or a Host header) and ALPN for the protocol.
+func tlsContext(t *plan.Tls) (*tlsv3.UpstreamTlsContext, error) {
+	inline := func(b []byte) *corev3.DataSource {
+		return &corev3.DataSource{Specifier: &corev3.DataSource_InlineBytes{InlineBytes: b}}
+	}
+	common := &tlsv3.CommonTlsContext{}
+	if t.GetCaFile() != "" {
+		ca, err := os.ReadFile(t.GetCaFile())
+		if err != nil {
+			return nil, fmt.Errorf("tls.ca_file: %w", err)
+		}
+		common.ValidationContextType = &tlsv3.CommonTlsContext_ValidationContext{
+			ValidationContext: &tlsv3.CertificateValidationContext{TrustedCa: inline(ca)},
+		}
+	}
+	if t.GetCertFile() != "" {
+		cert, err := os.ReadFile(t.GetCertFile())
+		if err != nil {
+			return nil, fmt.Errorf("tls.cert_file: %w", err)
+		}
+		key, err := os.ReadFile(t.GetKeyFile())
+		if err != nil {
+			return nil, fmt.Errorf("tls.key_file: %w", err)
+		}
+		common.TlsCertificates = []*tlsv3.TlsCertificate{{CertificateChain: inline(cert), PrivateKey: inline(key)}}
+	}
+	return &tlsv3.UpstreamTlsContext{CommonTlsContext: common}, nil
 }
 
 func protocol(name string) (client.Protocol_ProtocolOptions, error) {
@@ -478,4 +517,23 @@ func requestMethod(name string) (corev3.RequestMethod, error) {
 		return 0, fmt.Errorf("unknown method %q", name)
 	}
 	return corev3.RequestMethod(v), nil
+}
+
+// Redacted returns a copy of the options fit to print: a client private key
+// carried inline by a tls block is replaced with a note of its size. The copy
+// is for showing, never for sending.
+func Redacted(o *client.CommandLineOptions) *client.CommandLineOptions {
+	c := proto.Clone(o).(*client.CommandLineOptions)
+	for _, cert := range c.GetTlsContext().GetCommonTlsContext().GetTlsCertificates() {
+		// Either inline form -- a template's tls_context may carry a string; a
+		// filename is not a secret.
+		key := cert.GetPrivateKey()
+		size := len(key.GetInlineBytes()) + len(key.GetInlineString())
+		if size > 0 {
+			cert.PrivateKey = &corev3.DataSource{Specifier: &corev3.DataSource_InlineString{
+				InlineString: fmt.Sprintf("<redacted: %d bytes>", size),
+			}}
+		}
+	}
+	return c
 }

@@ -122,6 +122,27 @@ message WebSocket {
   bool binary = 4;
 }
 
+// Tls is what a scenario can set about the TLS handshake with its target. The
+// files are read by sortie, as paths relative to the plan file, and sent to
+// the backends inline, so a backend needs no access to them.
+message Tls {
+  option (buf.validate.message).cel = {
+    id: "tls.client_pair"
+    message: "cert_file and key_file go together"
+    expression: "(this.cert_file == '') == (this.key_file == '')"
+  };
+
+  // PEM bundle of the roots to verify the target's certificate against. Set,
+  // the target must present a certificate chaining to one of them; unset,
+  // the certificate is not verified.
+  string ca_file = 1;
+
+  // PEM client certificate chain and key, presented when the target asks
+  // for one (mTLS). Both or neither.
+  string cert_file = 2;
+  string key_file = 3;
+}
+
 // Scenario is one unit of load: a target, an executor that shapes the request
 // rate over time, and the client tuning that goes with it.
 message Scenario {
@@ -209,6 +230,11 @@ message Scenario {
   // For request messages that are not text, such as serialized protobufs.
   // Mutually exclusive with body.
   string body_file = 17;
+
+  // TLS for an https target beyond the defaults. Without it the engine
+  // verifies nothing and presents no certificate, which is what makes a
+  // self-signed target work out of the box.
+  Tls tls = 18;
 
   // Nighthawk options passed through untouched, for anything this schema does
   // not model: transport sockets, request source plugins, tunnelling,

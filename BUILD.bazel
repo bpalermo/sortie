@@ -17,6 +17,7 @@ load("//bazel/lint:linters.bzl", "buildifier_test")
 # Two targets carrying the same Go importpath would put a second copy of every
 # envoy message in the binary and panic at init on duplicate registration.
 # gazelle:resolve go github.com/envoyproxy/go-control-plane/envoy/config/core/v3 @envoy_api//envoy/config/core/v3:pkg_go_proto
+# gazelle:resolve go github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3 @envoy_api//envoy/extensions/transport_sockets/tls/v3:pkg_go_proto
 
 # The plan schema imports the engine's and protovalidate's protos. gazelle
 # does not index engine/ and protovalidate lives in an external repository,

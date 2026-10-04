@@ -278,6 +278,15 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
+    name = "redaction_test",
+    srcs = ["redaction_test.cc"],
+    deps = [
+        "//engine/source/client:nighthawk_client_lib",
+        "@envoy_api//envoy/extensions/transport_sockets/quic/v3:pkg_cc_proto",
+    ],
+)
+
+envoy_cc_test(
     name = "service_test",
     srcs = ["service_test.cc"],
     deps = [

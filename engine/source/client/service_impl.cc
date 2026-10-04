@@ -1,5 +1,7 @@
 #include "engine/source/client/service_impl.h"
 
+#include "engine/source/client/redaction.h"
+
 #include "source/common/common/cleanup.h"
 #include "source/common/protobuf/utility.h"
 
@@ -18,6 +20,7 @@
 
 namespace Nighthawk {
 namespace Client {
+
 
 void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionRequest& request,
                                          Stream* stream) {
@@ -166,7 +169,7 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
 
 void ServiceImpl::writeResponse(Stream* stream,
                                 const nighthawk::client::ExecutionResponse& response) {
-  ENVOY_LOG(debug, "Write response: {}", absl::StrCat(response));
+  ENVOY_LOG(debug, "Write response: {}", absl::StrCat(redactedForLog(response)));
   if (!stream->Write(response)) {
     ENVOY_LOG(warn, "Failed to write response to the stream");
   }
@@ -198,7 +201,7 @@ grpc::Status ServiceImpl::ExecutionStream(
   bool owner = false;
 
   while (stream->Read(&request)) {
-    ENVOY_LOG(debug, "Read ExecutionRequest data {}", absl::StrCat(request));
+    ENVOY_LOG(debug, "Read ExecutionRequest data {}", absl::StrCat(redactedForLog(request)));
     if (request.has_start_request()) {
       // If busy_lock_ is held we can't start a new benchmark run because one is active already.
       if (busy_lock_.tryLock()) {
