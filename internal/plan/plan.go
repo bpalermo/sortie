@@ -56,7 +56,7 @@ type (
 
 	Tls = planv1.Tls
 
-	Tcp      = planv1.Tcp
+	Tcp = planv1.Tcp
 
 	Udp      = planv1.Udp
 	Executor = planv1.Executor

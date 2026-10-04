@@ -146,6 +146,10 @@ func TestValidationErrors(t *testing.T) {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: udp://127.0.0.1:9000", 1),
 			want: "a udp target needs a body or body_file",
 		},
+		"udp target with connections": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: udp://127.0.0.1:9000\n    body: ping\n    connections: 2", 1),
+			want: "connections has no meaning with a udp target",
+		},
 		"udp target with websocket": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: udp://127.0.0.1:9000\n    body: ping\n    websocket: {}", 1),
 			want: "grpc, websocket and tcp cannot go with a udp target",

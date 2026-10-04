@@ -149,6 +149,9 @@ func validateUdp(p *Plan, s *Scenario) error {
 	if pr := effective(s.GetProtocol(), d.GetProtocol()); pr != "" {
 		return fmt.Errorf("protocol %q has no meaning with a udp target", pr)
 	}
+	if s.Connections != nil || (d != nil && d.Connections != nil) {
+		return fmt.Errorf("connections has no meaning with a udp target: one socket per worker")
+	}
 	if s.GetGrpc() != nil || d.GetGrpc() != nil || s.GetWebsocket() != nil || d.GetWebsocket() != nil ||
 		s.GetTcp() != nil || d.GetTcp() != nil {
 		return fmt.Errorf("grpc, websocket and tcp cannot go with a udp target")
