@@ -1,8 +1,8 @@
 #include "test/test_common/utility.h"
 #include <memory>
 
-#include "fmt/format.h"
 #include "engine/source/client/options_impl.h"
+#include "fmt/format.h"
 
 #include "engine/api/rate_limiter/stub_rate_limiter.pb.h"
 #include "engine/test/client/utility.h"
@@ -522,33 +522,33 @@ TEST_F(OptionsImplTest, WebSocketDefaultsRoundTripAndValidation) {
   EXPECT_EQ(std::chrono::seconds(2), binary->streamDrainDuration());
   EXPECT_TRUE(binary->toCommandLineOptions()->websocket().binary().value());
 
-  EXPECT_THROW_WITH_REGEX(
-      TestUtility::createOptionsImpl(fmt::format(
-          "{} --websocket --grpc-mode unary --concurrency 1 --rps 100 {}", client_name_,
-          good_test_uri_)),
-      MalformedArgvException, "--websocket and --grpc-mode are mutually exclusive");
-  EXPECT_THROW_WITH_REGEX(
-      TestUtility::createOptionsImpl(fmt::format(
-          "{} --websocket --protocol http2 --concurrency 1 --rps 100 {}", client_name_,
-          good_test_uri_)),
-      MalformedArgvException, "--websocket requires HTTP/1.1");
-  EXPECT_THROW_WITH_REGEX(
-      TestUtility::createOptionsImpl(fmt::format(
-          "{} --websocket --request-method POST --concurrency 1 --rps 100 {}", client_name_,
-          good_test_uri_)),
-      MalformedArgvException, "--websocket requires --request-method GET");
   EXPECT_THROW_WITH_REGEX(TestUtility::createOptionsImpl(fmt::format(
-                              "{} --websocket --concurrency auto {}", client_name_, good_test_uri_)),
-                          MalformedArgvException, "--websocket requires a numeric --concurrency");
+                              "{} --websocket --grpc-mode unary --concurrency 1 --rps 100 {}",
+                              client_name_, good_test_uri_)),
+                          MalformedArgvException,
+                          "--websocket and --grpc-mode are mutually exclusive");
+  EXPECT_THROW_WITH_REGEX(TestUtility::createOptionsImpl(fmt::format(
+                              "{} --websocket --protocol http2 --concurrency 1 --rps 100 {}",
+                              client_name_, good_test_uri_)),
+                          MalformedArgvException, "--websocket requires HTTP/1.1");
+  EXPECT_THROW_WITH_REGEX(TestUtility::createOptionsImpl(fmt::format(
+                              "{} --websocket --request-method POST --concurrency 1 --rps 100 {}",
+                              client_name_, good_test_uri_)),
+                          MalformedArgvException, "--websocket requires --request-method GET");
   EXPECT_THROW_WITH_REGEX(
-      TestUtility::createOptionsImpl(fmt::format(
-          "{} --websocket --concurrency 1 --rps 100 --streams 200 --connections 100 {}",
-          client_name_, good_test_uri_)),
+      TestUtility::createOptionsImpl(
+          fmt::format("{} --websocket --concurrency auto {}", client_name_, good_test_uri_)),
+      MalformedArgvException, "--websocket requires a numeric --concurrency");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(
+          fmt::format("{} --websocket --concurrency 1 --rps 100 --streams 200 --connections 100 {}",
+                      client_name_, good_test_uri_)),
       MalformedArgvException, "every stream is a connection");
-  EXPECT_THROW_WITH_REGEX(
-      TestUtility::createOptionsImpl(fmt::format(
-          "{} --websocket --concurrency 3 --streams 20 --rps 300 {}", client_name_, good_test_uri_)),
-      MalformedArgvException, "--streams must be a positive multiple of --concurrency");
+  EXPECT_THROW_WITH_REGEX(TestUtility::createOptionsImpl(fmt::format(
+                              "{} --websocket --concurrency 3 --streams 20 --rps 300 {}",
+                              client_name_, good_test_uri_)),
+                          MalformedArgvException,
+                          "--streams must be a positive multiple of --concurrency");
 }
 
 TEST_F(OptionsImplTest, TcpUriSelectsTcpModeWithDefaultsRoundTripAndValidation) {
@@ -580,24 +580,34 @@ TEST_F(OptionsImplTest, TcpUriSelectsTcpModeWithDefaultsRoundTripAndValidation) 
                    fmt::format("{} --tcp-connections 4 {}", client_name_, good_test_uri_))
                    ->tcp());
 
-  EXPECT_THROW_WITH_REGEX(TestUtility::createOptionsImpl(
-                              fmt::format("{} --rps 100 tcp://127.0.0.1", client_name_)),
-                          MalformedArgvException, "Invalid target URI");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(fmt::format("{} --rps 100 tcp://127.0.0.1", client_name_)),
+      MalformedArgvException, "Invalid target URI");
   EXPECT_THROW_WITH_REGEX(TestUtility::createOptionsImpl(
                               fmt::format("{} --rps 100 tcp://127.0.0.1:9000", client_name_)),
-                          MalformedArgvException, "needs a --request-body-file or --request-body-size");
+                          MalformedArgvException,
+                          "needs a --request-body-file or --request-body-size");
   EXPECT_THROW_WITH_REGEX(
       TestUtility::createOptionsImpl(
-          fmt::format("{} --rps 100 --request-body-size 1 --grpc-mode unary tcp://127.0.0.1:9000", client_name_)),
+          fmt::format("{} --rps 100 --request-body-size 1 --grpc-mode unary tcp://127.0.0.1:9000",
+                      client_name_)),
       MalformedArgvException, "cannot be combined with --grpc-mode or --websocket");
   EXPECT_THROW_WITH_REGEX(
-      TestUtility::createOptionsImpl(
-          fmt::format("{} --rps 100 --request-body-size 1 --request-header x:y tcp://127.0.0.1:9000", client_name_)),
+      TestUtility::createOptionsImpl(fmt::format(
+          "{} --rps 100 --request-body-size 1 --request-header x:y tcp://127.0.0.1:9000",
+          client_name_)),
       MalformedArgvException, "takes no --request-header or --request-method");
   EXPECT_THROW_WITH_REGEX(
       TestUtility::createOptionsImpl(
-          fmt::format("{} --rps 100 --request-body-size 1 --tcp-connections 0 tcp://127.0.0.1:9000", client_name_)),
+          fmt::format("{} --rps 100 --request-body-size 1 --tcp-connections 0 tcp://127.0.0.1:9000",
+                      client_name_)),
       MalformedArgvException, "--tcp-connections and --tcp-max-inflight-per-connection");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(
+          fmt::format("{} --rps 100 --request-body-size 1 --request-source http://127.0.0.1:1 "
+                      "tcp://127.0.0.1:9000",
+                      client_name_)),
+      MalformedArgvException, "not supported together with --request-source");
 }
 
 TEST_F(OptionsImplTest, GrpcStreamValidation) {

@@ -556,8 +556,9 @@ static_resources:
           "@type": type.googleapis.com/envoy.extensions.filters.network.echo.v3.Echo
 `
 
-// 100 messages per second per worker, 2 workers, 5 s: 1000 messages, all
-// echoed, on 2 connections per worker.
+// 100 messages per second per worker, 2 workers, 5 s: exactly 1000 messages
+// sent -- the per-worker division of the rate -- on 2 connections per worker,
+// and all but a message still in flight at the end echoed.
 const tcpPlanTemplate = `version: v1
 pools:
   - name: local
@@ -582,6 +583,7 @@ scenarios:
       rate: 200
       duration: 5s
     thresholds:
+      - "counter:benchmark.tcp_messages_sent == 1000"
       - "counter:benchmark.tcp_messages_received >= 990"
       - "benchmark_tcp.message_latency.p99 < 500ms"
 `
@@ -617,7 +619,7 @@ func TestTcpPlanAgainstTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sortie run failed: %v", err)
 	}
-	if !regexp.MustCompile(`(?m)^\s+\S+: (99[0-9]|100[0-9]) messages sent, (99[0-9]|100[0-9]) echoed in \S+$`).Match(out) {
+	if !regexp.MustCompile(`(?m)^\s+\S+: 1000 messages sent, (99[0-9]|1000) echoed in \S+$`).Match(out) {
 		t.Errorf("sortie output lacks the backend line with 1000 messages sent and echoed")
 	}
 	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
