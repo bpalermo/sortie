@@ -62,7 +62,13 @@ read -r name version <"$meta" || die "unreadable chart metadata ${meta}"
 # written with '_' (helm push and helm pull both translate it).
 tag="${version//+/_}"
 if ! [[ "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]; then
-	die "version '${version}' is not a valid OCI tag -- an unstamped package? Publish with --stamp."
+	die "version '${version}' is not a valid OCI tag."
+fi
+# An unstamped package: rules_helm writes a stamp key it could not resolve as
+# the key's own name with '_' turned into '-' (`0.1.0-STABLE-GIT-COMMIT` for
+# `0.1.0-{STABLE_GIT_COMMIT}`), which is a perfectly valid tag for no commit.
+if [[ "$version" =~ GIT[-_]COMMIT|GIT[-_]VERSION|STABLE[-_] ]]; then
+	die "version '${version}' carries an unresolved stamp placeholder -- an unstamped package. Publish with --stamp."
 fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -132,8 +138,9 @@ chart_push = rule(
     doc = """Pushes a packaged chart to the repository it names, with oras.
 
 The tag is the PACKAGED version (the stamped one: `X.Y.Z-<full sha>` for a
-`-{STABLE_GIT_COMMIT}` chart). A version that is not a valid OCI tag (an
-unstamped build) is refused at run time, never pushed. Registry credentials come
+`-{STABLE_GIT_COMMIT}` chart). A version that is not a valid OCI tag, or that
+still carries a stamp placeholder (an unstamped build), is refused at run time,
+never pushed. Registry credentials come
 from the Docker config, which `docker login` / docker/login-action writes.
 
 `bazel run --stamp <target> [-- <extra oras push flags>]`.
