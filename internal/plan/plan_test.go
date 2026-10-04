@@ -150,6 +150,10 @@ func TestValidationErrors(t *testing.T) {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: tcp://127.0.0.1:9000", 1),
 			want: "a tcp target needs a body or body_file",
 		},
+		"tcp target with connections": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: tcp://127.0.0.1:9000\n    body: ping\n    connections: 4", 1),
+			want: "set tcp.connections",
+		},
 		"tcp target with headers": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: tcp://127.0.0.1:9000\n    body: ping\n    headers: [\"x: y\"]", 1),
 			want: "headers have no meaning with a tcp target",

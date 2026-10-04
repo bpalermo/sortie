@@ -145,6 +145,9 @@ func validateTcp(p *Plan, s *Scenario) error {
 	if pr := effective(s.GetProtocol(), d.GetProtocol()); pr != "" {
 		return fmt.Errorf("protocol %q has no meaning with a tcp target", pr)
 	}
+	if s.Connections != nil || (d != nil && d.Connections != nil) {
+		return fmt.Errorf("connections is the HTTP pool's cap and does nothing for a tcp target; set tcp.connections")
+	}
 	if s.GetGrpc() != nil || d.GetGrpc() != nil || s.GetWebsocket() != nil || d.GetWebsocket() != nil {
 		return fmt.Errorf("grpc and websocket cannot go with a tcp target")
 	}

@@ -81,6 +81,24 @@ TEST_F(FactoriesTest, CreateGrpcStreamBenchmarkClient) {
   EXPECT_EQ(1, benchmark_client->statistics().count("benchmark_stream.message_latency"));
 }
 
+// The raw clients get --request-body-size as real bytes, and a real body untouched.
+TEST_F(FactoriesTest, RawMessageGeneratorMaterializesASizedBody) {
+  StaticRequestSourceImpl sized(std::make_unique<Envoy::Http::TestRequestHeaderMapImpl>());
+  RequestPtr request = BenchmarkClientFactoryImpl::rawMessageGenerator(sized, 4)();
+  ASSERT_NE(nullptr, request);
+  EXPECT_EQ("aaaa", request->body());
+
+  StaticRequestSourceImpl with_body(std::make_unique<Envoy::Http::TestRequestHeaderMapImpl>(),
+                                    /*body=*/"ping");
+  request = BenchmarkClientFactoryImpl::rawMessageGenerator(with_body, 4)();
+  ASSERT_NE(nullptr, request);
+  EXPECT_EQ("ping", request->body());
+
+  request = BenchmarkClientFactoryImpl::rawMessageGenerator(sized, 0)();
+  ASSERT_NE(nullptr, request);
+  EXPECT_EQ("", request->body());
+}
+
 TEST_F(FactoriesTest, CreateRequestSourcePluginWithWorkingJsonReturnsWorkingRequestSource) {
   std::optional<envoy::config::core::v3::TypedExtensionConfig> request_source_plugin_config;
   std::string request_source_plugin_config_json =

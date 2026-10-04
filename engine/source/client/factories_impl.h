@@ -37,9 +37,17 @@ public:
          RequestSource& request_generator,
          std::vector<UserDefinedOutputNamePluginPair> user_defined_output_plugins) const override;
 
-private:
-  // The request generator the raw (TCP, UDP) clients get: a sized body is materialized.
-  RequestGenerator rawMessageGenerator(RequestSource& request_generator) const;
+  /**
+   * The request generator the raw (TCP, UDP) clients get. The request source yields
+   * --request-body-file as the body but only notes --request-body-size (the HTTP client generates
+   * those bytes on the wire); the raw clients send the body as is, so a sized body is materialized
+   * for them: that many 'a's, when the source's body is empty.
+   *
+   * @param request_generator the worker's request source.
+   * @param body_size the options' request body size.
+   * @return RequestGenerator yielding the source's requests with a body.
+   */
+  static RequestGenerator rawMessageGenerator(RequestSource& request_generator, uint32_t body_size);
 };
 
 class SequencerFactoryImpl : public OptionBasedFactoryImpl, public SequencerFactory {

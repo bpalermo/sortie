@@ -54,7 +54,7 @@ type (
 
 	WebSocket = planv1.WebSocket
 
-	Tls      = planv1.Tls
+	Tls = planv1.Tls
 
 	Tcp      = planv1.Tcp
 	Executor = planv1.Executor
