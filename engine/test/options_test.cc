@@ -604,7 +604,7 @@ TEST_F(OptionsImplTest, TcpUriSelectsTcpModeWithDefaultsRoundTripAndValidation) 
       MalformedArgvException, "--tcp-connections and --tcp-max-inflight-per-connection");
   EXPECT_THROW_WITH_REGEX(
       TestUtility::createOptionsImpl(
-          fmt::format("{} --rps 100 --request-body-size 1 --request-source http://127.0.0.1:1 "
+          fmt::format("{} --rps 100 --request-body-size 1 --request-source grpc://127.0.0.1:1 "
                       "tcp://127.0.0.1:9000",
                       client_name_)),
       MalformedArgvException, "not supported together with --request-source");
