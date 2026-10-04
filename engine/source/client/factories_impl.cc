@@ -19,6 +19,7 @@
 #include "engine/source/client/output_collector_impl.h"
 #include "engine/source/client/output_formatter_impl.h"
 #include "engine/source/client/tcp_benchmark_client_impl.h"
+#include "engine/source/client/udp_benchmark_client_impl.h"
 #include "engine/source/client/websocket_stream_client_impl.h"
 #include "engine/source/common/platform_util_impl.h"
 #include "engine/source/common/rate_limiter_impl.h"
@@ -58,6 +59,13 @@ BenchmarkClientPtr BenchmarkClientFactoryImpl::create(
     absl::string_view cluster_name, int worker_id, RequestSource& request_generator,
     std::vector<UserDefinedOutputNamePluginPair> user_defined_output_plugins) const {
   StatisticFactoryImpl statistic_factory(options_);
+  if (options_.udp()) {
+    return std::make_unique<UdpBenchmarkClientImpl>(
+        api, dispatcher, scope, std::make_unique<SinkableHdrStatistic>(scope, worker_id),
+        cluster_manager, cluster_name,
+        rawMessageGenerator(request_generator, options_.requestBodySize()),
+        options_.udpMaxInflight(), options_.udpTimeout(), options_.streamDrainDuration());
+  }
   if (options_.tcp()) {
     return std::make_unique<TcpBenchmarkClientImpl>(
         api, dispatcher, scope, std::make_unique<SinkableHdrStatistic>(scope, worker_id),

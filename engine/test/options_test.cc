@@ -551,6 +551,55 @@ TEST_F(OptionsImplTest, WebSocketDefaultsRoundTripAndValidation) {
                           "--streams must be a positive multiple of --concurrency");
 }
 
+TEST_F(OptionsImplTest, UdpUriSelectsUdpModeWithDefaultsRoundTripAndValidation) {
+  std::unique_ptr<OptionsImpl> options = TestUtility::createOptionsImpl(
+      fmt::format("{} --rps 100 --request-body-size 4 udp://127.0.0.1:9000", client_name_));
+  EXPECT_TRUE(options->udp());
+  EXPECT_FALSE(options->tcp());
+  EXPECT_EQ(256, options->udpMaxInflight());
+  EXPECT_EQ(std::chrono::seconds(1), options->udpTimeout());
+  CommandLineOptionsPtr cmd = options->toCommandLineOptions();
+  ASSERT_TRUE(cmd->has_udp());
+  EXPECT_EQ(256, cmd->udp().max_inflight().value());
+  OptionsImpl round_trip(*cmd);
+  EXPECT_TRUE(round_trip.udp());
+  EXPECT_EQ(std::chrono::seconds(1), round_trip.udpTimeout());
+
+  std::unique_ptr<OptionsImpl> explicit_values = TestUtility::createOptionsImpl(
+      fmt::format("{} --rps 100 --request-body-size 4 --udp-max-inflight 8 --udp-timeout 0.25s "
+                  "udp://127.0.0.1:9000",
+                  client_name_));
+  EXPECT_EQ(8, explicit_values->udpMaxInflight());
+  EXPECT_EQ(std::chrono::milliseconds(250), explicit_values->udpTimeout());
+
+  EXPECT_THROW_WITH_REGEX(TestUtility::createOptionsImpl(fmt::format(
+                              "{} --rps 100 --request-body-size 4 udp://127.0.0.1", client_name_)),
+                          MalformedArgvException, "Invalid target URI");
+  EXPECT_THROW_WITH_REGEX(TestUtility::createOptionsImpl(
+                              fmt::format("{} --rps 100 udp://127.0.0.1:9000", client_name_)),
+                          MalformedArgvException, "needs a --request-body-file or --request-body-size");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(fmt::format(
+          "{} --rps 100 --request-body-size 4 --websocket udp://127.0.0.1:9000", client_name_)),
+      MalformedArgvException, "cannot be combined with --grpc-mode or --websocket");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(fmt::format(
+          "{} --rps 100 --request-body-size 4 --udp-timeout 0s udp://127.0.0.1:9000", client_name_)),
+      MalformedArgvException, "--udp-max-inflight and --udp-timeout must be positive");
+  const std::string transport_socket =
+      "{name:\"envoy.transport_sockets.tls\",typed_config:{\"@type\":\"type.googleapis.com/"
+      "envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext\"}}";
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(client_name_ + " --rps 100 --request-body-size 4 "
+                                                    "--transport-socket " +
+                                     transport_socket + " udp://127.0.0.1:9000"),
+      MalformedArgvException, "takes no --transport-socket");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(client_name_ + " --rps 100 --request-body-size 4 "
+                                                    "--tls-context {sni:\"x\"} udp://127.0.0.1:9000"),
+      MalformedArgvException, "takes no --transport-socket or --tls-context");
+}
+
 TEST_F(OptionsImplTest, TcpUriSelectsTcpModeWithDefaultsRoundTripAndValidation) {
   std::unique_ptr<OptionsImpl> options = TestUtility::createOptionsImpl(
       fmt::format("{} --rps 100 --request-body-size 4 tcp://127.0.0.1:9000", client_name_));

@@ -37,6 +37,10 @@ bool isTcpUri(absl::string_view uri) {
   const std::string lower = absl::AsciiStrToLower(uri);
   return absl::StartsWith(lower, "tcp://") || absl::StartsWith(lower, "tcps://");
 }
+
+bool isUdpUri(absl::string_view uri) {
+  return absl::StartsWith(absl::AsciiStrToLower(uri), "udp://");
+}
 } // namespace
 
 using ::envoy::config::core::v3::Http3ProtocolOptions;
@@ -269,6 +273,18 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
                                "With a tcp:// URI: the peer does not echo; a write completes at "
                                "once and nothing is read or timed.",
                                cmd, false);
+  TCLAP::ValueArg<uint32_t> udp_max_inflight(
+      "", "udp-max-inflight",
+      "With a udp:// URI (UDP load: the request body is sent as one datagram per scheduled "
+      "request at --rps per worker, prefixed with a sequence number and matched by it when "
+      "echoed): unanswered datagrams allowed before scheduled sends are dropped and counted in "
+      "benchmark.udp_deferred (default: 256).",
+      false, 256, "uint32_t", cmd);
+  TCLAP::ValueArg<std::string> udp_timeout(
+      "", "udp-timeout",
+      "With a udp:// URI: how long a datagram may go unanswered before it is lost "
+      "(benchmark.udp_lost), as a duration string (default: 1s).",
+      false, "1s", "string", cmd);
   TCLAP::ValueArg<uint32_t> streams(
       "", "streams",
       "Total number of streams to open: gRPC bidi streams in --grpc-mode bidi-stream, "
@@ -557,6 +573,7 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
   if (uri.isSet()) {
     uri_ = uri.getValue();
     tcp_ = isTcpUri(uri_.value());
+    udp_ = isUdpUri(uri_.value());
   }
 
   if (h2.isSet() && protocol.isSet()) {
@@ -571,6 +588,17 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
   TCLAP_SET_IF_SPECIFIED(tcp_connections, tcp_connections_);
   TCLAP_SET_IF_SPECIFIED(tcp_max_inflight, tcp_max_inflight_);
   tcp_expect_echo_ = !tcp_no_echo.getValue();
+  TCLAP_SET_IF_SPECIFIED(udp_max_inflight, udp_max_inflight_);
+  if (udp_timeout.isSet()) {
+    Envoy::Protobuf::Duration duration;
+    if (Envoy::Protobuf::util::TimeUtil::FromString(udp_timeout.getValue(), &duration) &&
+        duration.seconds() >= 0 && duration.nanos() >= 0) {
+      udp_timeout_ = std::chrono::nanoseconds(
+          Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(duration));
+    } else {
+      throw MalformedArgvException("Invalid value for --udp-timeout");
+    }
+  }
   TCLAP_SET_IF_SPECIFIED(streams, streams_);
   TCLAP_SET_IF_SPECIFIED(max_inflight_per_stream, max_inflight_per_stream_);
   if (stream_drain_duration.isSet()) {
@@ -963,6 +991,7 @@ OptionsImpl::OptionsImpl(const nighthawk::client::CommandLineOptions& options) {
   if (options.has_uri()) {
     uri_ = options.uri().value();
     tcp_ = isTcpUri(uri_.value());
+    udp_ = isUdpUri(uri_.value());
   } else {
     multi_target_path_ =
         PROTOBUF_GET_WRAPPED_OR_DEFAULT(options.multi_target(), path, multi_target_path_);
@@ -996,6 +1025,15 @@ OptionsImpl::OptionsImpl(const nighthawk::client::CommandLineOptions& options) {
     if (tcp_options.has_drain_duration()) {
       stream_drain_duration_ = std::chrono::nanoseconds(
           Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(tcp_options.drain_duration()));
+    }
+  }
+  if (options.has_udp()) {
+    const auto& udp_options = options.udp();
+    udp_max_inflight_ =
+        PROTOBUF_GET_WRAPPED_OR_DEFAULT(udp_options, max_inflight, udp_max_inflight_);
+    if (udp_options.has_timeout()) {
+      udp_timeout_ = std::chrono::nanoseconds(
+          Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(udp_options.timeout()));
     }
   }
   if (options.has_websocket()) {
@@ -1329,6 +1367,37 @@ void OptionsImpl::validate() const {
     } catch (const UriException&) {
       throw MalformedArgvException(fmt::format("Invalid target URI: ''", uri_.value()));
     }
+    if (udp_) {
+      if (grpcEnabled() || websocket_) {
+        throw MalformedArgvException(
+            "a udp:// URI (UDP load) cannot be combined with --grpc-mode or --websocket");
+      }
+      if (!request_headers_.empty() ||
+          request_method_ != envoy::config::core::v3::RequestMethod::GET) {
+        throw MalformedArgvException("a udp:// URI (UDP load) takes no --request-header or "
+                                     "--request-method: the request body is the datagram");
+      }
+      if (request_body_.empty() && request_body_size_ == 0) {
+        throw MalformedArgvException("a udp:// URI needs a --request-body-file or "
+                                     "--request-body-size: the datagram is what gets echoed");
+      }
+      if (transport_socket_.has_value() || tls_context_.ByteSizeLong() > 0) {
+        // The UDP client opens a plain datagram socket of its own; the cluster's transport
+        // socket never applies to it, so accepting TLS configuration would promise encryption
+        // it does not do.
+        throw MalformedArgvException("a udp:// URI (UDP load) takes no --transport-socket or "
+                                     "--tls-context: datagrams go unencrypted");
+      }
+      if (udp_max_inflight_ == 0 || udp_timeout_ <= std::chrono::nanoseconds(0)) {
+        throw MalformedArgvException("--udp-max-inflight and --udp-timeout must be positive");
+      }
+      if (!request_source_.empty() || request_source_plugin_config_.has_value() ||
+          !user_defined_output_plugin_configs_.empty() || simple_warmup_) {
+        throw MalformedArgvException("a udp:// URI (UDP load) is not supported together with "
+                                     "--request-source, --request-source-plugin-config, "
+                                     "--user-defined-plugin-config or --simple-warmup");
+      }
+    }
     if (tcp_) {
       if (grpcEnabled() || websocket_) {
         throw MalformedArgvException(
@@ -1462,6 +1531,12 @@ CommandLineOptionsPtr OptionsImpl::toCommandLineOptionsInternal() const {
     stream_options->mutable_max_inflight_per_stream()->set_value(max_inflight_per_stream_);
     *stream_options->mutable_drain_duration() =
         Envoy::Protobuf::util::TimeUtil::NanosecondsToDuration(stream_drain_duration_.count());
+  }
+  if (udp_) {
+    auto* udp_options = command_line_options->mutable_udp();
+    udp_options->mutable_max_inflight()->set_value(udp_max_inflight_);
+    *udp_options->mutable_timeout() =
+        Envoy::Protobuf::util::TimeUtil::NanosecondsToDuration(udp_timeout_.count());
   }
   if (tcp_) {
     auto* tcp_options = command_line_options->mutable_tcp();

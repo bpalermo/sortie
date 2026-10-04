@@ -99,7 +99,8 @@ bazel-bin/engine/nighthawk_client  [--user-defined-plugin-config <string>] ...
 [--tls-context <string>]
 [--stream-drain-duration <string>]
 [--max-inflight-per-stream <uint32_t>]
-[--streams <uint32_t>] [--tcp-no-echo]
+[--streams <uint32_t>] [--udp-timeout <string>]
+[--udp-max-inflight <uint32_t>] [--tcp-no-echo]
 [--tcp-max-inflight-per-connection <uint32_t>]
 [--tcp-connections <uint32_t>] [--websocket-binary] [--websocket]
 [--grpc-mode <unary
@@ -302,6 +303,17 @@ Maximum unanswered messages per stream (--grpc-mode bidi-stream,
 --streams <uint32_t>
 Total number of streams to open: gRPC bidi streams in --grpc-mode
 bidi-stream, connections with --websocket (default: 20).
+
+--udp-timeout <string>
+With a udp:// URI: how long a datagram may go unanswered before it is
+lost (benchmark.udp_lost), as a duration string (default: 1s).
+
+--udp-max-inflight <uint32_t>
+With a udp:// URI (UDP load: the request body is sent as one datagram
+per scheduled request at --rps per worker, prefixed with a sequence
+number and matched by it when echoed): unanswered datagrams allowed
+before scheduled sends are dropped and counted in benchmark.udp_deferred
+(default: 256).
 
 --tcp-no-echo
 With a tcp:// URI: the peer does not echo; a write completes at once

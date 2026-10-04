@@ -626,3 +626,85 @@ func TestTcpPlanAgainstTheEngine(t *testing.T) {
 		t.Errorf("sortie output lacks the PASS verdict")
 	}
 }
+
+// The test server with the udp-echo listener filter on a UDP listener.
+const udpTestServerConfig = `admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 0 }
+static_resources:
+  listeners:
+  - address:
+      socket_address: { protocol: UDP, address: 127.0.0.1, port_value: 0 }
+    listener_filters:
+    - name: udp-echo
+      typed_config:
+        "@type": type.googleapis.com/nighthawk.server.UdpEchoConfiguration
+`
+
+// 100 datagrams per second per worker, 2 workers, 5 s: 1000 datagrams, all
+// echoed on the loopback.
+const udpPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+defaults:
+  pool: local
+  target: udp://127.0.0.1:%d
+  concurrency: "2"
+  body: "ping"
+thresholds:
+  - "counter:benchmark.udp_send_errors == 0"
+  - "counter:benchmark.udp_deferred == 0"
+  - "counter:benchmark.udp_lost == 0"
+  - "counter:benchmark.udp_unexpected == 0"
+scenarios:
+  - name: udp
+    executor:
+      type: constant-rate
+      rate: 200
+      duration: 5s
+    thresholds:
+      - "counter:benchmark.udp_datagrams_sent == 1000"
+      - "counter:benchmark.udp_datagrams_received >= 990"
+      - "benchmark_udp.message_latency.p99 < 500ms"
+`
+
+func TestUdpPlanAgainstTheEngine(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tmp := t.TempDir()
+
+	configPath := filepath.Join(tmp, "test_server.yaml")
+	if err := os.WriteFile(configPath, []byte(udpTestServerConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adminPath := filepath.Join(tmp, "admin_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_test_server"),
+		"--config-path", configPath, "--admin-address-path", adminPath,
+		"--disable-hot-restart", "--concurrency", "1", "--base-id", "5")
+	targetPort := listenerPort(t, waitForAddress(t, adminPath))
+
+	servicePath := filepath.Join(tmp, "service_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath)
+	serviceAddr := waitForAddress(t, servicePath)
+	assertHealthy(t, ctx, serviceAddr)
+
+	planPath := filepath.Join(tmp, "plan.yaml")
+	if err := os.WriteFile(planPath, []byte(fmt.Sprintf(udpPlanTemplate, serviceAddr, targetPort)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath)
+	out, err := cmd.CombinedOutput()
+	t.Logf("sortie run:\n%s", out)
+	if err != nil {
+		t.Fatalf("sortie run failed: %v", err)
+	}
+	if !regexp.MustCompile(`(?m)^\s+\S+: 1000 datagrams sent, (99[0-9]|1000) echoed, 0 lost in \S+$`).Match(out) {
+		t.Errorf("sortie output lacks the backend line with 1000 datagrams sent and echoed")
+	}
+	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict")
+	}
+}

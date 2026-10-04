@@ -286,6 +286,37 @@ target. Counters: `benchmark.tcp_connections_opened`, `tcp_connect_failures`,
 `echo` network filter on `nighthawk_test_server` is the target the e2e test
 uses.
 
+## UDP
+
+```yaml
+scenarios:
+  - name: dns-like
+    target: udp://edge.example.test:5300
+    body_file: query.bin
+    concurrency: "2"
+    udp:
+      max_inflight: 64     # default 256
+      timeout: 500ms       # a datagram unanswered this long is lost; default 1s
+    executor: {type: constant-rate, rate: 4000, duration: 60s}
+    thresholds:
+      - "benchmark_udp.message_latency.p99 < 10ms"
+      - "rate:benchmark.udp_lost < 1"
+```
+
+For Envoy's `udp_proxy`. One datagram socket per worker, connected to the
+target; each scheduled request sends the message as one datagram -- per
+worker, as for HTTP -- prefixed with a sequence number, and completes when a
+datagram carrying that number comes back (datagrams reorder and vanish, so the
+match is by number, not order), with the round trip as
+`benchmark_udp.message_latency`. A datagram unanswered for `timeout` is lost
+and counted in `benchmark.udp_lost` -- that, not a connection error, is what a
+proxy drops. `method`, `headers`, `protocol`, `grpc`, `websocket` and `tcp`
+are errors with a udp target; a body is required. Counters:
+`benchmark.udp_datagrams_sent`, `udp_datagrams_received`, `udp_lost`,
+`udp_unexpected` (a duplicate, a late echo, or not an echo), `udp_send_errors`,
+`udp_deferred`, `udp_unavailable`. `nighthawk_test_server`'s `udp-echo`
+listener filter is the target the e2e test uses.
+
 ## Anything this schema does not model
 
 `nighthawk_template` on a scenario carries Nighthawk options straight through.

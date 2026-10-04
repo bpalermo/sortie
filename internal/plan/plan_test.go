@@ -107,7 +107,7 @@ func TestValidationErrors(t *testing.T) {
 		},
 		"bad target scheme": {
 			src:  strings.Replace(minimal, "http://127.0.0.1:8080/", "ftp://host/", 1),
-			want: "target scheme must be http, https, tcp or tcps",
+			want: "target scheme must be http, https, tcp, tcps or udp",
 		},
 		"ramp without ramp_time": {
 			src:  strings.Replace(minimal, "type: constant-rate", "type: ramping-rate", 1),
@@ -137,6 +137,22 @@ func TestValidationErrors(t *testing.T) {
 		"bidi streams not a multiple of concurrency": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"4\"\n    grpc: {mode: bidi-stream, streams: 10}", 1),
 			want: "must be a multiple of concurrency",
+		},
+		"udp block on an http target": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    udp: {}", 1),
+			want: "udp applies to a udp:// target",
+		},
+		"udp target without a body": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: udp://127.0.0.1:9000", 1),
+			want: "a udp target needs a body or body_file",
+		},
+		"udp target with connections": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: udp://127.0.0.1:9000\n    body: ping\n    connections: 2", 1),
+			want: "connections has no meaning with a udp target",
+		},
+		"udp target with websocket": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: udp://127.0.0.1:9000\n    body: ping\n    websocket: {}", 1),
+			want: "grpc, websocket and tcp cannot go with a udp target",
 		},
 		"tcp block on an http target": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    tcp: {}", 1),
@@ -178,9 +194,13 @@ func TestValidationErrors(t *testing.T) {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"3\"\n    websocket: {}", 1),
 			want: "websocket.streams (20, the engine's default) must be a multiple of concurrency (3)",
 		},
+		"tls on a plain tcp target": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: tcp://127.0.0.1:9000\n    body: ping\n    tls: {ca_file: ca.pem}", 1),
+			want: "tls needs an https or tcps target",
+		},
 		"tls on an http target": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    tls: {ca_file: ca.pem}", 1),
-			want: "tls needs an https target",
+			want: "tls needs an https or tcps target",
 		},
 		"tls cert without key": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: https://127.0.0.1:8443/\n    tls: {cert_file: c.pem}", 1),

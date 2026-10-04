@@ -114,7 +114,10 @@ public:
         options.noDuration() ? "No time limit"
                              : fmt::format("Time limit: {} seconds", options.duration().count());
     ENVOY_LOG(info, "Starting {} threads / event loops. {}.", concurrency, duration_as_string);
-    if (options.tcp()) {
+    if (options.udp()) {
+      ENVOY_LOG(info, "Per-worker targets: {} UDP datagrams per second.",
+                options.requestsPerSecond());
+    } else if (options.tcp()) {
       ENVOY_LOG(info, "Per-worker targets: {} TCP connections and {} messages per second.",
                 options.tcpConnections(), options.requestsPerSecond());
     } else if (options.grpcMode() == nighthawk::client::GrpcMode::BIDI_STREAM ||

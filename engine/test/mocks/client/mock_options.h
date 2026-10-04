@@ -50,6 +50,9 @@ public:
   MOCK_METHOD(uint32_t, tcpConnections, (), (const, override));
   MOCK_METHOD(uint32_t, tcpMaxInflightPerConnection, (), (const, override));
   MOCK_METHOD(bool, tcpExpectEcho, (), (const, override));
+  MOCK_METHOD(bool, udp, (), (const, override));
+  MOCK_METHOD(uint32_t, udpMaxInflight, (), (const, override));
+  MOCK_METHOD(std::chrono::nanoseconds, udpTimeout, (), (const, override));
   MOCK_METHOD(bool, websocket, (), (const, override));
   MOCK_METHOD(bool, websocketBinary, (), (const, override));
   MOCK_METHOD(uint32_t, streams, (), (const, override));
