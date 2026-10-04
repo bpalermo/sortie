@@ -586,6 +586,14 @@ TEST_F(OptionsImplTest, UdpUriSelectsUdpModeWithDefaultsRoundTripAndValidation) 
       TestUtility::createOptionsImpl(fmt::format(
           "{} --rps 100 --request-body-size 4 --udp-timeout 0s udp://127.0.0.1:9000", client_name_)),
       MalformedArgvException, "--udp-max-inflight and --udp-timeout must be positive");
+  const std::string transport_socket =
+      "{name:\"envoy.transport_sockets.tls\",typed_config:{\"@type\":\"type.googleapis.com/"
+      "envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext\"}}";
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(client_name_ + " --rps 100 --request-body-size 4 "
+                                                    "--transport-socket " +
+                                     transport_socket + " udp://127.0.0.1:9000"),
+      MalformedArgvException, "takes no --transport-socket");
 }
 
 TEST_F(OptionsImplTest, TcpUriSelectsTcpModeWithDefaultsRoundTripAndValidation) {
