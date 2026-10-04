@@ -7,6 +7,7 @@ load("@rules_img//img:image.bzl", "image_manifest")
 load("@rules_img//img:layer.bzl", "file_metadata", "image_layer")
 load("@rules_img//img:load.bzl", "image_load")
 load("@rules_img//img:push.bzl", "image_push")
+load("//bazel:registry.bzl", "IMAGE_REGISTRY", "image_repository")
 
 licenses(["notice"])  # Apache 2
 
@@ -134,8 +135,8 @@ image_manifest(
 image_push(
     name = "image_push_platform",
     image = ":image_manifest",
-    registry = "ghcr.io",
-    repository = "bpalermo/sortie/engine",
+    registry = IMAGE_REGISTRY,
+    repository = image_repository("engine"),
     visibility = ["//visibility:public"],
 )
 

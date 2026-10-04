@@ -1,23 +1,31 @@
 load("@rules_helm//helm:defs.bzl", "helm_chart", "helm_lint_test", "helm_template_test")
+load("//bazel:registry.bzl", "chart_registry_url")
+load("//bazel/helm:defs.bzl", "chart_push")
 
 # images pins the digest of //:image_push into the chart at package time,
 # so the chart and the image it names cannot drift.
 #
-# helm_chart generates two push targets from this. :sortie.push publishes the
-# chart and the image together and is the convenient one by hand. The workflow
-# deliberately uses :sortie.push_registry, which publishes the chart alone
-# (include_images = False), because the image has to be pushed and signed
-# first: the chart names a digest, and that digest has to already exist and be
-# signed before a chart pointing at it is published.
+# The chart is published by :sortie.chart_push below, not by the push targets
+# helm_chart generates: `helm push` appends the chart's name to whatever base it
+# is given, which on a flat registry is the driver image's repository.
 helm_chart(
     name = "sortie",
     chart = "Chart.yaml",
     images = ["//:image_push"],
-    login_url = "ghcr.io",
-    registry_url = "oci://ghcr.io/bpalermo/sortie/charts",
     templates = glob(["templates/**"]),
     values = "values.yaml",
     visibility = ["//visibility:public"],
+)
+
+# `bazel run //charts/sortie:sortie.chart_push`: the chart alone, to
+# chart_registry_url("sortie"), under its packaged version. The workflow runs
+# it after the image is pushed and signed: the chart names a digest, and that
+# digest has to exist and be signed before a chart pointing at it is published.
+chart_push(
+    name = "sortie.chart_push",
+    chart_name = "sortie",
+    package = ":sortie",
+    repository = chart_registry_url("sortie"),
 )
 
 helm_lint_test(

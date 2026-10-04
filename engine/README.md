@@ -16,7 +16,7 @@ Three binaries:
 
 | Binary | Role |
 | --- | --- |
-| `nighthawk_service` | The backend a sortie plan dispatches to, over gRPC on port 8443. The entrypoint of the `ghcr.io/bpalermo/sortie/engine` image. |
+| `nighthawk_service` | The backend a sortie plan dispatches to, over gRPC on port 8443. The entrypoint of the `quay.io/sortie/engine` image. |
 | `nighthawk_test_server` | An Envoy with the test-server filters: a target for calibration runs and for the end-to-end test. |
 | `nighthawk_client` | The CLI, for driving one backend by hand without sortie. Its usage is below. |
 

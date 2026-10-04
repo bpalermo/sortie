@@ -12,6 +12,18 @@ bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "rules_img", version = "0.3.21")
 bazel_dep(name = "rules_helm", version = "0.32.0")
 
+# The cosign CLI -- only the CLI. @rules_img_signer_cosign//cosign is the
+# official prebuilt release binary, selected per platform, with its sha256
+# pinned in the module's own lock (v3.1.2 at 0.0.1). //bazel/cosign wraps it so
+# the publish workflow and a workstation run the same checksummed cosign;
+# bumping cosign is bumping this bazel_dep. The module's signer plugin for
+# `img deploy` is not used: publishing keeps image_push and a separate
+# `cosign sign --recursive`.
+bazel_dep(name = "rules_img_signer_cosign", version = "0.0.1")
+
+# sh_binary and sh_test for the tool wrappers in //bazel/oras and //bazel/cosign.
+bazel_dep(name = "rules_shell", version = "0.8.0")
+
 # Transitive dependency of rules_img, pinned when this repo was on Bazel 9:
 # older versions reach it through rules_pkg and use the removed
 # incompatible_use_toolchain_transition keyword. Also fine on 8.8.
@@ -126,6 +138,7 @@ use_repo(
     "com_github_envoyproxy_go_control_plane_envoy",
     "com_github_spf13_cobra",
     "in_gopkg_yaml_v3",
+    "io_k8s_sigs_yaml",
     "org_golang_google_genproto_googleapis_rpc",
     "org_golang_google_grpc",
     "org_golang_google_protobuf",
@@ -207,6 +220,37 @@ cc_library(
     sha256 = "bb95351a6a8b242dc9be1f28562761a84d4cf0a874ffc90a9b630770a6468e94",
     strip_prefix = "HdrHistogram_c-0.11.8",
     url = "https://github.com/HdrHistogram/HdrHistogram_c/archive/0.11.8.tar.gz",
+)
+
+# The oras CLI, which pushes the chart (//bazel/helm:defs.bzl chart_push):
+# official release archives, sha256 from the release's checksums file.
+# //bazel/oras:version_test fails until its EXPECTED moves with these.
+http_archive(
+    name = "oras_cli_linux_amd64",
+    build_file_content = 'exports_files(["oras"])',
+    sha256 = "f27adb935022d94df8dc77719c322dda592c78a0d57a6f7dcdd8d900b248c454",
+    urls = ["https://github.com/oras-project/oras/releases/download/v1.3.4/oras_1.3.4_linux_amd64.tar.gz"],
+)
+
+http_archive(
+    name = "oras_cli_linux_arm64",
+    build_file_content = 'exports_files(["oras"])',
+    sha256 = "15702c6e3a4a56a8bd8ac5c17efdbcab56d9bada661ccbcf017f5b10c1d89399",
+    urls = ["https://github.com/oras-project/oras/releases/download/v1.3.4/oras_1.3.4_linux_arm64.tar.gz"],
+)
+
+http_archive(
+    name = "oras_cli_darwin_amd64",
+    build_file_content = 'exports_files(["oras"])',
+    sha256 = "5e964f3d5a36eb9499a9d3e252a86b09e7adf3e6f6447eec56fd249c6702af7e",
+    urls = ["https://github.com/oras-project/oras/releases/download/v1.3.4/oras_1.3.4_darwin_amd64.tar.gz"],
+)
+
+http_archive(
+    name = "oras_cli_darwin_arm64",
+    build_file_content = 'exports_files(["oras"])',
+    sha256 = "217761a9500242ff473de8656b5aca21136ff39e17e9e61fd8936bbfd902704c",
+    urls = ["https://github.com/oras-project/oras/releases/download/v1.3.4/oras_1.3.4_darwin_arm64.tar.gz"],
 )
 
 # rules_python only honours is_default from the root module, so the default

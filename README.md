@@ -406,13 +406,20 @@ in; raw TCP and UDP are in review.
 
 ## Running it in Kubernetes
 
-A multi-arch image and a Helm chart are published to GHCR on every push to main:
+Two multi-arch images and a Helm chart are published to Quay on every push to
+main:
 
 ```
-ghcr.io/bpalermo/sortie                 linux/amd64, linux/arm64
-ghcr.io/bpalermo/sortie/engine          linux/amd64, linux/arm64
-oci://ghcr.io/bpalermo/sortie/charts    the chart
+quay.io/sortie/sortie               linux/amd64, linux/arm64
+quay.io/sortie/engine               linux/amd64, linux/arm64
+oci://quay.io/sortie/chart-sortie   the chart
 ```
+
+Commits before 2026-10-04 were published to `ghcr.io/bpalermo/sortie`,
+`ghcr.io/bpalermo/sortie/engine` and
+`oci://ghcr.io/bpalermo/sortie/charts/sortie`, and stay there; nothing newer
+is pushed to them. Where things are published is one setting,
+`bazel/registry.bzl`.
 
 The engine image carries `nighthawk_service` (its entrypoint),
 `nighthawk_test_server` and `nighthawk_client`, built from `engine/` in this
@@ -464,8 +471,8 @@ reporting itself as the old one. Each plan gets its own object, so a Job can
 only mount the plan it was created for.
 
 ```console
-helm install nightly oci://ghcr.io/bpalermo/sortie/charts/sortie \
-  --set-file plan=plan.yaml
+helm install nightly oci://quay.io/sortie/chart-sortie \
+  --version <chart version> --set-file plan=plan.yaml
 ```
 
 The default `plan` in `values.yaml` names no backend that exists. That is
@@ -480,28 +487,26 @@ manifest, so pulling by an architecture-specific digest is covered too:
 
 ```console
 cosign verify \
-  --certificate-identity-regexp '^https://github.com/bpalermo/sortie/' \
+  --certificate-identity-regexp '^https://github\.com/bpalermo/sortie/\.github/workflows/publish\.yml@refs/heads/main$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/bpalermo/sortie@sha256:...
+  quay.io/sortie/sortie@sha256:...
 ```
+
+`cosign verify` has no `--recursive`, so that checks one digest. From a
+checkout, `bazel run //bazel/cosign:verify_image -- quay.io/sortie/sortie@sha256:...`
+verifies the index and every manifest under it with the cosign this repository
+pins, and is what the publish workflow runs.
 
 The chart pins the image by **digest**, injected at package time from the push
 target, so a chart can only ever reference the image built alongside it.
 
-Verification needs **cosign 3 or newer**. Signatures are written in cosign's
-bundle format, which attaches them as OCI 1.1 referrers and falls back to a
-`sha256-<digest>` tag on registries that do not serve the Referrers API — ghcr
-being one. A cosign 2 client does not find them and reports `no signatures
-found`, which is indistinguishable from an unsigned image, so check the version
-before concluding anything from that.
-
-Signing is a workflow step rather than a Bazel rule because of that fallback.
-ghcr.io does not implement the Referrers API — verified, it returns `404` for a
-real digest — and rules_img pushes signatures as referrers: its `signing_config`
-docstring says "the signature is then pushed to the image's repository as an OCI
-referrer". Whether it also falls back to a tag is not visible from its source,
-since that push lives in a prebuilt binary; without a fallback it cannot work
-here, which is the assumption this rests on. cosign's fallback is verified.
+Verification needs **cosign 3 or newer**. Signatures are sigstore bundles
+attached to the manifest they sign as OCI 1.1 referrers; there is no
+`sha256-<digest>` tag. A cosign 2 client does not find them and reports `no
+signatures found`, which is indistinguishable from an unsigned image, so check
+the version before concluding anything from that. (Images on ghcr.io, from
+before the move, carry their signatures on `sha256-<digest>` tags instead,
+because that registry does not serve the Referrers API.)
 
 ## The plan schema
 
