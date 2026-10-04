@@ -83,10 +83,11 @@ new mode of the existing one:
   `Scenario.connections`: that one is the HTTP pool's circuit-breaker cap
   (default 100), and a TCP mode wants a small, exact, eagerly opened pool --
   default 1 per worker, the way `websocket.streams` is exact.
-- Plan: `tcp: {connections, expect_echo}`; `target` becomes `tcp://host:port`;
+- Plan: `tcp: {connections, max_inflight_per_connection, expect_echo,
+  drain_duration}`; `target` becomes `tcp://host:port` (or `tcps://`);
   `method`, `headers`, `grpc`, `websocket` and `connections` are errors with
-  it. Counters:
-  `benchmark.tcp_connect_failure`, `benchmark.tcp_messages`,
+  it. Counters: `benchmark.tcp_connect_failures`,
+  `benchmark.tcp_messages_sent`, `benchmark.tcp_messages_received`,
   `benchmark.tcp_echo_mismatch`.
 - `nighthawk_test_server` already links Envoy's `echo` network filter, which
   is the test target.
