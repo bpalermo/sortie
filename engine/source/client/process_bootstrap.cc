@@ -76,7 +76,8 @@ Cluster createRequestSourceClusterForWorker(const Client::Options& options,
 // Transport socket is required if the URI scheme is "https", or if the user
 // specified a custom transport socket on the command line.
 bool needTransportSocket(const Client::Options& options, const std::vector<UriPtr>& uris) {
-  return uris[0]->scheme() == "https" || options.transportSocket().has_value();
+  return uris[0]->scheme() == "https" || uris[0]->scheme() == "tcps" ||
+         options.transportSocket().has_value();
 }
 
 // Creates the transport socket configuration.
@@ -97,7 +98,11 @@ absl::StatusOr<TransportSocket> createTransportSocket(const Client::Options& opt
   }
 
   CommonTlsContext* common_tls_context = upstream_tls_context.mutable_common_tls_context();
-  if (options.protocol() == Envoy::Http::Protocol::Http2) {
+  if (uris[0]->scheme() == "tcps") {
+    // Raw TCP under TLS: no ALPN, there is no application protocol to name.
+    transport_socket.set_name("envoy.transport_sockets.tls");
+    std::ignore = transport_socket.mutable_typed_config()->PackFrom(upstream_tls_context);
+  } else if (options.protocol() == Envoy::Http::Protocol::Http2) {
     transport_socket.set_name("envoy.transport_sockets.tls");
     common_tls_context->add_alpn_protocols("h2");
     std::ignore = transport_socket.mutable_typed_config()->PackFrom(upstream_tls_context);
@@ -145,6 +150,19 @@ Cluster createNighthawkClusterForWorker(const Client::Options& options,
 
   cluster.set_name(fmt::format("{}", worker_number));
   cluster.mutable_connect_timeout()->set_seconds(options.timeout().count());
+
+  if (options.tcp()) {
+    // Raw connections through tcpConn(): no HTTP protocol options, and the HTTP pool's
+    // breakers do not apply.
+    cluster.set_type(Cluster::STATIC);
+    ClusterLoadAssignment* load_assignment = cluster.mutable_load_assignment();
+    load_assignment->set_cluster_name(cluster.name());
+    LocalityLbEndpoints* endpoints = load_assignment->add_endpoints();
+    for (const UriPtr& uri : uris) {
+      addUriToEndpoints(*uri, endpoints);
+    }
+    return cluster;
+  }
 
   envoy::extensions::upstreams::http::v3::HttpProtocolOptions http_options;
   http_options.mutable_common_http_protocol_options()

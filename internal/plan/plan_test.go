@@ -107,7 +107,7 @@ func TestValidationErrors(t *testing.T) {
 		},
 		"bad target scheme": {
 			src:  strings.Replace(minimal, "http://127.0.0.1:8080/", "ftp://host/", 1),
-			want: "target scheme must be http or https",
+			want: "target scheme must be http, https, tcp or tcps",
 		},
 		"ramp without ramp_time": {
 			src:  strings.Replace(minimal, "type: constant-rate", "type: ramping-rate", 1),
@@ -137,6 +137,30 @@ func TestValidationErrors(t *testing.T) {
 		"bidi streams not a multiple of concurrency": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    concurrency: \"4\"\n    grpc: {mode: bidi-stream, streams: 10}", 1),
 			want: "must be a multiple of concurrency",
+		},
+		"tcp block on an http target": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    tcp: {}", 1),
+			want: "tcp applies to a tcp:// or tcps:// target",
+		},
+		"tcp target without a port": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: tcp://127.0.0.1", 1),
+			want: "a tcp target needs an explicit port",
+		},
+		"tcp target without a body": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: tcp://127.0.0.1:9000", 1),
+			want: "a tcp target needs a body or body_file",
+		},
+		"tcp target with connections": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: tcp://127.0.0.1:9000\n    body: ping\n    connections: 4", 1),
+			want: "set tcp.connections",
+		},
+		"tcp target with headers": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: tcp://127.0.0.1:9000\n    body: ping\n    headers: [\"x: y\"]", 1),
+			want: "headers have no meaning with a tcp target",
+		},
+		"tcp target with websocket": {
+			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: tcp://127.0.0.1:9000\n    body: ping\n    websocket: {}", 1),
+			want: "grpc and websocket cannot go with a tcp target",
 		},
 		"websocket with grpc": {
 			src:  strings.Replace(minimal, "    target: http://127.0.0.1:8080/", "    target: http://127.0.0.1:8080/\n    grpc: {mode: unary}\n    websocket: {}", 1),

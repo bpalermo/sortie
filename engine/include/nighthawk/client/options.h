@@ -74,6 +74,22 @@ public:
    */
   virtual nighthawk::client::GrpcMode::GrpcModeOptions grpcMode() const PURE;
   /**
+   * @return bool whether raw TCP load generation is selected (a tcp:// or tcps:// URI).
+   */
+  virtual bool tcp() const PURE;
+  /**
+   * @return uint32_t connections per worker in TCP mode.
+   */
+  virtual uint32_t tcpConnections() const PURE;
+  /**
+   * @return uint32_t unanswered messages a TCP connection may hold before sends are deferred.
+   */
+  virtual uint32_t tcpMaxInflightPerConnection() const PURE;
+  /**
+   * @return bool whether the TCP peer echoes every message, which is then timed.
+   */
+  virtual bool tcpExpectEcho() const PURE;
+  /**
    * @return bool whether WebSocket load generation is enabled (--websocket).
    */
   virtual bool websocket() const PURE;

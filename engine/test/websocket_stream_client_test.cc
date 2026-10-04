@@ -80,14 +80,15 @@ public:
   }
 
   void createClient(uint32_t streams, uint32_t max_inflight = 256,
-                    std::chrono::nanoseconds drain = 50ms, bool binary = false) {
+                    std::chrono::nanoseconds drain = 50ms, bool binary = false,
+                    std::chrono::seconds open_timeout = 1s) {
     RequestGenerator request_generator = [this]() {
       return std::make_unique<RequestImpl>(header_map_, message_);
     };
     client_ = std::make_unique<WebSocketStreamBenchmarkClientImpl>(
         *api_, *dispatcher_, *store_.rootScope(), std::make_unique<StreamingStatistic>(),
         cluster_manager_, "benchmark", request_generator, streams, max_inflight, drain,
-        /*open_timeout=*/1s, binary);
+        open_timeout, binary);
     client_->setShouldMeasureLatencies(true);
   }
 
@@ -101,14 +102,16 @@ public:
 
   // Plays the server's side of the handshake: a 101 with the accept key for the request's key,
   // or whatever status and accept the test wants.
-  void upgrade(size_t index, const std::string& status = "101", std::string accept = "") {
+  void upgrade(size_t index, const std::string& status = "101", std::string accept = "",
+               const std::string& upgrade_header = "websocket",
+               const std::string& connection_header = "Upgrade") {
     if (accept.empty()) {
       accept = WebSocket::acceptKey(keys_[index]);
     }
     Envoy::Http::ResponseHeaderMapPtr headers{
         new Envoy::Http::TestResponseHeaderMapImpl{{":status", status},
-                                                   {"upgrade", "websocket"},
-                                                   {"connection", "upgrade"},
+                                                   {"upgrade", upgrade_header},
+                                                   {"connection", connection_header},
                                                    {"sec-websocket-accept", accept}}};
     decoders_[index]->decodeHeaders(std::move(headers), false);
   }
@@ -196,6 +199,35 @@ TEST_F(WebSocketStreamClientTest, AnUpgradeAnsweredWithoutA101OrWithABadAcceptIs
   dispatcher_->run(Envoy::Event::Dispatcher::RunType::NonBlock);
   EXPECT_EQ(1, completions);
   EXPECT_EQ(1, getCounter("stream_unavailable"));
+}
+
+// A 101 without the Upgrade and Connection headers the RFC requires is not a WebSocket.
+TEST_F(WebSocketStreamClientTest, A101WithoutTheUpgradeHeadersIsRejected) {
+  createClient(3);
+  Envoy::Event::TimerPtr timer = dispatcher_->createTimer([this]() {
+    upgrade(0, "101", "", "h2c", "Upgrade");
+    upgrade(1, "101", "", "websocket", "keep-alive");
+    upgrade(2, "101", "", "WebSocket", "keep-alive, Upgrade");
+  });
+  timer->enableTimer(1ms);
+  client_->prepare();
+  EXPECT_EQ(1, client_->openStreams());
+  EXPECT_EQ(2, getCounter("stream_upgrade_rejected"));
+}
+
+// An upgrade still unanswered when the wait expires is an open failure, and the stream is
+// reset: it does not join the run later.
+TEST_F(WebSocketStreamClientTest, UpgradesPendingAtTheTimeoutAreOpenFailures) {
+  createClient(2, 256, 50ms, false, /*open_timeout=*/1s);
+  Envoy::Event::TimerPtr timer = dispatcher_->createTimer([this]() { upgrade(0); });
+  timer->enableTimer(1ms);
+  client_->prepare();
+  EXPECT_EQ(1, client_->openStreams());
+  EXPECT_EQ(1, getCounter("stream_open_failures"));
+  // A late 101 changes nothing.
+  upgrade(1);
+  EXPECT_EQ(1, client_->openStreams());
+  EXPECT_EQ(1, getCounter("streams_opened"));
 }
 
 TEST_F(WebSocketStreamClientTest, MessagesRoundRobinAndEchoesCompleteThemBySequence) {

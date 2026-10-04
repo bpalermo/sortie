@@ -131,6 +131,11 @@ README's Limitations section; keep the two in sync.
   (`createTransportSocket` in `engine/source/client/process_bootstrap.cc`).
   Upstream deprecated `tls_context` for `transport_socket`; here it is the
   modeled path and stays. Without `tls`, https verifies nothing.
+- A `tcp://`/`tcps://` target selects the engine's TCP mode
+  (`TcpBenchmarkClientImpl`, a second `BenchmarkClient` on
+  `ThreadLocalCluster::tcpConn`, so the cluster's transport socket applies);
+  `Scenario.tcp` tunes it. Per-worker rate like HTTP; counters `benchmark.tcp_*`,
+  statistic `benchmark_tcp.message_latency`.
 - One execution per backend at a time; `nighthawk_service` refuses a second.
 - `RequestSource` never sees responses, so there is no session flow and no
   response correlation.

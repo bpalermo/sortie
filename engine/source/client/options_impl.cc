@@ -20,6 +20,8 @@
 #include "engine/source/common/utility.h"
 #include "engine/source/common/version_info.h"
 
+#include "absl/strings/ascii.h"
+#include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
@@ -27,6 +29,15 @@
 
 namespace Nighthawk {
 namespace Client {
+
+namespace {
+// Whether a target URI selects raw TCP load (tcp:// or tcps://). Decided from the string so
+// it is known before validation parses the URI.
+bool isTcpUri(absl::string_view uri) {
+  const std::string lower = absl::AsciiStrToLower(uri);
+  return absl::StartsWith(lower, "tcp://") || absl::StartsWith(lower, "tcps://");
+}
+} // namespace
 
 using ::envoy::config::core::v3::Http3ProtocolOptions;
 using ::nighthawk::client::Protocol;
@@ -241,9 +252,23 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
       "benchmark.stream_* as for bidi-stream, plus stream_upgrade_rejected and "
       "stream_protocol_errors.",
       cmd, false);
-  TCLAP::SwitchArg websocket_binary("", "websocket-binary",
-                                    "With --websocket, send binary frames rather than text.", cmd,
-                                    false);
+  TCLAP::SwitchArg websocket_binary(
+      "", "websocket-binary", "With --websocket, send binary frames rather than text.", cmd, false);
+  TCLAP::ValueArg<uint32_t> tcp_connections(
+      "", "tcp-connections",
+      "With a tcp:// or tcps:// URI (raw TCP load: the request body is written on a fixed pool "
+      "of connections per worker, round-robin at --rps per worker, as is, and timed against its "
+      "echo, matched in order): connections per worker (default: 1).",
+      false, 1, "uint32_t", cmd);
+  TCLAP::ValueArg<uint32_t> tcp_max_inflight(
+      "", "tcp-max-inflight-per-connection",
+      "With a tcp:// URI: unanswered messages a connection may hold before scheduled sends on "
+      "it are dropped and counted in benchmark.tcp_deferred (default: 256).",
+      false, 256, "uint32_t", cmd);
+  TCLAP::SwitchArg tcp_no_echo("", "tcp-no-echo",
+                               "With a tcp:// URI: the peer does not echo; a write completes at "
+                               "once and nothing is read or timed.",
+                               cmd, false);
   TCLAP::ValueArg<uint32_t> streams(
       "", "streams",
       "Total number of streams to open: gRPC bidi streams in --grpc-mode bidi-stream, "
@@ -531,6 +556,7 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
   TCLAP_SET_IF_SPECIFIED(timeout, timeout_);
   if (uri.isSet()) {
     uri_ = uri.getValue();
+    tcp_ = isTcpUri(uri_.value());
   }
 
   if (h2.isSet() && protocol.isSet()) {
@@ -542,6 +568,9 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
   }
   websocket_ = websocket.getValue();
   websocket_binary_ = websocket_binary.getValue();
+  TCLAP_SET_IF_SPECIFIED(tcp_connections, tcp_connections_);
+  TCLAP_SET_IF_SPECIFIED(tcp_max_inflight, tcp_max_inflight_);
+  tcp_expect_echo_ = !tcp_no_echo.getValue();
   TCLAP_SET_IF_SPECIFIED(streams, streams_);
   TCLAP_SET_IF_SPECIFIED(max_inflight_per_stream, max_inflight_per_stream_);
   if (stream_drain_duration.isSet()) {
@@ -933,6 +962,7 @@ OptionsImpl::OptionsImpl(const nighthawk::client::CommandLineOptions& options) {
   }
   if (options.has_uri()) {
     uri_ = options.uri().value();
+    tcp_ = isTcpUri(uri_.value());
   } else {
     multi_target_path_ =
         PROTOBUF_GET_WRAPPED_OR_DEFAULT(options.multi_target(), path, multi_target_path_);
@@ -957,6 +987,17 @@ OptionsImpl::OptionsImpl(const nighthawk::client::CommandLineOptions& options) {
           Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(stream_options.drain_duration()));
     }
   }
+  if (options.has_tcp()) {
+    const auto& tcp_options = options.tcp();
+    tcp_connections_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(tcp_options, connections, tcp_connections_);
+    tcp_max_inflight_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(tcp_options, max_inflight_per_connection,
+                                                        tcp_max_inflight_);
+    tcp_expect_echo_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(tcp_options, expect_echo, tcp_expect_echo_);
+    if (tcp_options.has_drain_duration()) {
+      stream_drain_duration_ = std::chrono::nanoseconds(
+          Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(tcp_options.drain_duration()));
+    }
+  }
   if (options.has_websocket()) {
     const auto& websocket_options = options.websocket();
     websocket_ = true;
@@ -965,8 +1006,9 @@ OptionsImpl::OptionsImpl(const nighthawk::client::CommandLineOptions& options) {
     max_inflight_per_stream_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(
         websocket_options, max_inflight_per_stream, max_inflight_per_stream_);
     if (websocket_options.has_drain_duration()) {
-      stream_drain_duration_ = std::chrono::nanoseconds(
-          Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(websocket_options.drain_duration()));
+      stream_drain_duration_ =
+          std::chrono::nanoseconds(Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(
+              websocket_options.drain_duration()));
     }
   }
   if (grpcEnabled() && !options.has_protocol() && !options.has_h2()) {
@@ -1287,6 +1329,35 @@ void OptionsImpl::validate() const {
     } catch (const UriException&) {
       throw MalformedArgvException(fmt::format("Invalid target URI: ''", uri_.value()));
     }
+    if (tcp_) {
+      if (grpcEnabled() || websocket_) {
+        throw MalformedArgvException(
+            "a tcp:// URI (raw TCP load) cannot be combined with --grpc-mode or --websocket");
+      }
+      if (!request_headers_.empty() ||
+          request_method_ != envoy::config::core::v3::RequestMethod::GET) {
+        throw MalformedArgvException(
+            "a tcp:// URI (raw TCP load) takes no --request-header or --request-method: the "
+            "request body is the message, there is no HTTP");
+      }
+      if (tcp_expect_echo_ && request_body_.empty() && request_body_size_ == 0) {
+        throw MalformedArgvException(
+            "a tcp:// URI needs a --request-body-file or --request-body-size: the message is "
+            "what gets echoed and matched (or --tcp-no-echo, to only count writes)");
+      }
+      if (tcp_connections_ == 0 || tcp_max_inflight_ == 0) {
+        throw MalformedArgvException(
+            "--tcp-connections and --tcp-max-inflight-per-connection must be greater than 0");
+      }
+      if (!request_source_.empty() || request_source_plugin_config_.has_value() ||
+          !user_defined_output_plugin_configs_.empty() || simple_warmup_) {
+        // The raw client takes the body once, in prepare(), and repeats it: a request source's
+        // replay would silently collapse into one message.
+        throw MalformedArgvException("a tcp:// URI (raw TCP load) is not supported together "
+                                     "with --request-source, --request-source-plugin-config, "
+                                     "--user-defined-plugin-config or --simple-warmup");
+      }
+    }
     if (!multi_target_endpoints_.empty() || !multi_target_path_.empty() ||
         multi_target_use_https_) {
       throw MalformedArgvException("URI and --multi-target-* options cannot both be specified.");
@@ -1390,6 +1461,14 @@ CommandLineOptionsPtr OptionsImpl::toCommandLineOptionsInternal() const {
     stream_options->mutable_streams()->set_value(streams_);
     stream_options->mutable_max_inflight_per_stream()->set_value(max_inflight_per_stream_);
     *stream_options->mutable_drain_duration() =
+        Envoy::Protobuf::util::TimeUtil::NanosecondsToDuration(stream_drain_duration_.count());
+  }
+  if (tcp_) {
+    auto* tcp_options = command_line_options->mutable_tcp();
+    tcp_options->mutable_connections()->set_value(tcp_connections_);
+    tcp_options->mutable_max_inflight_per_connection()->set_value(tcp_max_inflight_);
+    tcp_options->mutable_expect_echo()->set_value(tcp_expect_echo_);
+    *tcp_options->mutable_drain_duration() =
         Envoy::Protobuf::util::TimeUtil::NanosecondsToDuration(stream_drain_duration_.count());
   }
   if (websocket_) {

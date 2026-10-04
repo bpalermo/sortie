@@ -16,11 +16,13 @@
 
 #include "engine/source/client/benchmark_client_impl.h"
 #include "engine/source/client/grpc_stream_client_impl.h"
-#include "engine/source/client/websocket_stream_client_impl.h"
 #include "engine/source/client/output_collector_impl.h"
 #include "engine/source/client/output_formatter_impl.h"
+#include "engine/source/client/tcp_benchmark_client_impl.h"
+#include "engine/source/client/websocket_stream_client_impl.h"
 #include "engine/source/common/platform_util_impl.h"
 #include "engine/source/common/rate_limiter_impl.h"
+#include "engine/source/common/request_impl.h"
 #include "engine/source/common/request_source_impl.h"
 #include "engine/source/common/sequencer_impl.h"
 #include "engine/source/common/statistic_impl.h"
@@ -39,12 +41,31 @@ OptionBasedFactoryImpl::OptionBasedFactoryImpl(const Options& options) : options
 BenchmarkClientFactoryImpl::BenchmarkClientFactoryImpl(const Options& options)
     : OptionBasedFactoryImpl(options) {}
 
+RequestGenerator BenchmarkClientFactoryImpl::rawMessageGenerator(RequestSource& request_generator,
+                                                                 uint32_t body_size) {
+  return [generator = request_generator.get(), size = body_size]() -> RequestPtr {
+    RequestPtr request = generator();
+    if (request != nullptr && request->body().empty() && size > 0) {
+      return std::make_unique<RequestImpl>(request->header(), std::string(size, 'a'));
+    }
+    return request;
+  };
+}
+
 BenchmarkClientPtr BenchmarkClientFactoryImpl::create(
     Envoy::Api::Api& api, Envoy::Event::Dispatcher& dispatcher, Envoy::Stats::Scope& scope,
     Envoy::Upstream::ClusterManagerPtr& cluster_manager, Envoy::Tracing::TracerSharedPtr& tracer,
     absl::string_view cluster_name, int worker_id, RequestSource& request_generator,
     std::vector<UserDefinedOutputNamePluginPair> user_defined_output_plugins) const {
   StatisticFactoryImpl statistic_factory(options_);
+  if (options_.tcp()) {
+    return std::make_unique<TcpBenchmarkClientImpl>(
+        api, dispatcher, scope, std::make_unique<SinkableHdrStatistic>(scope, worker_id),
+        cluster_manager, cluster_name,
+        rawMessageGenerator(request_generator, options_.requestBodySize()),
+        options_.tcpConnections(), options_.tcpMaxInflightPerConnection(), options_.tcpExpectEcho(),
+        options_.streamDrainDuration(), options_.timeout());
+  }
   if (options_.websocket()) {
     const uint32_t concurrency = std::stoi(options_.concurrency());
     return std::make_unique<WebSocketStreamBenchmarkClientImpl>(

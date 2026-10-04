@@ -248,6 +248,44 @@ transport socket altogether -- goes through `nighthawk_template`: its
 `tls_context` gets the same SNI and ALPN treatment, its `transport_socket`
 replaces the whole socket.
 
+## TCP
+
+```yaml
+scenarios:
+  - name: raw
+    target: tcp://edge.example.test:9000     # tcps:// for a TLS-terminating listener
+    body: "ping\n"
+    concurrency: "2"
+    tcp:
+      connections: 4          # per worker; default 1
+      expect_echo: true       # default; false for a sink that answers nothing
+    executor: {type: constant-rate, rate: 2000, duration: 60s}
+    thresholds:
+      - "benchmark_tcp.message_latency.p99 < 20ms"
+      - "counter:benchmark.tcp_deferred == 0"
+      - "counter:benchmark.tcp_connection_closed == 0"
+```
+
+For Envoy's `tcp_proxy` and TLS-terminating listeners in front of non-HTTP
+services. The target's scheme selects the mode (an explicit port is
+required); `tcp` tunes it. Each worker keeps `connections` connections open
+and writes the message, as is, on them round-robin at the executor's rate --
+per worker, as for HTTP, so the rate is divided by backends x workers as
+usual. With `expect_echo` a write completes when those bytes come back on the
+same connection -- matched in order, which is what a TCP connection gives --
+and that round trip is the latency (`benchmark_tcp.message_latency`); a
+message's worth of bytes that is not the message counts in
+`benchmark.tcp_echo_mismatch`. Without it the write completes at once and
+nothing is read or timed: a write only queues bytes locally. `tls` works with
+`tcps://`.
+`method`, `headers`, `protocol`, `grpc` and `websocket` are errors with a tcp
+target. Counters: `benchmark.tcp_connections_opened`, `tcp_connect_failures`,
+`tcp_messages_sent`, `tcp_messages_received`, `tcp_deferred`,
+`tcp_unavailable`, `tcp_connection_closed`, `tcp_echo_mismatch`,
+`tcp_inflight_lost`, `tcp_drain_incomplete`, `tcp_write_blocked`. Envoy's
+`echo` network filter on `nighthawk_test_server` is the target the e2e test
+uses.
+
 ## Anything this schema does not model
 
 `nighthawk_template` on a scenario carries Nighthawk options straight through.

@@ -46,6 +46,10 @@ public:
   MOCK_METHOD(uint32_t, requestBodySize, (), (const, override));
   MOCK_METHOD(const std::string&, requestBody, (), (const, override));
   MOCK_METHOD(nighthawk::client::GrpcMode::GrpcModeOptions, grpcMode, (), (const, override));
+  MOCK_METHOD(bool, tcp, (), (const, override));
+  MOCK_METHOD(uint32_t, tcpConnections, (), (const, override));
+  MOCK_METHOD(uint32_t, tcpMaxInflightPerConnection, (), (const, override));
+  MOCK_METHOD(bool, tcpExpectEcho, (), (const, override));
   MOCK_METHOD(bool, websocket, (), (const, override));
   MOCK_METHOD(bool, websocketBinary, (), (const, override));
   MOCK_METHOD(uint32_t, streams, (), (const, override));

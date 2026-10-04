@@ -100,6 +100,29 @@ message Pool {
     }];
 }
 
+// Tcp is what a scenario can set about raw TCP load. Its own pool size, not
+// Scenario.connections: that one is the HTTP pool's circuit-breaker cap, and
+// a TCP run wants a small, exact, eagerly opened pool.
+message Tcp {
+  // Connections per worker. The engine's default is 1.
+  optional uint32 connections = 1 [(buf.validate.field).uint32.gte = 1];
+
+  // Unanswered messages a connection may hold before a scheduled send is
+  // dropped and counted in benchmark.tcp_deferred. Default 256.
+  optional uint32 max_inflight_per_connection = 2 [(buf.validate.field).uint32.gte = 1];
+
+  // Whether the peer echoes every message, which is what gets timed. Default
+  // true; false for a sink that answers nothing, where only the writes count.
+  optional bool expect_echo = 3;
+
+  // How long to wait for outstanding echoes at the end of the run. Default
+  // 500ms.
+  google.protobuf.Duration drain_duration = 4 [
+    (buf.validate.field).duration.gte = {seconds: 0},
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+}
+
 // WebSocket is what a scenario can set about WebSocket load. The rate rule is
 // bidi-stream's: each backend's share must be a multiple of its concurrency,
 // as must `streams`, and every stream is a connection.
@@ -150,12 +173,13 @@ message Scenario {
 
   string pool = 2;
 
-  // URI to benchmark. http:// and https:// only.
+  // URI to benchmark: http:// or https:// for HTTP, gRPC and WebSocket;
+  // tcp:// or tcps:// (TLS) with an explicit port for raw TCP (see Tcp).
   string target = 3 [
     (buf.validate.field).cel = {
       id: "scenario.target.scheme"
-      message: "target scheme must be http or https"
-      expression: "this.startsWith('http://') || this.startsWith('https://')"
+      message: "target scheme must be http, https, tcp or tcps"
+      expression: "this.startsWith('http://') || this.startsWith('https://') || this.startsWith('tcp://') || this.startsWith('tcps://')"
     },
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
   ];
@@ -225,6 +249,16 @@ message Scenario {
   // (http:// or https://, not ws://). Implies protocol http1 and method GET;
   // mutually exclusive with grpc.
   WebSocket websocket = 19;
+
+  // Raw TCP load, for Envoy's tcp_proxy and TLS-terminating listeners: a
+  // tcp:// or tcps:// target selects it, this block tunes it. Each worker
+  // keeps `connections` connections open and writes the message (body or
+  // body_file, as is) on them round-robin at the executor's rate -- per
+  // worker, as for HTTP -- and, with expect_echo, times it against its echo,
+  // matched in order (benchmark_tcp.message_latency); the message must not be
+  // empty then. method, headers, protocol, grpc and websocket are errors with
+  // a tcp target.
+  Tcp tcp = 20;
 
   // Like body, but the bytes of a file, resolved relative to the plan file.
   // For request messages that are not text, such as serialized protobufs.

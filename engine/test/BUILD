@@ -42,6 +42,23 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
+    name = "tcp_benchmark_client_test",
+    srcs = ["tcp_benchmark_client_test.cc"],
+    deps = [
+        "//engine/source/client:nighthawk_client_lib",
+        "//engine/source/common:request_impl_lib",
+        "//engine/test/test_common:environment_lib",
+        "@envoy//source/common/buffer:buffer_lib_with_external_headers",
+        "@envoy//source/common/http:header_map_lib_with_external_headers",
+        "@envoy//source/common/stats:isolated_store_lib_with_external_headers",
+        "@envoy//source/exe:process_wide_lib_with_external_headers",
+        "@envoy//test/mocks/network:network_mocks",
+        "@envoy//test/mocks/upstream:upstream_mocks",
+        "@envoy//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
     name = "websocket_stream_client_test",
     srcs = ["websocket_stream_client_test.cc"],
     deps = [

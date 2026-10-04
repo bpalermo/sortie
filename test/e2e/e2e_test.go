@@ -540,3 +540,89 @@ func TestMutualTLSPlanAgainstTheEngine(t *testing.T) {
 		})
 	}
 }
+
+// The test server with Envoy's echo network filter on a plain listener.
+const tcpTestServerConfig = `admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 0 }
+static_resources:
+  listeners:
+  - address:
+      socket_address: { address: 127.0.0.1, port_value: 0 }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.echo
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.echo.v3.Echo
+`
+
+// 100 messages per second per worker, 2 workers, 5 s: exactly 1000 messages
+// sent -- the per-worker division of the rate -- on 2 connections per worker,
+// and all but a message still in flight at the end echoed.
+const tcpPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+defaults:
+  pool: local
+  target: tcp://127.0.0.1:%d
+  concurrency: "2"
+  body: "ping\\n"
+  tcp:
+    connections: 2
+thresholds:
+  - "counter:benchmark.tcp_connect_failures == 0"
+  - "counter:benchmark.tcp_deferred == 0"
+  - "counter:benchmark.tcp_inflight_lost == 0"
+  - "counter:benchmark.tcp_echo_mismatch == 0"
+scenarios:
+  - name: tcp
+    executor:
+      type: constant-rate
+      rate: 200
+      duration: 5s
+    thresholds:
+      - "counter:benchmark.tcp_messages_sent == 1000"
+      - "counter:benchmark.tcp_messages_received >= 990"
+      - "benchmark_tcp.message_latency.p99 < 500ms"
+`
+
+func TestTcpPlanAgainstTheEngine(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tmp := t.TempDir()
+
+	configPath := filepath.Join(tmp, "test_server.yaml")
+	if err := os.WriteFile(configPath, []byte(tcpTestServerConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adminPath := filepath.Join(tmp, "admin_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_test_server"),
+		"--config-path", configPath, "--admin-address-path", adminPath,
+		"--disable-hot-restart", "--concurrency", "1", "--base-id", "4")
+	targetPort := listenerPort(t, waitForAddress(t, adminPath))
+
+	servicePath := filepath.Join(tmp, "service_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath)
+	serviceAddr := waitForAddress(t, servicePath)
+	assertHealthy(t, ctx, serviceAddr)
+
+	planPath := filepath.Join(tmp, "plan.yaml")
+	if err := os.WriteFile(planPath, []byte(fmt.Sprintf(tcpPlanTemplate, serviceAddr, targetPort)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath)
+	out, err := cmd.CombinedOutput()
+	t.Logf("sortie run:\n%s", out)
+	if err != nil {
+		t.Fatalf("sortie run failed: %v", err)
+	}
+	if !regexp.MustCompile(`(?m)^\s+\S+: 1000 messages sent, (99[0-9]|1000) echoed in \S+$`).Match(out) {
+		t.Errorf("sortie output lacks the backend line with 1000 messages sent and echoed")
+	}
+	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict")
+	}
+}

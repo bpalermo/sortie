@@ -46,6 +46,7 @@ TEST_F(FactoriesTest, CreateBenchmarkClient) {
   EXPECT_CALL(options_, maxRequestsPerConnection());
   EXPECT_CALL(options_, openLoop());
   EXPECT_CALL(options_, responseHeaderWithLatencyInput());
+  EXPECT_CALL(options_, tcp()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, websocket()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
   EXPECT_CALL(options_, timeout());
@@ -60,6 +61,7 @@ TEST_F(FactoriesTest, CreateBenchmarkClient) {
 TEST_F(FactoriesTest, CreateGrpcStreamBenchmarkClient) {
   BenchmarkClientFactoryImpl factory(options_);
   Envoy::Upstream::ClusterManagerPtr cluster_manager;
+  EXPECT_CALL(options_, tcp()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, websocket()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, grpcMode())
       .WillRepeatedly(Return(nighthawk::client::GrpcMode::BIDI_STREAM));
@@ -77,6 +79,24 @@ TEST_F(FactoriesTest, CreateGrpcStreamBenchmarkClient) {
   ASSERT_NE(nullptr, benchmark_client.get());
   EXPECT_NE(nullptr, dynamic_cast<GrpcStreamBenchmarkClientImpl*>(benchmark_client.get()));
   EXPECT_EQ(1, benchmark_client->statistics().count("benchmark_stream.message_latency"));
+}
+
+// The raw clients get --request-body-size as real bytes, and a real body untouched.
+TEST_F(FactoriesTest, RawMessageGeneratorMaterializesASizedBody) {
+  StaticRequestSourceImpl sized(std::make_unique<Envoy::Http::TestRequestHeaderMapImpl>());
+  RequestPtr request = BenchmarkClientFactoryImpl::rawMessageGenerator(sized, 4)();
+  ASSERT_NE(nullptr, request);
+  EXPECT_EQ("aaaa", request->body());
+
+  StaticRequestSourceImpl with_body(std::make_unique<Envoy::Http::TestRequestHeaderMapImpl>(),
+                                    /*max_yields=*/UINT64_MAX, /*body=*/"ping");
+  request = BenchmarkClientFactoryImpl::rawMessageGenerator(with_body, 4)();
+  ASSERT_NE(nullptr, request);
+  EXPECT_EQ("ping", request->body());
+
+  request = BenchmarkClientFactoryImpl::rawMessageGenerator(sized, 0)();
+  ASSERT_NE(nullptr, request);
+  EXPECT_EQ("", request->body());
 }
 
 TEST_F(FactoriesTest, CreateRequestSourcePluginWithWorkingJsonReturnsWorkingRequestSource) {
@@ -100,6 +120,7 @@ TEST_F(FactoriesTest, CreateRequestSourcePluginWithWorkingJsonReturnsWorkingRequ
   EXPECT_CALL(options_, requestMethod());
   EXPECT_CALL(options_, requestBodySize());
   EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(empty_body_));
+  EXPECT_CALL(options_, tcp()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, websocket()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
   EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/"));
@@ -143,6 +164,7 @@ TEST_F(FactoriesTest, CreateRequestSourcePluginWithNonWorkingJsonThrowsError) {
   EXPECT_CALL(options_, requestMethod());
   EXPECT_CALL(options_, requestBodySize());
   EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(empty_body_));
+  EXPECT_CALL(options_, tcp()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, websocket()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
   EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/"));
@@ -170,6 +192,7 @@ TEST_F(FactoriesTest, CreateRequestSource) {
   EXPECT_CALL(options_, requestMethod());
   EXPECT_CALL(options_, requestBodySize());
   EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(empty_body_));
+  EXPECT_CALL(options_, tcp()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, websocket()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
   EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/"));
@@ -196,6 +219,7 @@ TEST_F(FactoriesTest, CreateRequestSourceWithBodyFileSetsContentLengthOnly) {
   EXPECT_CALL(options_, requestMethod())
       .WillRepeatedly(Return(envoy::config::core::v3::RequestMethod::POST));
   EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(body));
+  EXPECT_CALL(options_, tcp()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, websocket()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
   EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/bar"));
@@ -221,6 +245,7 @@ TEST_F(FactoriesTest, CreateRequestSourceWithGrpcFramesBodyAndSetsGrpcHeaders) {
   EXPECT_CALL(options_, requestMethod())
       .WillRepeatedly(Return(envoy::config::core::v3::RequestMethod::POST));
   EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(message));
+  EXPECT_CALL(options_, tcp()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, websocket()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::UNARY));
   EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/pkg.Svc/Method"));
@@ -248,6 +273,7 @@ TEST_F(FactoriesTest, CreateRemoteRequestSource) {
   EXPECT_CALL(options_, requestMethod());
   EXPECT_CALL(options_, requestBodySize());
   EXPECT_CALL(options_, requestBody()).WillRepeatedly(ReturnRef(empty_body_));
+  EXPECT_CALL(options_, tcp()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, websocket()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, grpcMode()).WillRepeatedly(Return(nighthawk::client::GrpcMode::NONE));
   EXPECT_CALL(options_, uri()).Times(2).WillRepeatedly(Return("http://foo/"));
@@ -280,6 +306,7 @@ public:
     EXPECT_CALL(options_, rateLimiterPluginConfig())
         .WillOnce(ReturnRef(rate_limiter_plugin_config));
     EXPECT_CALL(options_, requestsPerSecond()).WillOnce(Return(1));
+    EXPECT_CALL(options_, tcp()).WillRepeatedly(Return(false));
     EXPECT_CALL(options_, websocket()).WillRepeatedly(Return(false));
     EXPECT_CALL(options_, grpcMode());
     EXPECT_CALL(options_, burstSize()).WillOnce(Return(2));
@@ -328,6 +355,7 @@ TEST_P(SequencerFactoryTest, ValidRateLimiterPluginCreatesWorkingSequencer) {
   // LinearRampingRateLimiter specific. Adjust if test fails because of any
   // changes made to the LinearRampingRateLimiterImplFactory.
   EXPECT_CALL(options_, requestsPerSecond()).WillOnce(Return(100));
+  EXPECT_CALL(options_, tcp()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, websocket()).WillRepeatedly(Return(false));
   EXPECT_CALL(options_, grpcMode()).WillOnce(Return(nighthawk::client::GrpcMode::NONE));
   EXPECT_CALL(options_, noDuration()).WillOnce(Return(false));

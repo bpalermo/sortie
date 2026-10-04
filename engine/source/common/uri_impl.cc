@@ -14,7 +14,8 @@
 namespace Nighthawk {
 
 bool UriImpl::isValid() const {
-  return (scheme_ == "http" || scheme_ == "https" || scheme_ == "zipkin" || scheme_ == "grpc") &&
+  return (scheme_ == "http" || scheme_ == "https" || scheme_ == "zipkin" || scheme_ == "grpc" ||
+          scheme_ == "tcp" || scheme_ == "tcps") &&
          (port_ > 0 && port_ <= 65535) &&
          // We check that we do not start with '-' because that overlaps with CLI argument
          // parsing. For other hostname validation, we defer to parseInternetAddressAndPort() and
@@ -42,6 +43,9 @@ UriImpl::UriImpl(absl::string_view uri, absl::string_view default_scheme)
     default_port = 443;
   } else if (scheme_ == "grpc") {
     default_port = 8443;
+  } else if (scheme_ == "tcp" || scheme_ == "tcps") {
+    // No well-known port for raw TCP: the URI has to say.
+    default_port = 0;
   }
 
   const size_t colon_index = Utility::findPortSeparator(host_and_port_);
