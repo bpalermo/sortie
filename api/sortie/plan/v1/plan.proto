@@ -267,8 +267,10 @@ message Scenario {
   // Raw TCP load, for Envoy's tcp_proxy and TLS-terminating listeners: a
   // tcp:// or tcps:// target selects it, this block tunes it. Each worker
   // keeps `connections` connections open and writes the message (body or
-  // body_file, as is) on them round-robin at the executor's rate -- per
-  // worker, as for HTTP -- and, with expect_echo, times it against its echo,
+  // body_file, as is) on them round-robin -- the plan's rate is the pool's
+  // aggregate, divided over backends and workers as for HTTP; only the
+  // engine's own requests_per_second is per worker -- and, with expect_echo,
+  // times it against its echo,
   // matched in order (benchmark_tcp.message_latency); the message must not be
   // empty then. method, headers, protocol, grpc and websocket are errors with
   // a tcp target.
@@ -276,8 +278,10 @@ message Scenario {
 
   // UDP load, for Envoy's udp_proxy: a udp:// target selects it, this block
   // tunes it. Each worker sends the message (body or body_file) as one
-  // datagram per scheduled request at the executor's rate -- per worker --
-  // prefixed with a sequence number, and times it against its echo, matched
+  // datagram per scheduled request -- the plan's rate is the pool's aggregate,
+  // divided over backends and workers as for HTTP; only the engine's own
+  // requests_per_second is per worker -- prefixed with a sequence number, and
+  // times it against its echo, matched
   // by that number (benchmark_udp.message_latency); a datagram unanswered for
   // `timeout` is lost (benchmark.udp_lost). method, headers, protocol, grpc,
   // websocket and tcp are errors with a udp target; a body is required.

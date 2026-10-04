@@ -1381,11 +1381,12 @@ void OptionsImpl::validate() const {
         throw MalformedArgvException("a udp:// URI needs a --request-body-file or "
                                      "--request-body-size: the datagram is what gets echoed");
       }
-      if (transport_socket_.has_value()) {
+      if (transport_socket_.has_value() || tls_context_.ByteSizeLong() > 0) {
         // The UDP client opens a plain datagram socket of its own; the cluster's transport
-        // socket never applies to it, so accepting one would promise encryption it does not do.
-        throw MalformedArgvException(
-            "a udp:// URI (UDP load) takes no --transport-socket: datagrams go unencrypted");
+        // socket never applies to it, so accepting TLS configuration would promise encryption
+        // it does not do.
+        throw MalformedArgvException("a udp:// URI (UDP load) takes no --transport-socket or "
+                                     "--tls-context: datagrams go unencrypted");
       }
       if (udp_max_inflight_ == 0 || udp_timeout_ <= std::chrono::nanoseconds(0)) {
         throw MalformedArgvException("--udp-max-inflight and --udp-timeout must be positive");

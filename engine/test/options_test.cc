@@ -594,6 +594,10 @@ TEST_F(OptionsImplTest, UdpUriSelectsUdpModeWithDefaultsRoundTripAndValidation) 
                                                     "--transport-socket " +
                                      transport_socket + " udp://127.0.0.1:9000"),
       MalformedArgvException, "takes no --transport-socket");
+  EXPECT_THROW_WITH_REGEX(
+      TestUtility::createOptionsImpl(client_name_ + " --rps 100 --request-body-size 4 "
+                                                    "--tls-context {sni:\"x\"} udp://127.0.0.1:9000"),
+      MalformedArgvException, "takes no --transport-socket or --tls-context");
 }
 
 TEST_F(OptionsImplTest, TcpUriSelectsTcpModeWithDefaultsRoundTripAndValidation) {
