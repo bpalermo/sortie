@@ -1384,10 +1384,10 @@ void OptionsImpl::validate() const {
       if (udp_max_inflight_ == 0 || udp_timeout_ <= std::chrono::nanoseconds(0)) {
         throw MalformedArgvException("--udp-max-inflight and --udp-timeout must be positive");
       }
-      if (request_source_plugin_config_.has_value() ||
+      if (!request_source_.empty() || request_source_plugin_config_.has_value() ||
           !user_defined_output_plugin_configs_.empty() || simple_warmup_) {
         throw MalformedArgvException("a udp:// URI (UDP load) is not supported together with "
-                                     "--request-source-plugin-config, "
+                                     "--request-source, --request-source-plugin-config, "
                                      "--user-defined-plugin-config or --simple-warmup");
       }
     }
