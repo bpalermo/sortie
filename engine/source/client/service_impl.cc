@@ -54,14 +54,18 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   OptionsPtr options;
   try {
     nighthawk::client::CommandLineOptions requested = request.start_request().options();
-    if (max_concurrent_executions_ > 1 && requested.has_verbosity()) {
+    if (max_concurrent_executions_ > 1) {
       // The log level is one process-wide setting (Envoy's logger registry), which every
       // Process sets from its own options when it is built. With one execution at a time
       // that honours each request; with several at once the last one built would set the
       // level for all of them. A service that runs executions concurrently therefore logs at
-      // its own level throughout, and a request's verbosity is not applied.
-      ENVOY_LOG(info, "Ignoring the request's verbosity: this service runs executions "
-                      "concurrently, and the log level is process-wide.");
+      // its own level throughout. Set unconditionally: a request that names no verbosity
+      // would otherwise get the options' default, which is a different level again.
+      if (requested.has_verbosity() &&
+          requested.verbosity().value() != nighthawk::client::Verbosity::INFO) {
+        ENVOY_LOG(info, "Ignoring the request's verbosity: this service runs executions "
+                        "concurrently, and the log level is process-wide.");
+      }
       requested.mutable_verbosity()->set_value(nighthawk::client::Verbosity::INFO);
     }
     options = std::make_unique<OptionsImpl>(requested);
