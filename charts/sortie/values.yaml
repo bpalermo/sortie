@@ -47,7 +47,8 @@ plan: |
 # kind: DaemonSet runs one engine per node instead, behind a headless Service
 # named <release>-sortie-engine-nodes, so DNS answers with one address per
 # ready pod. (Its own name, because a Service cannot be turned headless in
-# place: switching kind replaces one Service with the other.) A plan then finds
+# place: switching kind replaces one Service with the other.) That Service is
+# IPv4 only, because the engine listens on 0.0.0.0. A plan then finds
 # them with a dns pool rather than a list, and per_backend keeps its rate per
 # node however many there are:
 #
