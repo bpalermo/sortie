@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -364,6 +365,37 @@ scenarios:
       - "counter:benchmark.http_5xx == 0"
 `
 
+// awaitStatsdLines waits until every pattern has matched some line the UDP
+// reader has collected, and returns the patterns still unmatched when the wait
+// runs out. The run ending says the engine has sent its datagrams, not that
+// this process's reader goroutine has read them: one still queued in the
+// socket would be missed by a single look.
+func awaitStatsdLines(mu *sync.Mutex, lines *[]string, patterns map[string]*regexp.Regexp) []string {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		var missing []string
+		for name, re := range patterns {
+			seen := false
+			for _, l := range *lines {
+				if re.MatchString(l) {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				missing = append(missing, name)
+			}
+		}
+		mu.Unlock()
+		if len(missing) == 0 || time.Now().After(deadline) {
+			sort.Strings(missing)
+			return missing
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func TestLiveMetricsReachAStatsdSink(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -418,24 +450,17 @@ func TestLiveMetricsReachAStatsdSink(t *testing.T) {
 		t.Fatalf("sortie run failed: %v", err)
 	}
 
-	mu.Lock()
-	got := append([]string(nil), lines...)
-	mu.Unlock()
-	t.Logf("statsd received %d lines; a sample:\n%s", len(got), strings.Join(got[:min(len(got), 40)], "\n"))
 	// The scenario's name, sanitized, under the default prefix; a counter the
 	// engine keeps in its store, and a latency sample as a statsd timer.
-	counter := regexp.MustCompile(`^sortie\.live_metrics\..*benchmark\.http_2xx:\d+\|c`)
-	timer := regexp.MustCompile(`^sortie\.live_metrics\..*latency.*:\d+(\.\d+)?\|ms`)
-	var sawCounter, sawTimer bool
-	for _, l := range got {
-		sawCounter = sawCounter || counter.MatchString(l)
-		sawTimer = sawTimer || timer.MatchString(l)
-	}
-	if !sawCounter {
-		t.Errorf("no http_2xx counter under sortie.live_metrics reached the statsd socket")
-	}
-	if !sawTimer {
-		t.Errorf("no latency timer under sortie.live_metrics reached the statsd socket")
+	missing := awaitStatsdLines(&mu, &lines, map[string]*regexp.Regexp{
+		"an http_2xx counter": regexp.MustCompile(`^sortie\.live_metrics\..*benchmark\.http_2xx:\d+\|c`),
+		"a latency timer":     regexp.MustCompile(`^sortie\.live_metrics\..*latency.*:\d+(\.\d+)?\|ms`),
+	})
+	mu.Lock()
+	t.Logf("statsd received %d lines; a sample:\n%s", len(lines), strings.Join(lines[:min(len(lines), 40)], "\n"))
+	mu.Unlock()
+	for _, m := range missing {
+		t.Errorf("%s under sortie.live_metrics did not reach the statsd socket", m)
 	}
 }
 
@@ -529,18 +554,12 @@ func TestWeightedTargetsEachEmitTheirOwnLiveMetrics(t *testing.T) {
 		t.Errorf("sortie output lacks the PASS verdict")
 	}
 
-	mu.Lock()
-	got := append([]string(nil), lines...)
-	mu.Unlock()
+	want := map[string]*regexp.Regexp{}
 	for _, target := range []string{"a", "b", "c"} {
-		counter := regexp.MustCompile(`^sortie\.mix\.` + target + `\..*benchmark\.http_2xx:\d+\|c`)
-		seen := false
-		for _, l := range got {
-			seen = seen || counter.MatchString(l)
-		}
-		if !seen {
-			t.Errorf("no http_2xx counter under sortie.mix.%s reached the statsd socket", target)
-		}
+		want["an http_2xx counter under sortie.mix."+target] = regexp.MustCompile(`^sortie\.mix\.` + target + `\..*benchmark\.http_2xx:\d+\|c`)
+	}
+	for _, m := range awaitStatsdLines(&mu, &lines, want) {
+		t.Errorf("%s did not reach the statsd socket", m)
 	}
 }
 
