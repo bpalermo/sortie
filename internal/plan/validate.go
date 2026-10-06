@@ -19,6 +19,14 @@ func validateBeyondSchema(p *Plan) error {
 	pools := make(map[string]struct{}, len(p.GetPools()))
 	for _, pool := range p.GetPools() {
 		pools[pool.GetName()] = struct{}{}
+		// Checked here as the resolver will check it, so `validate` refuses
+		// what `run` would only discover when it starts.
+		if pool.GetDns() != "" {
+			if _, _, err := SplitDns(pool.GetDns()); err != nil {
+				return fmt.Errorf("pool %q: dns %q: %w (an IPv6 literal needs brackets)",
+					pool.GetName(), pool.GetDns(), err)
+			}
+		}
 	}
 
 	for i, expr := range p.GetThresholds() {

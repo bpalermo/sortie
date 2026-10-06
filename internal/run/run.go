@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"net"
 	"sync"
 	"time"
@@ -146,11 +147,14 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 	return report, nil
 }
 
-// resolve returns the plan with its dns pools resolved, waiting up to
-// ResolveTimeout for a name that answers with nothing. Every other failure --
-// a name that does not exist, a resolver error -- is returned at once; so is
-// an empty answer once the wait is over, as the same ResolveError. A context
-// cancelled during the wait ends it with the context's error.
+// resolve returns the plan with its dns pools resolved. Each name is looked
+// up until it answers with at least one address, for up to ResolveTimeout of
+// its own -- lookups in flight included -- and is then left alone: a name that
+// has answered is not asked again while another is still empty, so its
+// backends are the ones it gave the first time. Every other failure -- a name
+// that does not exist, a resolver error -- is returned at once; so is an empty
+// answer once its wait is over, as the same ResolveError. A context cancelled
+// during a wait ends it with the context's error.
 func (r *Runner) resolve(ctx context.Context) (*plan.Plan, error) {
 	resolver := r.Resolver
 	if resolver == nil {
@@ -160,16 +164,32 @@ func (r *Runner) resolve(ctx context.Context) (*plan.Plan, error) {
 	if timeout <= 0 {
 		timeout = resolveTimeout
 	}
+	out := proto.Clone(r.Plan).(*plan.Plan)
+	for _, pool := range out.GetPools() {
+		if pool.GetDns() == "" {
+			continue
+		}
+		services, err := r.resolvePool(ctx, pool, resolver, timeout)
+		if err != nil {
+			return nil, err
+		}
+		pool.Services = services
+	}
+	return out, nil
+}
+
+// resolvePool is one name's wait: see resolve.
+func (r *Runner) resolvePool(ctx context.Context, pool *plan.Pool, resolver plan.Resolver, timeout time.Duration) ([]string, error) {
 	deadline := time.Now().Add(timeout)
-	// The lookups themselves are bound by the same deadline, not only the
-	// pauses between them: a resolver waiting on a name server that never
-	// answers would otherwise hold the run for as long as it liked.
+	// The lookups themselves are bound by the deadline, not only the pauses
+	// between them: a resolver waiting on a name server that never answers
+	// would otherwise hold the run for as long as it liked.
 	lookupCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	for {
-		p, err := plan.Resolve(lookupCtx, r.Plan, resolver)
+		services, err := plan.ResolvePool(lookupCtx, pool, resolver)
 		if err == nil {
-			return p, nil
+			return services, nil
 		}
 		// Cancelled while a lookup was in flight: the resolver's error wraps
 		// the context's, inside a ResolveError the CLI would report as bad

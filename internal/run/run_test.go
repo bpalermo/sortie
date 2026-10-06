@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -406,6 +407,64 @@ func TestRunDnsTimeoutBoundsABlockedLookup(t *testing.T) {
 	if waited := time.Since(started); waited > 5*time.Second {
 		t.Errorf("a blocked lookup held a 100ms timeout for %s", waited)
 	}
+}
+
+// With two dns pools, a name that has answered is not asked again while the
+// other is still empty: its backends are the ones it gave the first time,
+// even if the name server would now say something else.
+func TestRunDoesNotReResolveAPoolThatAnswered(t *testing.T) {
+	fake := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		return okResponse(10, time.Millisecond, time.Second)
+	})
+	host, port, _ := net.SplitHostPort(fake.addr)
+	p, err := plan.Parse([]byte(fmt.Sprintf(`
+version: v1
+pools:
+  - name: first
+    dns: first.test:%[1]s
+  - name: second
+    dns: second.test:%[1]s
+scenarios:
+  - name: s
+    pool: first
+    target: http://127.0.0.1:1/
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+`, port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := &perNameResolver{host: host, emptyFor: map[string]int{"second.test": 2}}
+	if _, err := (&run.Runner{Plan: p, Resolver: resolver, ResolveTimeout: 30 * time.Second}).Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := resolver.calls["first.test"]; got != 1 {
+		t.Errorf("first.test was looked up %d times, want once: it had answered", got)
+	}
+	if got := resolver.calls["second.test"]; got != 3 {
+		t.Errorf("second.test was looked up %d times, want 3 (two empty answers, then one)", got)
+	}
+}
+
+// perNameResolver answers every name with host, after emptyFor[name] empty
+// answers, and counts the lookups per name.
+type perNameResolver struct {
+	mu       sync.Mutex
+	host     string
+	emptyFor map[string]int
+	calls    map[string]int
+}
+
+func (c *perNameResolver) LookupHost(_ context.Context, name string) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.calls == nil {
+		c.calls = map[string]int{}
+	}
+	c.calls[name]++
+	if c.calls[name] <= c.emptyFor[name] {
+		return nil, nil
+	}
+	return []string{c.host}, nil
 }
 
 // blockingResolver answers only when its context ends, as a resolver waiting

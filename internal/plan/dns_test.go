@@ -129,3 +129,29 @@ func TestResolveErrors(t *testing.T) {
 		})
 	}
 }
+
+// validate refuses what the resolver would: the schema's pattern alone lets
+// an unclosed bracket and an IPv6 literal without brackets through.
+func TestParseRejectsADnsPoolTheResolverCouldNotSplit(t *testing.T) {
+	for _, dns := range []string{"[engine.test:8443", "2001:db8::1:8443", "engine.test:0", "engine.test:70000"} {
+		_, err := Parse([]byte(`
+version: v1
+pools:
+  - name: nodes
+    dns: "` + dns + `"
+scenarios:
+  - name: s
+    pool: nodes
+    target: http://127.0.0.1:1/
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+`))
+		if err == nil {
+			t.Errorf("dns %q parsed, want an error", dns)
+		}
+	}
+	for _, dns := range []string{"engine.test:8443", "[2001:db8::1]:8443", "10.0.0.1:8443"} {
+		if _, _, err := SplitDns(dns); err != nil {
+			t.Errorf("dns %q: %v", dns, err)
+		}
+	}
+}

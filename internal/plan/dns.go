@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strconv"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -56,17 +57,46 @@ func Resolve(ctx context.Context, p *Plan, r Resolver) (*Plan, error) {
 		if pool.GetDns() == "" {
 			continue
 		}
-		services, err := resolvePool(ctx, pool, r)
+		services, err := ResolvePool(ctx, pool, r)
 		if err != nil {
-			return nil, &ResolveError{Pool: pool.GetName(), Dns: pool.GetDns(), Err: err}
+			return nil, err
 		}
 		pool.Services = services
 	}
 	return out, nil
 }
 
+// ResolvePool looks one dns pool's name up and returns its backends, sorted,
+// or a *ResolveError. It is what Resolve does per pool, exported so a caller
+// that retries can retry the one name that is not answering yet and keep the
+// answers it already has.
+func ResolvePool(ctx context.Context, pool *Pool, r Resolver) ([]string, error) {
+	services, err := resolvePool(ctx, pool, r)
+	if err != nil {
+		return nil, &ResolveError{Pool: pool.GetName(), Dns: pool.GetDns(), Err: err}
+	}
+	return services, nil
+}
+
+// SplitDns splits a dns pool's host:port and checks it the way the resolver
+// will: the schema's pattern admits shapes net.SplitHostPort does not, such
+// as an unclosed bracket or an IPv6 literal without brackets.
+func SplitDns(dns string) (host, port string, err error) {
+	host, port, err = net.SplitHostPort(dns)
+	if err != nil {
+		return "", "", err
+	}
+	if host == "" {
+		return "", "", errors.New("the host is empty")
+	}
+	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+		return "", "", fmt.Errorf("port %q is not in 1..65535", port)
+	}
+	return host, port, nil
+}
+
 func resolvePool(ctx context.Context, pool *Pool, r Resolver) ([]string, error) {
-	host, port, err := net.SplitHostPort(pool.GetDns())
+	host, port, err := SplitDns(pool.GetDns())
 	if err != nil {
 		return nil, err
 	}

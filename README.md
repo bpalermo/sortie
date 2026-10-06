@@ -131,7 +131,8 @@ and not of the order the name server answered in, and the report says what the
 name resolved to: it is the only record of which nodes a run drove. A name that
 answers with nothing is retried for up to 30 seconds, because a headless
 Service lists a pod only once it is ready; nothing after that is an error
-before any load is generated, with exit code 2. A node that joins during a run
+before any load is generated, with exit code 2. With several such pools each
+name has its own 30 seconds, and one that has answered is not asked again. A node that joins during a run
 gets no load, and one that leaves fails its backend's execution visibly rather
 than silently shrinking the pool. `validate` and `compile` accept the pool
 without resolving it.
