@@ -81,11 +81,6 @@ func statsSinks(st *plan.Stats, label string) ([]*metricsv3.StatsSink, error) {
 		if sink.GetName() == "" {
 			return nil, fmt.Errorf("stats.sinks[%d]: a sink needs a name", i)
 		}
-		if strings.HasPrefix(sink.GetName(), "nighthawk.") {
-			// One of the engine's own sinks: it is looked up directly.
-			out = append(out, proto.Clone(sink).(*metricsv3.StatsSink))
-			continue
-		}
 		wrapped, err := anypb.New(&statssink.EnvoyStatsSinkAdapterConfig{Sink: sink})
 		if err != nil {
 			return nil, fmt.Errorf("stats.sinks[%d]: %w", i, err)

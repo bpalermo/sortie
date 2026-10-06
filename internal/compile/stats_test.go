@@ -142,8 +142,11 @@ func TestStatsPassthroughSinks(t *testing.T) {
 	if sd.GetPrefix() != "mine" {
 		t.Errorf("a passthrough sink's prefix = %q, want it as written", sd.GetPrefix())
 	}
-	if sinks[1].GetName() != "nighthawk.fake_stats_sink" {
-		t.Errorf("an engine sink should pass unwrapped, got %q", sinks[1].GetName())
+	// Every entry is an Envoy sink and is hosted through the adapter, whatever
+	// its name starts with: a name is the user's to choose, and Envoy finds
+	// the factory from the config.
+	if got := unwrap(t, sinks[1]).GetName(); got != "nighthawk.fake_stats_sink" {
+		t.Errorf("the second sink should be wrapped under its own name, got %q", got)
 	}
 	// An unnamed sink has no factory to resolve to.
 	_, err = Expand(statsScenario(&plan.Stats{Sinks: []*metricsv3.StatsSink{{}}}))
