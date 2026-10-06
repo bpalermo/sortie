@@ -21,7 +21,7 @@ the order the gaps get closed in.
 | Telling failures apart (a reset before headers, a body cut short, a refused or timed-out connection) | `benchmark.stream_resets_<phase>`, `benchmark.stream_resets_<reason>`, `benchmark.pool_failure_<reason>` | engine fork |
 | Load from every node at once (a mesh's per-node proxy) | chart `engine.kind: DaemonSet` behind a headless Service, a `dns:` pool, `executor.per_backend` | sortie |
 | Several upstreams under one weighted load | `targets: [{name, url, weight}]`: one concurrent execution per target, each with its own counters and histograms; `nighthawk_service --max-concurrent-executions` | engine fork |
-| Stats sinks (statsd, OTLP) from the client's own counters | `nighthawk.envoy_stats_sink_adapter` via `nighthawk_template` | engine fork |
+| Live metrics from the client's own counters and latencies | `stats: {flush_interval, prefix, statsd, sinks}`: statsd over UDP, names prefixed per scenario; other Envoy sinks through `stats.sinks` (not OTLP, which aborts on flush here) | engine fork |
 
 ## The designs, in the order they were built
 

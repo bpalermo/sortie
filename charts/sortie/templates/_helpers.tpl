@@ -189,6 +189,23 @@ place rather than start a new run.
 {{- include "sortie.podSpec" . | sha256sum | trunc 8 -}}
 {{- end -}}
 
+{{/*
+The format of the report file, checked.
+*/}}
+{{- define "sortie.reportFormat" -}}
+{{- $format := .Values.report.format | default "json" -}}
+{{- if not (has $format (list "json" "text")) -}}
+{{- fail (printf "report.format must be json or text, got %q" $format) -}}
+{{- end -}}
+{{- if not .Values.report.volume -}}
+{{- fail "report.volume is required with report.path: the root filesystem is read-only, and a report written to the pod itself is gone with the pod" -}}
+{{- end -}}
+{{- if not (isAbs .Values.report.path) -}}
+{{- fail (printf "report.path must be an absolute file path, got %q" .Values.report.path) -}}
+{{- end -}}
+{{- $format -}}
+{{- end -}}
+
 {{- define "sortie.podSpec" -}}
 metadata:
   labels:
@@ -220,17 +237,32 @@ spec:
         {{- toYaml .Values.securityContext | nindent 8 }}
       args:
         {{- toYaml .Values.args | nindent 8 }}
+        {{- if .Values.report.path }}
+        {{- if eq (include "sortie.reportFormat" .) "json" }}
+        - --json
+        {{- end }}
+        - --output
+        - {{ .Values.report.path | quote }}
+        {{- end }}
         - /etc/sortie/plan.yaml
       volumeMounts:
         - name: plan
           mountPath: /etc/sortie
           readOnly: true
+        {{- if .Values.report.path }}
+        - name: report
+          mountPath: {{ dir .Values.report.path | quote }}
+        {{- end }}
       resources:
         {{- toYaml .Values.resources | nindent 8 }}
   volumes:
     - name: plan
       configMap:
         name: {{ include "sortie.configMapName" . }}
+    {{- if .Values.report.path }}
+    - name: report
+      {{- toYaml .Values.report.volume | nindent 6 }}
+    {{- end }}
   {{- with .Values.nodeSelector }}
   nodeSelector:
     {{- toYaml . | nindent 4 }}

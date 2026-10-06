@@ -14,6 +14,20 @@ import (
 // scenario that declares an executor means that executor and not a blend.
 func applyDefaults(p *Plan) {
 	d := p.GetDefaults()
+	// stats has a third level: the plan's own block is the default for every
+	// scenario, under defaults.stats. A scenario's block replaces either
+	// wholesale, so a plan that reports every scenario to statsd and one
+	// scenario that names an OTLP endpoint sends that scenario to OTLP only.
+	for _, s := range p.GetScenarios() {
+		if s.GetStats() == nil {
+			switch {
+			case d.GetStats() != nil:
+				s.Stats = proto.Clone(d.GetStats()).(*Stats)
+			case p.GetStats() != nil:
+				s.Stats = proto.Clone(p.GetStats()).(*Stats)
+			}
+		}
+	}
 	if d == nil {
 		return
 	}

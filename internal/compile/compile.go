@@ -535,6 +535,14 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 	if s.GetTimeout() != nil {
 		o.Timeout = s.GetTimeout()
 	}
+	if st := s.GetStats(); st != nil {
+		// Added to a template's stats_sinks rather than replacing them: a
+		// plan-level stats block is the default for every scenario, and a
+		// scenario that also carries a sink in its template means both.
+		if err := applyStats(o, st, execID); err != nil {
+			return nil, fmt.Errorf("scenario %q: %w", s.GetName(), err)
+		}
+	}
 
 	// The rate limiter is sortie's to choose: it is what makes an executor mean
 	// what it says. A template that carried one would otherwise survive into a

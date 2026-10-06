@@ -12,6 +12,7 @@ load("//bazel/lint:linters.bzl", "buildifier_test")
 # gazelle:resolve go github.com/bpalermo/sortie/engine/api/client //engine/api/client:base_go_proto
 # gazelle:resolve go github.com/bpalermo/sortie/engine/api/distributor //engine/api/distributor:distributor_go_proto
 # gazelle:resolve go github.com/bpalermo/sortie/engine/api/rate_limiter //engine/api/rate_limiter:rate_limiter_plugin_go_proto
+# gazelle:resolve go github.com/bpalermo/sortie/engine/api/stats_sink //engine/api/stats_sink:envoy_stats_sink_adapter_go_proto
 
 # Envoy's types must come from envoy_api rather than the go-control-plane Go
 # module, because that is where the Nighthawk proto targets above get theirs.
@@ -19,12 +20,15 @@ load("//bazel/lint:linters.bzl", "buildifier_test")
 # envoy message in the binary and panic at init on duplicate registration.
 # gazelle:resolve go github.com/envoyproxy/go-control-plane/envoy/config/core/v3 @envoy_api//envoy/config/core/v3:pkg_go_proto
 # gazelle:resolve go github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3 @envoy_api//envoy/extensions/transport_sockets/tls/v3:pkg_go_proto
+# gazelle:resolve go github.com/envoyproxy/go-control-plane/envoy/config/metrics/v3 @envoy_api//envoy/config/metrics/v3:pkg_go_proto
 
 # The plan schema imports the engine's and protovalidate's protos. gazelle
 # does not index engine/ and protovalidate lives in an external repository,
 # so both imports are resolved here.
 # gazelle:resolve proto engine/api/client/options.proto //engine/api/client:base
 # gazelle:resolve proto go engine/api/client/options.proto //engine/api/client:base_go_proto
+# gazelle:resolve proto envoy/config/metrics/v3/stats.proto @envoy_api//envoy/config/metrics/v3:pkg
+# gazelle:resolve proto go envoy/config/metrics/v3/stats.proto @envoy_api//envoy/config/metrics/v3:pkg_go_proto
 # gazelle:resolve proto buf/validate/validate.proto @protovalidate//proto/protovalidate/buf/validate:validate_proto
 # gazelle:resolve proto go buf/validate/validate.proto @build_buf_gen_go_bufbuild_protovalidate_protocolbuffers_go//buf/validate
 
@@ -107,6 +111,7 @@ filegroup(
         "//engine/api/client:BUILD",
         "//engine/api/distributor:BUILD",
         "//engine/api/rate_limiter:BUILD",
+        "//engine/api/stats_sink:BUILD",
         "//charts/sortie:starlark_srcs",
     ],
     tags = ["starlark"],

@@ -67,6 +67,14 @@ helm_template_test(
     values = ["test/engine-only.yaml"],
 )
 
+# A durable report: --output, and the volume it writes to.
+helm_template_test(
+    name = "sortie_report_volume_template_test",
+    size = "small",
+    chart = ":sortie",
+    values = ["test/report-volume.yaml"],
+)
+
 filegroup(
     name = "starlark_srcs",
     srcs = glob(

@@ -210,7 +210,11 @@ func TestRunWritesTheReportToAFile(t *testing.T) {
 		t.Fatalf("exit = %d\nstderr:\n%s", code, stderr)
 	}
 	if strings.Contains(stdout, "{") {
-		t.Errorf("the report went to stdout as well as the file:\n%s", stdout)
+		t.Errorf("the JSON report went to stdout as well as the file:\n%s", stdout)
+	}
+	// stdout keeps the readable summary, so a pod's log is never empty.
+	if !strings.Contains(stdout, "PASS  1/1 executions passed") {
+		t.Errorf("stdout lacks the text summary:\n%s", stdout)
 	}
 
 	raw, err := os.ReadFile(out)

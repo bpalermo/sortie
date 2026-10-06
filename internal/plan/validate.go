@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -41,6 +42,12 @@ func validateBeyondSchema(p *Plan) error {
 	// these into every scenario that sets neither.
 	if d := p.GetDefaults(); d.GetBody() != "" && d.GetBodyFile() != "" {
 		return fmt.Errorf("defaults: body and body_file are mutually exclusive")
+	}
+	if err := validateStats(p.GetStats()); err != nil {
+		return fmt.Errorf("stats: %w", err)
+	}
+	if err := validateStats(p.GetDefaults().GetStats()); err != nil {
+		return fmt.Errorf("defaults: stats: %w", err)
 	}
 
 	// defaults is a Scenario too: its target list is copied into every
@@ -95,6 +102,9 @@ func validateBeyondSchema(p *Plan) error {
 			if err := validateModes(p, variant); err != nil {
 				return fmt.Errorf("scenario %q: %w", variant.GetName(), err)
 			}
+		}
+		if err := validateStats(s.GetStats()); err != nil {
+			return fmt.Errorf("scenario %q: stats: %w", s.GetName(), err)
 		}
 	}
 	return nil
@@ -454,4 +464,23 @@ func share(rate uint32, w, total uint64) uint32 {
 		v = 1
 	}
 	return uint32(v)
+}
+
+// validateStats checks what the schema's host:port rule cannot: the engine's
+// statsd sink resolves its address with Envoy's IP resolver, which takes an
+// IP literal and no name, so a hostname would fail on the backend, at sink
+// creation, with the plan already dispatched.
+func validateStats(st *Stats) error {
+	if st.GetStatsd() == nil {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(st.GetStatsd().GetAddress())
+	if err != nil {
+		return fmt.Errorf("statsd.address: %w", err)
+	}
+	if net.ParseIP(host) == nil {
+		return fmt.Errorf("statsd.address: %q is not an IP address; the engine's statsd sink "+
+			"does not resolve names, so use the server's IP (a Service's clusterIP)", host)
+	}
+	return nil
 }

@@ -9,6 +9,7 @@ syntax = "proto3";
 package sortie.plan.v1;
 
 import "engine/api/client/options.proto";
+import "envoy/config/metrics/v3/stats.proto";
 import "buf/validate/validate.proto";
 import "google/protobuf/duration.proto";
 
@@ -45,6 +46,77 @@ message Plan {
   // Thresholds applied to every scenario, in addition to any the scenario
   // declares itself.
   repeated string thresholds = 5;
+
+  // Live metrics for every scenario that does not set its own stats block.
+  // A scenario's stats replaces this wholesale rather than merging with it.
+  Stats stats = 6;
+}
+
+// Stats makes a run observable while it is running: the engine flushes the
+// counters it keeps in its Envoy stats store, and the samples of its latency
+// statistics, to the sinks named here, every flush_interval. The report at the
+// end of the run is unaffected.
+//
+// Metric names are prefixed so a dashboard can tell scenarios apart: the
+// effective prefix is `<prefix>.<label>`, where label is the execution's label
+// with each `/`-separated segment lowercased and reduced to [a-z0-9_]
+// (`smoke` -> `sortie.smoke`; staircase stage 2 of `smoke` ->
+// `sortie.smoke.stage_2`). See compile.StatsPrefix.
+message Stats {
+  option (buf.validate.message).cel = {
+    id: "stats.needs_a_sink"
+    message: "stats needs statsd or at least one entry in sinks"
+    expression: "has(this.statsd) || this.sinks.size() > 0"
+  };
+
+  // How often the engine flushes to its sinks. The engine's default is 5s.
+  // Latency samples are delivered as they are recorded, regardless.
+  google.protobuf.Duration flush_interval = 1 [
+    (buf.validate.field).duration.gt = {seconds: 0},
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+
+  // The first component of every metric name. Default "sortie".
+  string prefix = 2 [
+    (buf.validate.field).cel = {
+      id: "stats.prefix.format"
+      message: "prefix must be made of [a-zA-Z0-9_.-] and start with a letter, digit or _"
+      expression: "this.matches('^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$')"
+    },
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+
+  // Envoy's statsd sink (envoy.stat_sinks.statsd), over UDP.
+  Statsd statsd = 3;
+
+  // 4 was open_telemetry, drafted and withdrawn before release: Envoy's OTLP
+  // sink sends on the thread that flushes, and its gRPC client asserts it is
+  // used on the thread that created it. The engine creates sinks on its main
+  // thread and flushes them on a flush worker, so the sink aborts on its first
+  // flush. To reach an OpenTelemetry collector, point statsd at the
+  // collector's statsd receiver.
+  reserved 4;
+  reserved "open_telemetry";
+
+  // Any other stats sink that is an Envoy extension linked into the engine,
+  // configured as it would be in an Envoy bootstrap's stats_sinks. Passed
+  // through as written -- the prefix scheme above does not apply -- wrapped in
+  // the engine's nighthawk.envoy_stats_sink_adapter, which is how an Envoy
+  // sink is hosted in the engine. A sink whose name already starts with
+  // "nighthawk." is one of the engine's own and is not wrapped.
+  repeated envoy.config.metrics.v3.StatsSink sinks = 5;
+}
+
+// Statsd is the statsd sink. UDP only: Envoy's TCP statsd sink addresses a
+// cluster of the bootstrap, and the engine generates its bootstrap itself.
+message Statsd {
+  // host:port of the statsd server -- for example an OpenTelemetry collector's
+  // statsd receiver.
+  string address = 1 [(buf.validate.field).cel = {
+    id: "statsd.address.host_port"
+    message: "address must be host:port"
+    expression: "this.matches('^\\\\[?[^\\\\[\\\\]]+\\\\]?:[0-9]{1,5}$')"
+  }];
 }
 
 // Pool is a set of Nighthawk backends that a scenario's load is spread over.
@@ -312,6 +384,11 @@ message Scenario {
   // `timeout` is lost (benchmark.udp_lost). method, headers, protocol, grpc,
   // websocket and tcp are errors with a udp target; a body is required.
   Udp udp = 21;
+
+  // Live metrics for this scenario, replacing the plan's stats wholesale. Its
+  // sinks are added to any a nighthawk_template carries in stats_sinks; its
+  // flush_interval replaces the template's.
+  Stats stats = 22;
 
   // Like body, but the bytes of a file, resolved relative to the plan file.
   // For request messages that are not text, such as serialized protobufs.
