@@ -213,10 +213,12 @@ names a target or a list of its own takes neither from it.
 
 Two things differ from a per-request weighted draw, both deliberate:
 
-- **Each target is paced on its own.** A target's rate is a constant
-  `rate x weight / sum(weights)`, not a random share that averages out to it.
-  The mix is exact over any window rather than only over a long one, and one
-  slow target cannot starve the others of their slots.
+- **Each target is paced on its own.** A target's rate is a fixed
+  `rate x weight / sum(weights)`, kept by its own rate limiter, not a random
+  share that only averages out to it. Every target gets its rate throughout
+  the run, and one slow target cannot starve the others of their slots. A
+  window short enough to hold a handful of requests can still contain some
+  targets and not others.
 - **Shares are rounded.** A share is rounded to the nearest whole request per
   second and is never less than 1, so the shares may not sum to `rate`: 100
   split 1:1:1 is 33 + 33 + 33. The report shows the rate each target ran at.

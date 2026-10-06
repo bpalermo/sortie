@@ -15,7 +15,6 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <mutex>
 #include <optional>
 #include <random>
 
@@ -1170,7 +1169,7 @@ bool ProcessImpl::runInternal(OutputCollector& collector, const UriPtr& tracing_
       ENVOY_LOG(error, redactedForLog(bootstrap_).DebugString());
 
       if (!options_.statsSinks().empty()) {
-        // There should be only a single live flush worker instance at any time.
+        // One flush worker per Process (see FlushWorkerImpl).
         flush_worker_ = std::make_unique<FlushWorkerImpl>(
             stats_flush_interval, *api_, tls_, store_root_, stats_sinks, *cluster_manager_);
         flush_worker_->start();
