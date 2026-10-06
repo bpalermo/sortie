@@ -14,6 +14,8 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <mutex>
 #include <optional>
 #include <random>
 
@@ -1326,7 +1328,13 @@ void ProcessImpl::setupForHRTimers() {
   // The upside of the approach below is that we are very loosely coupled and have a one-liner.
   // Getting to libevent for the other approach is going to introduce more code as we would need to
   // derive our own customized versions of certain Envoy concepts.
-  putenv(const_cast<char*>("EVENT_PRECISE_TIMER=1"));
+  //
+  // Once per process: putenv changes the process-wide environment and is not required to be
+  // thread-safe, and the service may build several Processes at the same time
+  // (--max-concurrent-executions). The value never changes, so the first call is the only one
+  // that matters.
+  static std::once_flag once;
+  std::call_once(once, []() { putenv(const_cast<char*>("EVENT_PRECISE_TIMER=1")); });
 }
 
 } // namespace Client
