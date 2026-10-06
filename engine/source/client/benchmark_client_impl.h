@@ -33,8 +33,17 @@ namespace Client {
 
 using namespace std::chrono_literals;
 
+// The failure classes below refine stream_resets and pool_connection_failure without changing
+// them: every reset is counted once in stream_resets and once in exactly one of the
+// stream_resets_<phase> counters (plus once in a lazily created stream_resets_<reason>, see
+// streamResetReasonCounter()); every pool failure is counted once in one of the
+// pool_failure_<reason> counters, where the overflow reason is the pre-existing pool_overflow.
+// pool_failure_timeout (the connect timeout, --timeout) is the one reason that was previously
+// not counted under benchmark.* at all; it stays outside pool_connection_failure.
 #define ALL_BENCHMARK_CLIENT_COUNTERS(COUNTER)                                                     \
   COUNTER(stream_resets)                                                                           \
+  COUNTER(stream_resets_before_headers)                                                            \
+  COUNTER(stream_resets_incomplete_body)                                                           \
   COUNTER(http_1xx)                                                                                \
   COUNTER(http_2xx)                                                                                \
   COUNTER(http_3xx)                                                                                \
@@ -44,6 +53,9 @@ using namespace std::chrono_literals;
   COUNTER(pool_overflow)                                                                           \
   COUNTER(grpc_error)                                                                              \
   COUNTER(pool_connection_failure)                                                                 \
+  COUNTER(pool_failure_local_connection_failure)                                                   \
+  COUNTER(pool_failure_remote_connection_failure)                                                  \
+  COUNTER(pool_failure_timeout)                                                                    \
   COUNTER(user_defined_plugin_handle_headers_failure)                                              \
   COUNTER(user_defined_plugin_handle_data_failure)
 
@@ -153,6 +165,7 @@ public:
   // StreamDecoderCompletionCallback
   void onComplete(bool success, const Envoy::Http::ResponseHeaderMap& headers,
                   GrpcStatusOpt grpc_status) override;
+  void onStreamReset(StreamResetPhase phase, Envoy::Http::StreamResetReason reason) override;
   void onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason reason) override;
   void exportLatency(const uint32_t response_code, const uint64_t latency_ns,
                      GrpcStatusOpt grpc_status) override;
@@ -175,6 +188,7 @@ private:
    */
   bool trackGrpcStatus(GrpcStatusOpt grpc_status);
   Envoy::Stats::Counter& grpcStatusCounter(GrpcStatusOpt grpc_status);
+  Envoy::Stats::Counter& streamResetReasonCounter(Envoy::Http::StreamResetReason reason);
 
   Envoy::Api::Api& api_;
   Envoy::Event::Dispatcher& dispatcher_;
@@ -205,6 +219,10 @@ private:
   // "grpc_status.missing".
   absl::flat_hash_map<std::optional<Envoy::Grpc::Status::GrpcStatus>, Envoy::Stats::Counter*>
       grpc_status_counters_;
+  // Lazily created "stream_resets_<reason>" counters, keyed by reset reason. Lazy so that the
+  // set of names tracks Envoy's StreamResetReason without a hand-maintained list here.
+  absl::flat_hash_map<Envoy::Http::StreamResetReason, Envoy::Stats::Counter*>
+      stream_reset_reason_counters_;
 };
 
 } // namespace Client

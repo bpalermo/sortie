@@ -15,6 +15,50 @@ import (
 	"github.com/bpalermo/sortie/internal/run"
 )
 
+// failureCounters are the engine's request failure classes, in the order they
+// are printed. They overlap and must not be summed: a reset is in
+// stream_resets and, for request/response load, in one stream_resets_<phase>
+// and one stream_resets_<reason> counter; a failed unary gRPC call is in
+// grpc_error as well as in what stopped it. The engine omits a counter that
+// never incremented, so a clean run prints none of these.
+var failureCounters = []string{
+	"benchmark.http_4xx",
+	"benchmark.http_5xx",
+	"benchmark.grpc_error",
+	"benchmark.stream_resets",
+	"benchmark.stream_resets_before_headers",
+	"benchmark.stream_resets_incomplete_body",
+	"benchmark.pool_overflow",
+	"benchmark.pool_connection_failure",
+	"benchmark.pool_failure_local_connection_failure",
+	"benchmark.pool_failure_remote_connection_failure",
+	"benchmark.pool_failure_timeout",
+}
+
+// failures lists a backend's non-zero failure counters: the classes above in
+// their order, then any stream_resets_<reason> counters in the order the
+// engine reported them. Nil when the backend had none.
+func failures(counters []*client.Counter) []*client.Counter {
+	byName := map[string]*client.Counter{}
+	for _, c := range counters {
+		byName[c.GetName()] = c
+	}
+	var out []*client.Counter
+	listed := map[string]bool{}
+	for _, name := range failureCounters {
+		listed[name] = true
+		if c, ok := byName[name]; ok && c.GetValue() > 0 {
+			out = append(out, c)
+		}
+	}
+	for _, c := range counters {
+		if !listed[c.GetName()] && strings.HasPrefix(c.GetName(), "benchmark.stream_resets_") && c.GetValue() > 0 {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // Text writes a human-readable report.
 func Text(w io.Writer, r *run.Report) error {
 	for i, e := range r.Executions {
@@ -78,9 +122,10 @@ func execution(w io.Writer, e run.ExecutionReport) error {
 				b.Addr, sent, counters["benchmark.tcp_messages_received"], elapsed)
 			continue
 		}
-		fmt.Fprintf(w, "       %s: %d requests in %s\n",
+		fmt.Fprintf(w, "       %s: %d requests in %s%s\n",
 			b.Addr, counters["benchmark.http_2xx"]+counters["benchmark.http_3xx"]+
-				counters["benchmark.http_4xx"]+counters["benchmark.http_5xx"], elapsed)
+				counters["benchmark.http_4xx"]+counters["benchmark.http_5xx"], elapsed,
+			failureSuffix(b.Global.GetCounters()))
 	}
 
 	if len(e.Outcomes) == 0 {
@@ -94,6 +139,22 @@ func execution(w io.Writer, e run.ExecutionReport) error {
 			status(o.Pass), o.Threshold.Raw, o.Detail(), o.Scope)
 	}
 	return tw.Flush()
+}
+
+// failureSuffix is the per-backend failure breakdown, e.g.
+// "  (stream_resets 3, stream_resets_incomplete_body 3, stream_resets_remote_reset 3)",
+// counter names without their "benchmark." prefix; empty when the backend had
+// no failures, so a clean run's line is unchanged.
+func failureSuffix(counters []*client.Counter) string {
+	fs := failures(counters)
+	if len(fs) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(fs))
+	for _, c := range fs {
+		parts = append(parts, fmt.Sprintf("%s %d", strings.TrimPrefix(c.GetName(), "benchmark."), c.GetValue()))
+	}
+	return "  (" + strings.Join(parts, ", ") + ")"
 }
 
 func status(pass bool) string {
@@ -123,6 +184,16 @@ type jsonExecution struct {
 	Error      string          `json:"error,omitempty"`
 	Backends   []string        `json:"backends,omitempty"`
 	Thresholds []jsonThreshold `json:"thresholds,omitempty"`
+	// Failures is present only when some backend reported a non-zero failure
+	// class, so a clean run's JSON is unchanged.
+	Failures []jsonBackendFailures `json:"failures,omitempty"`
+}
+
+// jsonBackendFailures is one backend's non-zero failure counters, keyed by
+// the engine's full counter name.
+type jsonBackendFailures struct {
+	Backend  string            `json:"backend"`
+	Counters map[string]uint64 `json:"counters"`
 }
 
 type jsonThreshold struct {
@@ -152,6 +223,13 @@ func JSON(w io.Writer, r *run.Report) error {
 		if e.Set != nil {
 			for _, b := range e.Set.Backends {
 				je.Backends = append(je.Backends, b.Addr)
+				if fs := failures(b.Global.GetCounters()); len(fs) > 0 {
+					bf := jsonBackendFailures{Backend: b.Addr, Counters: map[string]uint64{}}
+					for _, c := range fs {
+						bf.Counters[c.GetName()] = c.GetValue()
+					}
+					je.Failures = append(je.Failures, bf)
+				}
 			}
 		}
 		for _, o := range e.Outcomes {
@@ -199,7 +277,9 @@ func snapshotSummary(out *client.Output) string {
 	for _, c := range global.GetCounters() {
 		switch c.GetName() {
 		case "benchmark.http_2xx", "benchmark.http_3xx", "benchmark.http_4xx", "benchmark.http_5xx",
-			"benchmark.pool_overflow", "benchmark.stream_resets", "benchmark.pool_connection_failure":
+			"benchmark.pool_overflow", "benchmark.stream_resets", "benchmark.pool_connection_failure",
+			"benchmark.stream_resets_before_headers", "benchmark.stream_resets_incomplete_body",
+			"benchmark.pool_failure_timeout":
 			parts = append(parts, fmt.Sprintf("%s %d", strings.TrimPrefix(c.GetName(), "benchmark."), c.GetValue()))
 		}
 	}

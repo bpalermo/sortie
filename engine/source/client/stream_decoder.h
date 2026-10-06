@@ -23,6 +23,20 @@ namespace Client {
 
 using GrpcStatusOpt = std::optional<Envoy::Grpc::Status::GrpcStatus>;
 
+/**
+ * How far a response had progressed when its stream was reset. There is no "after a complete
+ * response" phase: once the decoder has seen end_stream it completes and schedules its own
+ * deletion, and none of Envoy's codecs raise a reset on a client stream that is complete in both
+ * directions (see StreamDecoder::onResetStream).
+ */
+enum class StreamResetPhase {
+  // The final response headers had not been received. Informational (1xx) headers do not
+  // count: decode1xxHeaders() ignores them.
+  BeforeHeaders,
+  // Response headers had been received; the body or trailers had not finished.
+  IncompleteBody,
+};
+
 class StreamDecoderCompletionCallback {
 public:
   virtual ~StreamDecoderCompletionCallback() = default;
@@ -34,6 +48,12 @@ public:
    */
   virtual void onComplete(bool success, const Envoy::Http::ResponseHeaderMap& headers,
                           GrpcStatusOpt grpc_status) PURE;
+  /**
+   * Called when the stream is reset, before onComplete(false, ...) for the same stream.
+   * @param phase how far the response had progressed.
+   * @param reason the codec's reason for the reset.
+   */
+  virtual void onStreamReset(StreamResetPhase phase, Envoy::Http::StreamResetReason reason) PURE;
   virtual void onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason reason) PURE;
   virtual void exportLatency(const uint32_t response_code, const uint64_t latency_ns,
                              GrpcStatusOpt grpc_status) PURE;
@@ -114,6 +134,12 @@ public:
 
   static Envoy::StreamInfo::CoreResponseFlag
   streamResetReasonToResponseFlag(Envoy::Http::StreamResetReason reset_reason);
+  /**
+   * @return the snake_case name of the enumerator, e.g. "connection_termination" for
+   * StreamResetReason::ConnectionTermination. Used as a counter name suffix, so the strings are
+   * stable: they follow Envoy's enumerator names, not its human-readable descriptions.
+   */
+  static absl::string_view streamResetReasonToString(Envoy::Http::StreamResetReason reset_reason);
   void finalizeActiveSpan();
   void setupForTracing();
 

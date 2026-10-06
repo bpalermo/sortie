@@ -232,6 +232,31 @@ Envoy::Stats::Counter& BenchmarkClientHttpImpl::grpcStatusCounter(GrpcStatusOpt 
   return *it->second;
 }
 
+Envoy::Stats::Counter&
+BenchmarkClientHttpImpl::streamResetReasonCounter(Envoy::Http::StreamResetReason reason) {
+  auto it = stream_reset_reason_counters_.find(reason);
+  if (it == stream_reset_reason_counters_.end()) {
+    const std::string name =
+        absl::StrCat("stream_resets_", StreamDecoder::streamResetReasonToString(reason));
+    it = stream_reset_reason_counters_.emplace(reason, &scope_->counterFromString(name)).first;
+  }
+  return *it->second;
+}
+
+void BenchmarkClientHttpImpl::onStreamReset(StreamResetPhase phase,
+                                            Envoy::Http::StreamResetReason reason) {
+  // stream_resets itself is incremented in onComplete(false, ...), which follows this call.
+  switch (phase) {
+  case StreamResetPhase::BeforeHeaders:
+    benchmark_client_counters_.stream_resets_before_headers_.inc();
+    break;
+  case StreamResetPhase::IncompleteBody:
+    benchmark_client_counters_.stream_resets_incomplete_body_.inc();
+    break;
+  }
+  streamResetReasonCounter(reason).inc();
+}
+
 bool BenchmarkClientHttpImpl::trackGrpcStatus(GrpcStatusOpt grpc_status) {
   grpcStatusCounter(grpc_status).inc();
   const bool ok = grpc_status.has_value() &&
@@ -295,15 +320,23 @@ void BenchmarkClientHttpImpl::handleResponseData(const Envoy::Buffer::Instance& 
 }
 
 void BenchmarkClientHttpImpl::onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason reason) {
+  // pool_overflow is the overflow reason's own counter, so there is no pool_failure_overflow.
   switch (reason) {
   case Envoy::Http::ConnectionPool::PoolFailureReason::Overflow:
     benchmark_client_counters_.pool_overflow_.inc();
     break;
   case Envoy::Http::ConnectionPool::PoolFailureReason::LocalConnectionFailure:
+    benchmark_client_counters_.pool_connection_failure_.inc();
+    benchmark_client_counters_.pool_failure_local_connection_failure_.inc();
+    break;
   case Envoy::Http::ConnectionPool::PoolFailureReason::RemoteConnectionFailure:
     benchmark_client_counters_.pool_connection_failure_.inc();
+    benchmark_client_counters_.pool_failure_remote_connection_failure_.inc();
     break;
   case Envoy::Http::ConnectionPool::PoolFailureReason::Timeout:
+    // The connect timeout (--timeout). Kept out of pool_connection_failure, which has never
+    // included it, so that counter keeps its value; this is the only place it is counted.
+    benchmark_client_counters_.pool_failure_timeout_.inc();
     break;
   default:
     PANIC("not reached");
