@@ -206,6 +206,12 @@ The format of the report file, checked.
 {{- /* The volume is mounted at the file's directory, so that directory must
 not be one the image needs: / is the whole image, /sortie is the binary the
 container runs, /etc holds the plan's mount, and /etc/sortie is the plan. */ -}}
+{{- /* A file, not a directory: --output creates the path it is given, and a
+trailing slash or a dot segment at the end names a directory. */ -}}
+{{- $last := base .Values.report.path -}}
+{{- if or (hasSuffix "/" .Values.report.path) (eq $last ".") (eq $last "..") -}}
+{{- fail (printf "report.path must name a file, got the directory %q" .Values.report.path) -}}
+{{- end -}}
 {{- $path := clean .Values.report.path -}}
 {{- $dir := dir $path -}}
 {{- range $reserved := list "/sortie" "/etc/sortie" -}}
@@ -251,11 +257,11 @@ spec:
       args:
         {{- toYaml .Values.args | nindent 8 }}
         {{- if .Values.report.path }}
-        {{- if eq (include "sortie.reportFormat" .) "json" }}
-        - --json
-        {{- end }}
+        {{- /* Stated either way: args may already carry --json, and the last
+        one on the command line wins. */}}
+        - --json={{ eq (include "sortie.reportFormat" .) "json" }}
         - --output
-        - {{ .Values.report.path | quote }}
+        - {{ clean .Values.report.path | quote }}
         {{- end }}
         - /etc/sortie/plan.yaml
       volumeMounts:

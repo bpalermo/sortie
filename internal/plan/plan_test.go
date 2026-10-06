@@ -1,6 +1,8 @@
 package plan
 
 import (
+	metricsv3 "github.com/envoyproxy/go-control-plane/envoy/config/metrics/v3"
+	"google.golang.org/protobuf/types/known/anypb"
 	"os"
 	"path/filepath"
 	"strings"
@@ -542,6 +544,11 @@ scenarios: [{name: "///"}]`, "no letter, digit or underscore"},
 		}
 	}
 	for name, c := range map[string]struct{ body, want string }{
+		"a flush interval below a millisecond": {`
+stats:
+  flush_interval: 0.000001s
+  statsd: {address: "10.0.0.1:8125"}
+scenarios: [{name: a}]`, "flush_interval"},
 		"the adapter written out": {`
 stats:
   sinks: [{name: nighthawk.envoy_stats_sink_adapter}]
@@ -585,5 +592,37 @@ scenarios:
 		if _, err := Parse([]byte(head + body + "\n")); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// A sink is judged by the type of its configuration as well as by its name:
+// Envoy picks a sink's factory from the typed config when the name matches
+// none, so a renamed OpenTelemetry sink, or a renamed adapter carrying one,
+// is still what its config says. Built in Go: neither type is linked into
+// sortie, so a YAML plan cannot even spell them, and this is the guard for a
+// plan that arrives as a message.
+func TestStatsJudgesASinkByItsConfigType(t *testing.T) {
+	for name, c := range map[string]struct{ typeURL, want string }{
+		"otlp under another name": {
+			"type.googleapis.com/envoy.extensions.stat_sinks.open_telemetry.v3.SinkConfig", "aborts on its first flush",
+		},
+		"the adapter under another name": {
+			"type.googleapis.com/nighthawk.EnvoyStatsSinkAdapterConfig", "sortie adds the adapter",
+		},
+	} {
+		st := &Stats{Sinks: []*metricsv3.StatsSink{{
+			Name:       "anything",
+			ConfigType: &metricsv3.StatsSink_TypedConfig{TypedConfig: &anypb.Any{TypeUrl: c.typeURL}},
+		}}}
+		if err := validateStats(st); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want one containing %q", name, err, c.want)
+		}
+	}
+	ok := &Stats{Sinks: []*metricsv3.StatsSink{{
+		Name:       "envoy.stat_sinks.dog_statsd",
+		ConfigType: &metricsv3.StatsSink_TypedConfig{TypedConfig: &anypb.Any{TypeUrl: "type.googleapis.com/envoy.config.metrics.v3.DogStatsdSink"}},
+	}}}
+	if err := validateStats(ok); err != nil {
+		t.Errorf("an ordinary sink was refused: %v", err)
 	}
 }

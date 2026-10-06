@@ -475,17 +475,24 @@ func share(rate uint32, w, total uint64) uint32 {
 // creation, with the plan already dispatched.
 func validateStats(st *Stats) error {
 	for i, sink := range st.GetSinks() {
+		// Judged by name AND by the type of the configuration: Envoy finds a
+		// sink's factory by its typed config when the name matches none, so a
+		// sink called anything at all still becomes the one its config says.
+		typ := sink.GetTypedConfig().GetTypeUrl()
+		if i := strings.LastIndex(typ, "/"); i >= 0 {
+			typ = typ[i+1:]
+		}
 		// The field for it was withdrawn because the sink aborts the engine on
 		// its first flush (see Stats in the schema); the passthrough must not
 		// be a way to configure it anyway and take a backend down mid-run.
-		if sink.GetName() == openTelemetrySink {
+		if sink.GetName() == openTelemetrySink || typ == openTelemetrySinkConfig {
 			return fmt.Errorf("sinks[%d]: %s cannot run in the engine: it aborts on its first flush. "+
 				"Send statsd to the collector's statsd receiver instead", i, openTelemetrySink)
 		}
 		// sortie wraps every Envoy sink in the adapter itself. One written
 		// out here would carry a sink this check cannot see into, the
 		// OpenTelemetry one included, so it is not accepted at all.
-		if sink.GetName() == envoyStatsSinkAdapter {
+		if sink.GetName() == envoyStatsSinkAdapter || typ == envoyStatsSinkAdapterConfig {
 			return fmt.Errorf("sinks[%d]: name the Envoy sink itself, not %s: sortie adds the adapter",
 				i, envoyStatsSinkAdapter)
 		}
@@ -507,6 +514,10 @@ func validateStats(st *Stats) error {
 const (
 	openTelemetrySink     = "envoy.stat_sinks.open_telemetry"
 	envoyStatsSinkAdapter = "nighthawk.envoy_stats_sink_adapter"
+
+	// The configuration types of the two, as they end a type URL.
+	openTelemetrySinkConfig     = "envoy.extensions.stat_sinks.open_telemetry.v3.SinkConfig"
+	envoyStatsSinkAdapterConfig = "nighthawk.EnvoyStatsSinkAdapterConfig"
 
 	// DefaultStatsPrefix is the first component of every metric name when a
 	// stats block sets no prefix.

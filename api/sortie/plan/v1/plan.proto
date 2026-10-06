@@ -69,10 +69,12 @@ message Stats {
     expression: "has(this.statsd) || this.sinks.size() > 0"
   };
 
-  // How often the engine flushes to its sinks. The engine's default is 5s.
+  // How often the engine flushes to its sinks, at least 1ms: the engine runs
+  // its flush timer in whole milliseconds, and anything shorter would become
+  // a timer of zero that flushes without pause. The engine's default is 5s.
   // Latency samples are delivered as they are recorded, regardless.
   google.protobuf.Duration flush_interval = 1 [
-    (buf.validate.field).duration.gt = {seconds: 0},
+    (buf.validate.field).duration.gte = {nanos: 1000000},
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
   ];
 
