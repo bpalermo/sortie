@@ -32,6 +32,13 @@ TEST_F(ServiceMainTest, ZeroConcurrentExecutionsIsRejected) {
                           "--max-concurrent-executions must be at least 1");
 }
 
+// TCLAP reads -1 into the unsigned option as 4294967295, which would be no cap at all.
+TEST_F(ServiceMainTest, NegativeConcurrentExecutionsIsRejected) {
+  std::vector<const char*> argv = {"foo", "--max-concurrent-executions", "-1"};
+  EXPECT_THROW_WITH_REGEX(ServiceMain(argv.size(), argv.data()), MalformedArgvException,
+                          "Invalid value for --max-concurrent-executions");
+}
+
 TEST_F(ServiceMainTest, ConcurrentExecutionsFlagIsAccepted) {
   std::vector<const char*> argv = {"foo", "--max-concurrent-executions", "4", "--listen",
                                    "127.0.0.1:0"};

@@ -21,6 +21,8 @@
 #include "source/exe/process_wide.h"
 
 #include "nighthawk/client/process.h"
+
+#include "engine/source/client/process_impl.h"
 #include "nighthawk/common/request_source.h"
 
 namespace Nighthawk {
@@ -49,6 +51,9 @@ public:
     logging_context_ = std::make_unique<Envoy::Logger::Context>(
         spdlog::level::from_str("info"), "[%T.%f][%t][%L] %v", log_lock_, false);
     service_verbosity_ = currentVerbosity();
+    // Before any Process exists, so no dispatcher is ever created while the environment is
+    // being written (see ProcessImpl::setupForHRTimers).
+    ProcessImpl::setupForHRTimers();
   }
   ServiceImpl(std::unique_ptr<Envoy::Logger::Context>&& logging_context,
               uint32_t max_concurrent_executions = 1)
@@ -56,6 +61,9 @@ public:
         max_concurrent_executions_(max_concurrent_executions) {
     logging_context_ = std::move(logging_context);
     service_verbosity_ = currentVerbosity();
+    // Before any Process exists, so no dispatcher is ever created while the environment is
+    // being written (see ProcessImpl::setupForHRTimers).
+    ProcessImpl::setupForHRTimers();
   }
 
   grpc::Status

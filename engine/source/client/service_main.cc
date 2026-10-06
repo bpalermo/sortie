@@ -7,6 +7,7 @@
 
 #include "nighthawk/common/exception.h"
 
+#include "engine/source/client/options_impl.h"
 #include "engine/source/client/service_impl.h"
 #include "engine/source/common/utility.h"
 #include "engine/source/common/version_info.h"
@@ -49,6 +50,12 @@ ServiceMain::ServiceMain(int argc, const char** argv) {
 
   if (max_concurrent_arg.getValue() == 0) {
     throw MalformedArgvException("--max-concurrent-executions must be at least 1");
+  }
+  // TCLAP reads a negative number into an unsigned option as a very large one, which here
+  // would be a cap of four billion: no cap at all. Refused the way the client's own unsigned
+  // options are.
+  if (max_concurrent_arg.getValue() > OptionsImpl::largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --max-concurrent-executions");
   }
   if (service_arg.getValue() == "traffic-generator-service") {
     service_ = std::make_unique<ServiceImpl>(max_concurrent_arg.getValue());

@@ -57,7 +57,8 @@ class ClusterManagerFactory;
  * it is set:
  *  - Envoy::ProcessWide, which the service creates once and passes in;
  *  - the log level, which a concurrent service fixes at its own (see ServiceImpl);
- *  - EVENT_PRECISE_TIMER, set once (setupForHRTimers);
+ *  - EVENT_PRECISE_TIMER, set once, by the service before any Process exists
+ *    (setupForHRTimers);
  *  - Envoy's runtime feature flags, which a runtime loader writes only for keys its layered
  *    runtime names. The bootstrap built here names none, so no Process changes them. (Envoy
  *    once enforced a single runtime loader per process; that singleton is gone.)
@@ -68,6 +69,15 @@ class ClusterManagerFactory;
  */
 class ProcessImpl : public Process, public Envoy::Logger::Loggable<Envoy::Logger::Id::main> {
 public:
+  /**
+   * Tells libevent to favour timer precision, by setting EVENT_PRECISE_TIMER in the process
+   * environment, once. Every ProcessImpl calls it, which is enough when there is one at a
+   * time. A host that builds several concurrently must call it first, before any of them
+   * exists: the environment is process-wide, and a dispatcher being created on one thread
+   * reads it while this writes it on another.
+   */
+  static void setupForHRTimers();
+
   /**
    * Creates a ProcessImpl.
    * @param options provides the options configuration to be used.
@@ -137,7 +147,6 @@ private:
   // mergeWorkerStatistics merges the live ones; workers that did not answer are empty and skipped.
   std::vector<StatisticPtr>
   mergeStatistics(const std::vector<std::vector<StatisticPtr>>& per_worker) const;
-  void setupForHRTimers();
   /**
    * If there are sinks configured in bootstrap, populate stats_sinks with sinks
    * created through NighthawkStatsSinkFactory and add them to store_root_.
