@@ -16,10 +16,11 @@ import (
 )
 
 // failureCounters are the engine's request failure classes, in the order they
-// are printed. A request lands in at most one of them (a reset is also in both
-// a stream_resets_<phase> and a stream_resets_<reason> counter, so the by-phase
-// pair and the reason counters each sum to stream_resets). The engine omits a
-// counter that never incremented, so a clean run prints none of these.
+// are printed. They overlap and must not be summed: a reset is in
+// stream_resets and, for request/response load, in one stream_resets_<phase>
+// and one stream_resets_<reason> counter; a failed unary gRPC call is in
+// grpc_error as well as in what stopped it. The engine omits a counter that
+// never incremented, so a clean run prints none of these.
 var failureCounters = []string{
 	"benchmark.http_4xx",
 	"benchmark.http_5xx",

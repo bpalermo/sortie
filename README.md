@@ -365,8 +365,12 @@ because it went unchecked rather than being satisfied.
 
 ### failure classes
 
-A request that does not end in a response is counted once, by what stopped it.
-The finer counters refine the two older ones without changing them.
+These are the counters a failed request shows up in. The finer ones refine
+the two older ones, `stream_resets` and `pool_connection_failure`, without
+changing them. They are not a partition: do not add them up to count failed
+requests. A unary gRPC call that fails is in `grpc_error` and also in whatever
+stopped it -- `stream_resets` for a reset, its HTTP status class for a
+non-2xx response.
 
 | Counter | A request that |
 | --- | --- |
@@ -381,7 +385,10 @@ The finer counters refine the two older ones without changing them.
 | `benchmark.pool_failure_timeout` | never got a connection, because connecting timed out |
 | `benchmark.pool_overflow` | was refused by the client's own pool; in open loop this is saturation |
 
-The two phase counters sum to `stream_resets`, and so do the reason counters.
+For plain HTTP and unary gRPC requests the two phase counters sum to
+`stream_resets`, and so do the reason counters. The streaming modes
+(`bidi-stream`, WebSocket) count a reset of one of their long-lived streams in
+`stream_resets` alone.
 `pool_failure_timeout` is outside `pool_connection_failure`, which never
 included it. A zero-failure soak names every class, which costs nothing: a
 counter that never incremented reads as zero.
