@@ -392,6 +392,22 @@ func TestRunCancelledDuringALookupReturnsTheContextError(t *testing.T) {
 	}
 }
 
+// The timeout bounds a lookup in flight, not only the pauses between lookups:
+// a resolver that never answers is given up on when the wait runs out, as a
+// ResolveError, since nothing was resolved.
+func TestRunDnsTimeoutBoundsABlockedLookup(t *testing.T) {
+	p := dnsPlanFor(t, "{type: constant-rate, rate: 60, duration: 10s, per_backend: true}")
+	started := time.Now()
+	_, err := (&run.Runner{Plan: p, Resolver: blockingResolver{}, ResolveTimeout: 100 * time.Millisecond}).Run(context.Background())
+	var re *plan.ResolveError
+	if !errors.As(err, &re) {
+		t.Fatalf("err = %v, want a *plan.ResolveError", err)
+	}
+	if waited := time.Since(started); waited > 5*time.Second {
+		t.Errorf("a blocked lookup held a 100ms timeout for %s", waited)
+	}
+}
+
 // blockingResolver answers only when its context ends, as a resolver waiting
 // on an unreachable name server does.
 type blockingResolver struct{}

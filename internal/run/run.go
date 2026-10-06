@@ -71,7 +71,8 @@ type Runner struct {
 	Resolver plan.Resolver
 
 	// ResolveTimeout bounds how long Run waits for a dns pool's name to answer
-	// with at least one address before giving up. Zero means resolveTimeout.
+	// with at least one address before giving up, lookups in flight included.
+	// Zero means resolveTimeout.
 	ResolveTimeout time.Duration
 
 	// Serializes the backends' progress callbacks into the Observer.
@@ -160,14 +161,21 @@ func (r *Runner) resolve(ctx context.Context) (*plan.Plan, error) {
 		timeout = resolveTimeout
 	}
 	deadline := time.Now().Add(timeout)
+	// The lookups themselves are bound by the same deadline, not only the
+	// pauses between them: a resolver waiting on a name server that never
+	// answers would otherwise hold the run for as long as it liked.
+	lookupCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	for {
-		p, err := plan.Resolve(ctx, r.Plan, resolver)
+		p, err := plan.Resolve(lookupCtx, r.Plan, resolver)
 		if err == nil {
 			return p, nil
 		}
 		// Cancelled while a lookup was in flight: the resolver's error wraps
 		// the context's, inside a ResolveError the CLI would report as bad
-		// usage. An interrupted run is not a bad plan.
+		// usage. An interrupted run is not a bad plan. (The deadline passing
+		// is not this: it is the wait running out, reported below as the
+		// ResolveError it is.)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
