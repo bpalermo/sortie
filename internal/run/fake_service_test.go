@@ -70,10 +70,23 @@ func (f *fakeService) received() []*client.CommandLineOptions {
 // startFake runs the fake on a free port and returns its address.
 func startFake(t *testing.T, respond func(n int, opts *client.CommandLineOptions) *client.ExecutionResponse) *fakeService {
 	t.Helper()
+	fake := startFakeOn(t, "127.0.0.1:0", respond)
+	if fake == nil {
+		t.Fatal("listening on 127.0.0.1:0 failed")
+	}
+	return fake
+}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+// startFakeOn runs the fake on the given address, or returns nil when it
+// cannot listen there -- for a test that wants a particular loopback alias
+// and should skip rather than fail where the host has none.
+func startFakeOn(t *testing.T, addr string, respond func(n int, opts *client.CommandLineOptions) *client.ExecutionResponse) *fakeService {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		t.Fatalf("listening: %v", err)
+		t.Logf("listening on %s: %v", addr, err)
+		return nil
 	}
 	fake := &fakeService{respond: respond}
 

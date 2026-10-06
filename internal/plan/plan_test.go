@@ -228,7 +228,23 @@ func TestValidationErrors(t *testing.T) {
 		},
 		"pool with neither services nor distributor": {
 			src:  strings.Replace(minimal, `    services: ["127.0.0.1:8443"]`, "    targets: []", 1),
-			want: "set one of services or distributor",
+			want: "set one of services, distributor or dns",
+		},
+		"pool with services and dns": {
+			src:  strings.Replace(minimal, `    services: ["127.0.0.1:8443"]`, `    services: ["127.0.0.1:8443"]`+"\n    dns: engine.test:8443", 1),
+			want: "set one of services, distributor or dns, not more than one",
+		},
+		"pool with distributor and dns": {
+			src:  strings.Replace(minimal, `    services: ["127.0.0.1:8443"]`, "    distributor: d.test:8442\n    targets: [\"a.test:1\"]\n    dns: engine.test:8443", 1),
+			want: "set one of services, distributor or dns, not more than one",
+		},
+		"dns without a port": {
+			src:  strings.Replace(minimal, `    services: ["127.0.0.1:8443"]`, "    dns: engine.test", 1),
+			want: "dns must be host:port",
+		},
+		"dns with targets": {
+			src:  strings.Replace(minimal, `    services: ["127.0.0.1:8443"]`, "    dns: engine.test:8443\n    targets: [\"a.test:1\"]", 1),
+			want: "targets is only meaningful together with distributor",
 		},
 	}
 	for name, tc := range tests {

@@ -32,9 +32,9 @@ plan: |
         - "counter:benchmark.http_5xx == 0"
         - "latency_2xx.p95 < 500ms"
 
-# The engine: a Deployment of nighthawk_service, the backend a plan dispatches
-# to, with a Service in front of it on port 8443. Off by default, because the
-# plan above addresses its backends by name and must be changed to match:
+# The engine: nighthawk_service, the backend a plan dispatches to, with a
+# Service in front of it on port 8443. Off by default, because the plan above
+# addresses its backends by name and must be changed to match:
 #
 #   services: ["<release>-sortie-engine:8443"]
 #
@@ -43,19 +43,52 @@ plan: |
 # neither parallel backends nor redundancy: one execution runs per backend at a
 # time, and a second replica would only ever be picked by chance. Parallel
 # backends are separate addresses in the plan.
+#
+# kind: DaemonSet runs one engine per node instead, behind a headless Service
+# named <release>-sortie-engine-nodes, so DNS answers with one address per
+# ready pod. (Its own name, because a Service cannot be turned headless in
+# place: switching kind replaces one Service with the other.) That Service is
+# IPv4 only, because the engine listens on 0.0.0.0. A plan then finds
+# them with a dns pool rather than a list, and per_backend keeps its rate per
+# node however many there are:
+#
+#   pools:
+#     - name: nodes
+#       dns: <release>-sortie-engine-nodes.<namespace>.svc.cluster.local:8443
+#   ...
+#       executor: {type: constant-rate, rate: 60, duration: 8h, per_backend: true}
+#
+# sortie resolves the name once, when the run starts, so the backends are the
+# engine pods that are ready at that moment. Install the engine before the
+# first run (job.enabled: false, then upgrade with the plan), or run it as a
+# CronJob, so a run never starts against a DaemonSet still rolling out.
 engine:
   enabled: false
+  # Deployment or DaemonSet.
+  kind: Deployment
   image:
     # The engine image published by the same workflow run as this chart, so
     # the two always come from one commit. Stamped at package time.
     ref: "quay.io/sortie/engine:dev-{STABLE_GIT_COMMIT}"
     pullPolicy: IfNotPresent
+  # Deployment only; a DaemonSet has one pod per eligible node.
   replicas: 1
   # The generated load runs on this pod's CPUs: give it the cores a plan's
   # concurrency asks for.
   resources: {}
   nodeSelector: {}
   affinity: {}
+  tolerations: []
+  # A DaemonSet pod cannot move, so when its node fills up it is evicted
+  # rather than rescheduled, and the run loses that node. A PriorityClass
+  # above the workloads under test, with preemptionPolicy Never, makes one of
+  # them the eviction victim instead. Create the class yourself; it is
+  # cluster-scoped and not this chart's to own.
+  priorityClassName: ""
+  # The engine is what opens the connections, so this is the pod a service
+  # mesh has to inject.
+  podAnnotations: {}
+  podLabels: {}
 
 # Arguments before the plan path. --json is useful when something collects the
 # pod's logs; the plan path itself is appended by the template.
@@ -72,6 +105,11 @@ cronJob:
   failedJobsHistoryLimit: 3
 
 job:
+  # Whether to run the plan at all. Off, with the engine on, the release is
+  # the engine alone: how a DaemonSet of engines is brought up before the
+  # first run, which then arrives as an upgrade with the plan. cronJob.enabled
+  # overrides this.
+  enabled: true
   # A load test that failed its thresholds failed for a reason; retrying it
   # usually just generates the load twice and reports the same verdict.
   #
@@ -96,8 +134,12 @@ resources: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
+priorityClassName: ""
 
+# The sortie pod only drives the engines over gRPC, but behind a mesh it is
+# injected like any other pod, and a mesh picks its pods by these.
 podAnnotations: {}
+podLabels: {}
 
 # sortie never calls the Kubernetes API. Leave this false unless something in
 # your cluster needs the token for admission or identity purposes.

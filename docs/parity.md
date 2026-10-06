@@ -19,6 +19,7 @@ the order the gaps get closed in.
 | Request routing on headers, bodies | `headers`, `body`, `body_file`, `method` | sortie |
 | Rate shaping: constant, ramp, staircase; open and closed loop | `executor` | sortie |
 | Telling failures apart (a reset before headers, a body cut short, a refused or timed-out connection) | `benchmark.stream_resets_<phase>`, `benchmark.stream_resets_<reason>`, `benchmark.pool_failure_<reason>` | engine fork |
+| Load from every node at once (a mesh's per-node proxy) | chart `engine.kind: DaemonSet` behind a headless Service, a `dns:` pool, `executor.per_backend` | sortie |
 | Stats sinks (statsd, OTLP) from the client's own counters | `nighthawk.envoy_stats_sink_adapter` via `nighthawk_template` | engine fork |
 
 ## The designs, in the order they were built

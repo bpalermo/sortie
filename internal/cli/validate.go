@@ -36,9 +36,25 @@ func newValidateCmd() *cobra.Command {
 				}
 				total += len(executions)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "ok: %d scenarios, %d executions, %d pools\n",
-				len(p.GetScenarios()), total, len(p.GetPools()))
+			fmt.Fprintf(cmd.OutOrStdout(), "ok: %d scenarios, %d executions, %d pools%s\n",
+				len(p.GetScenarios()), total, len(p.GetPools()), dnsNote(p))
 			return nil
 		},
 	}
+}
+
+// dnsNote says how many pools validate took on trust: a dns pool's backends
+// exist only once the run resolves the name, so their number -- and with it
+// the one rule that depends on it -- is checked then, not here.
+func dnsNote(p *plan.Plan) string {
+	n := 0
+	for _, pool := range p.GetPools() {
+		if compile.Unresolved(pool) {
+			n++
+		}
+	}
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d resolved from DNS when the run starts)", n)
 }

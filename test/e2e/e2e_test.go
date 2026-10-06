@@ -231,7 +231,10 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 	// worker rather than divided) cannot satisfy it. Not exact: a request still
 	// in flight when the clock runs out makes it 499 on a slow runner. The
 	// duration is the backend's measured one and may read 5.001s.
-	if !regexp.MustCompile(`(?m)^\s+\S+: (49[0-9]|50[0-9]) requests in \S+$`).Match(out) {
+	// The line may go on: the report appends a backend's non-zero failure
+	// counters, and one pool overflow while the connections are still opening
+	// is not unusual on a loaded runner.
+	if !regexp.MustCompile(`(?m)^\s+\S+: (49[0-9]|50[0-9]) requests in \S+(  \(.*\))?$`).Match(out) {
 		t.Errorf("sortie output lacks the backend line with about 500 requests")
 	}
 	if !strings.Contains(string(out), "PASS  1/1 executions passed") {

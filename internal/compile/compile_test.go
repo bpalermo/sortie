@@ -809,3 +809,176 @@ func TestUdpTargetOptions(t *testing.T) {
 		t.Errorf("tcp options set on a udp target")
 	}
 }
+
+// With per_backend the rate is every backend's, so the backend count sets how
+// many copies there are and nothing else: 60 rps per node over 3 nodes and 2
+// workers is 30 per worker on each, and the same over 5 nodes.
+func TestDividePerBackendGivesEveryBackendTheRate(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 60, Duration: dur(time.Second), PerBackend: true})
+	s.Concurrency = "2"
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !execs[0].PerBackend {
+		t.Fatal("Expand must carry per_backend onto the execution")
+	}
+	for _, backends := range []int{1, 3, 5} {
+		opts, err := Divide(execs[0], backends)
+		if err != nil {
+			t.Fatalf("%d backends: %v", backends, err)
+		}
+		if len(opts) != backends {
+			t.Fatalf("got %d options for %d backends", len(opts), backends)
+		}
+		for i, o := range opts {
+			if got := o.GetRequestsPerSecond().GetValue(); got != 30 {
+				t.Errorf("%d backends, backend %d: rps = %d, want 30 (60 per backend over 2 workers)", backends, i, got)
+			}
+		}
+	}
+}
+
+// The divisibility rule shrinks to rate / concurrency: 70 rps per backend
+// over 2 workers is 35 each on any number of backends, and 71 is refused on
+// any number of backends.
+func TestDividePerBackendDivisibilityIsPerWorkerOnly(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 70, Duration: dur(time.Second), PerBackend: true})
+	s.Concurrency = "2"
+	execs, _ := Expand(s)
+	opts, err := Divide(execs[0], 3)
+	if err != nil {
+		t.Fatalf("70 per backend over 2 workers is 35 each, whatever the backend count: %v", err)
+	}
+	if got := opts[2].GetRequestsPerSecond().GetValue(); got != 35 {
+		t.Errorf("rps = %d, want 35", got)
+	}
+	s.Executor.Rate = 71
+	execs, _ = Expand(s)
+	_, err = Divide(execs[0], 3)
+	if err == nil || !strings.Contains(err.Error(), "per-backend rate 71 is not divisible by 2 workers") {
+		t.Fatalf("71 per backend over 2 workers is not expressible; got %v", err)
+	}
+}
+
+// bidi-stream's rule composes with per_backend: the engine divides a
+// backend's aggregate over its workers itself, so each backend is sent the
+// rate as written.
+func TestDividePerBackendBidiStreamSendsTheRateAsWritten(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 400, Duration: dur(time.Second), PerBackend: true})
+	s.Concurrency = "2"
+	s.Grpc = &plan.Grpc{Mode: "bidi-stream"}
+	execs, _ := Expand(s)
+	opts, err := Divide(execs[0], 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, o := range opts {
+		if got := o.GetRequestsPerSecond().GetValue(); got != 400 {
+			t.Errorf("backend %d: rps = %d, want 400", i, got)
+		}
+	}
+}
+
+// The ramping and staircase executors go through the same division, so
+// per_backend reaches them unchanged: the ramp's plateau and each stage's
+// rate are per backend.
+func TestExpandPerBackendReachesEveryExecutor(t *testing.T) {
+	ramp := scenario(&plan.Executor{
+		Type: plan.RampingRate, Rate: 60, Duration: dur(time.Minute), RampTime: dur(10 * time.Second), PerBackend: true,
+	})
+	stairs := scenario(&plan.Executor{
+		Type: plan.Staircase, PerBackend: true,
+		Stages: []*plan.Stage{{Rate: 60, Duration: dur(time.Second)}, {Rate: 120, Duration: dur(time.Second)}},
+	})
+	for _, s := range []*plan.Scenario{ramp, stairs} {
+		s.Concurrency = "2"
+		execs, err := Expand(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range execs {
+			if !e.PerBackend {
+				t.Errorf("%s: execution %q lost per_backend", s.Executor.Type, e.Label)
+			}
+			opts, err := Divide(e, 4)
+			if err != nil {
+				t.Fatalf("%s: %v", e.Label, err)
+			}
+			want := e.Rate / 2
+			for i, o := range opts {
+				if got := o.GetRequestsPerSecond().GetValue(); got != want {
+					t.Errorf("%s backend %d: rps = %d, want %d", e.Label, i, got, want)
+				}
+			}
+		}
+	}
+}
+
+// A distributor forwards one request unchanged to every target, so what each
+// target receives IS a per-backend rate: per_backend is allowed there and
+// the rate divides by the workers alone, whatever the target count.
+func TestForPoolDistributorPerBackendDividesByWorkersOnly(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 100, Duration: dur(time.Second), PerBackend: true})
+	s.Concurrency = "2"
+	execs, _ := Expand(s)
+	pool := &plan.Pool{Name: "fleet", Distributor: "d:1", Targets: []string{"a:1", "b:1", "c:1"}}
+	addrs, opts, err := ForPool(execs[0], pool)
+	if err != nil {
+		t.Fatalf("100 per target over 3 targets is fine on a distributor: %v", err)
+	}
+	if len(addrs) != 3 || len(opts) != 1 {
+		t.Fatalf("got %d addrs and %d options, want 3 and 1", len(addrs), len(opts))
+	}
+	if got := opts[0].GetRequestsPerSecond().GetValue(); got != 50 {
+		t.Errorf("rps = %d, want 50 (100 per target over 2 workers)", got)
+	}
+}
+
+// A dns pool has no backends until the run resolves it. ForPool treats it as
+// one backend meanwhile, so validate and compile can apply the rules that do
+// not depend on the count and show what one backend would receive.
+func TestForPoolUnresolvedDnsPoolIsOneBackend(t *testing.T) {
+	s := scenario(&plan.Executor{Type: plan.ConstantRate, Rate: 60, Duration: dur(time.Second), PerBackend: true})
+	s.Concurrency = "2"
+	execs, _ := Expand(s)
+	pool := &plan.Pool{Name: "nodes", Dns: "engine.ns.svc.cluster.local:8443"}
+	if !Unresolved(pool) {
+		t.Fatal("a dns pool without services is unresolved")
+	}
+	addrs, opts, err := ForPool(execs[0], pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(addrs) != 1 || addrs[0] != pool.Dns || len(opts) != 1 {
+		t.Fatalf("addrs = %v, %d options; want the dns name and one options", addrs, len(opts))
+	}
+	if got := opts[0].GetRequestsPerSecond().GetValue(); got != 30 {
+		t.Errorf("rps = %d, want 30", got)
+	}
+	if opts[0].GetExecutionId().GetValue() != "s" {
+		t.Errorf("execution id = %q, want the label with no backend suffix", opts[0].GetExecutionId().GetValue())
+	}
+
+	// The rules that need no count still apply.
+	s.Concurrency = "auto"
+	execs, _ = Expand(s)
+	if _, _, err := ForPool(execs[0], pool); err == nil {
+		t.Fatal(`concurrency "auto" with a rate must be refused on a dns pool as on any other`)
+	}
+
+	// Resolved, it is an ordinary services pool with its name kept.
+	resolved := &plan.Pool{Name: "nodes", Dns: pool.Dns, Services: []string{"10.0.0.1:8443", "10.0.0.2:8443"}}
+	if Unresolved(resolved) {
+		t.Fatal("a dns pool with services is resolved")
+	}
+	s.Concurrency = "2"
+	execs, _ = Expand(s)
+	addrs, opts, err = ForPool(execs[0], resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(addrs) != 2 || len(opts) != 2 || addrs[1] != "10.0.0.2:8443" {
+		t.Errorf("addrs = %v, %d options; want the resolved services", addrs, len(opts))
+	}
+}

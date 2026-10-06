@@ -49,20 +49,23 @@ message Plan {
 
 // Pool is a set of Nighthawk backends that a scenario's load is spread over.
 //
-// Exactly one of services or distributor is set. services addresses
+// Exactly one of services, distributor or dns is set. services addresses
 // nighthawk_service instances that sortie drives directly, merging the results
 // itself. distributor addresses a nighthawk_distributor that fans the request
-// out to targets on sortie's behalf.
+// out to targets on sortie's behalf. dns names the services by a host name
+// that `run` resolves once, when it starts, so the list follows whatever
+// answers for the name -- the pods of a headless Service -- rather than being
+// written down.
 message Pool {
   option (buf.validate.message).cel = {
     id: "pool.one_dispatch_mode"
-    message: "set either services or distributor, not both"
-    expression: "!(this.services.size() > 0 && this.distributor != '')"
+    message: "set one of services, distributor or dns, not more than one"
+    expression: "(this.services.size() > 0 ? 1 : 0) + (this.distributor != '' ? 1 : 0) + (this.dns != '' ? 1 : 0) <= 1"
   };
   option (buf.validate.message).cel = {
     id: "pool.some_dispatch_mode"
-    message: "set one of services or distributor"
-    expression: "this.services.size() > 0 || this.distributor != ''"
+    message: "set one of services, distributor or dns"
+    expression: "this.services.size() > 0 || this.distributor != '' || this.dns != ''"
   };
   option (buf.validate.message).cel = {
     id: "pool.distributor_needs_targets"
@@ -98,6 +101,23 @@ message Pool {
       message: "each target must be host:port"
       expression: "this.matches('^\\\\[?[^\\\\[\\\\]]+\\\\]?:[0-9]{1,5}$')"
     }];
+
+  // host:port of nighthawk_service instances to find through DNS: `run`
+  // resolves the host's A and AAAA records once, when it starts, and drives
+  // every address it got at that port, in sorted order, for the whole run. A
+  // Kubernetes headless Service answers with one address per ready pod, so a
+  // DaemonSet of engines behind one is a pool of one backend per node that
+  // needs no editing when nodes come and go. A name that resolves to nothing
+  // is an error before any load is generated. validate and compile accept the
+  // pool without resolving it.
+  string dns = 5 [
+    (buf.validate.field).cel = {
+      id: "pool.dns.host_port"
+      message: "dns must be host:port"
+      expression: "this.matches('^\\\\[?[^\\\\[\\\\]]+\\\\]?:[0-9]{1,5}$')"
+    },
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
 }
 
 // Tcp is what a scenario can set about raw TCP load. Its own pool size, not
@@ -397,7 +417,8 @@ message Executor {
 
   // Aggregate requests per second the target receives, across every worker
   // thread of every backend in the pool. Nighthawk's own --rps is per worker,
-  // so sortie divides this by backends x concurrency.
+  // so sortie divides this by backends x concurrency. With per_backend it is
+  // each backend's rate instead, divided by concurrency alone.
   uint32 rate = 2;
 
   google.protobuf.Duration duration = 3 [
@@ -419,6 +440,15 @@ message Executor {
   // compensates for a client that cannot keep pace and saturation is reported
   // as pool overflow rather than as latency.
   bool open_loop = 6;
+
+  // Make rate (and each stage's rate) the rate of every backend rather than
+  // the pool's total, so the load scales with the pool instead of being
+  // spread over it. Written for a dns pool of one engine per node: "60 rps
+  // per node" stays 60 rps per node however many nodes the name resolves to.
+  // The divisibility rule then applies to rate / concurrency alone. On a
+  // distributor pool this is what every target receives anyway, since the
+  // distributor forwards one request unchanged to each of them.
+  bool per_backend = 7;
 }
 
 // Stage is one step of a staircase executor.

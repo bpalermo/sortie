@@ -1,4 +1,4 @@
-{{- if not .Values.cronJob.enabled -}}
+{{- if and .Values.job.enabled (not .Values.cronJob.enabled) -}}
 apiVersion: batch/v1
 kind: Job
 metadata:

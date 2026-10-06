@@ -2,12 +2,25 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "sortie.engineName" . }}
+  name: {{ include "sortie.engineServiceName" . }}
   labels:
     {{- include "sortie.labels" . | nindent 4 }}
     app.kubernetes.io/component: engine
 spec:
   type: ClusterIP
+  {{- if eq (include "sortie.engineKind" .) "DaemonSet" }}
+  # Headless: DNS answers with one address per ready engine pod, which is
+  # what a plan's `dns:` pool resolves into its backends. A ClusterIP would
+  # be one address reaching one pod at random, the opposite of one per node.
+  clusterIP: None
+  # IPv4 only, said outright: the engine listens on 0.0.0.0, and a dns pool
+  # drives every address the name answers with. On a dual-stack cluster a
+  # Service left to the default could publish AAAA records for addresses
+  # nothing is listening on, and those backends would fail the run.
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+    - IPv4
+  {{- end }}
   selector:
     {{- include "sortie.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: engine

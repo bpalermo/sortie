@@ -86,13 +86,20 @@ func Text(w io.Writer, r *run.Report) error {
 }
 
 func execution(w io.Writer, e run.ExecutionReport) error {
-	shape := fmt.Sprintf("%d rps for %s", e.Rate, e.Duration)
+	rps := rateUnit(e.PerBackend)
+	shape := fmt.Sprintf("%d %s for %s", e.Rate, rps, e.Duration)
 	if e.RampTime > 0 {
-		shape = fmt.Sprintf("ramp to %d rps over %s, then hold for %s",
-			e.Rate, e.RampTime, e.Duration-e.RampTime)
+		shape = fmt.Sprintf("ramp to %d %s over %s, then hold for %s",
+			e.Rate, rps, e.RampTime, e.Duration-e.RampTime)
 	}
 	fmt.Fprintf(w, "%-6s %s  (%s, pool %q, %s)\n",
 		status(e.Pass), e.Label, shape, e.Pool, e.Elapsed.Round(time.Millisecond))
+
+	// A dns pool's backends were decided when the run started; this is the
+	// only record of which ones they were.
+	if e.Dns != "" {
+		fmt.Fprintf(w, "       %s resolved to %s\n", e.Dns, strings.Join(e.Backends, ", "))
+	}
 
 	if e.Err != nil {
 		fmt.Fprintf(w, "       error: %v\n", e.Err)
@@ -157,6 +164,15 @@ func failureSuffix(counters []*client.Counter) string {
 	return "  (" + strings.Join(parts, ", ") + ")"
 }
 
+// rateUnit names what a rate counts: the pool's requests per second, or --
+// with per_backend -- each backend's.
+func rateUnit(perBackend bool) string {
+	if perBackend {
+		return "rps per backend"
+	}
+	return "rps"
+}
+
 func status(pass bool) string {
 	if pass {
 		return "  ok"
@@ -177,11 +193,13 @@ type jsonExecution struct {
 	Scenario   string          `json:"scenario"`
 	Pool       string          `json:"pool"`
 	Rate       uint32          `json:"rate"`
+	PerBackend bool            `json:"per_backend,omitempty"`
 	DurationMS int64           `json:"duration_ms"`
 	RampTimeMS int64           `json:"ramp_time_ms,omitempty"`
 	ElapsedMS  int64           `json:"elapsed_ms"`
 	Pass       bool            `json:"pass"`
 	Error      string          `json:"error,omitempty"`
+	Dns        string          `json:"dns,omitempty"` // the name Backends were resolved from, for a dns pool
 	Backends   []string        `json:"backends,omitempty"`
 	Thresholds []jsonThreshold `json:"thresholds,omitempty"`
 	// Failures is present only when some backend reported a non-zero failure
@@ -212,17 +230,25 @@ func JSON(w io.Writer, r *run.Report) error {
 			Scenario:   e.Scenario,
 			Pool:       e.Pool,
 			Rate:       e.Rate,
+			PerBackend: e.PerBackend,
 			DurationMS: e.Duration.Milliseconds(),
 			RampTimeMS: e.RampTime.Milliseconds(),
 			ElapsedMS:  e.Elapsed.Milliseconds(),
 			Pass:       e.Pass,
+			Dns:        e.Dns,
+			Backends:   append([]string(nil), e.Backends...),
 		}
 		if e.Err != nil {
 			je.Error = e.Err.Error()
 		}
 		if e.Set != nil {
+			// The dispatch list is normally there; only a report assembled
+			// without it, as some tests do, takes its backends from the results.
+			fromSet := je.Backends == nil
 			for _, b := range e.Set.Backends {
-				je.Backends = append(je.Backends, b.Addr)
+				if fromSet {
+					je.Backends = append(je.Backends, b.Addr)
+				}
 				if fs := failures(b.Global.GetCounters()); len(fs) > 0 {
 					bf := jsonBackendFailures{Backend: b.Addr, Counters: map[string]uint64{}}
 					for _, c := range fs {
@@ -252,9 +278,10 @@ func JSON(w io.Writer, r *run.Report) error {
 type Progress struct{ W io.Writer }
 
 func (p Progress) ExecutionStarted(e compile.Execution, backends []string) {
-	shape := fmt.Sprintf("%d rps for %s", e.Rate, e.Duration)
+	rps := rateUnit(e.PerBackend)
+	shape := fmt.Sprintf("%d %s for %s", e.Rate, rps, e.Duration)
 	if e.RampTime > 0 {
-		shape = fmt.Sprintf("ramp to %d rps over %s, total %s", e.Rate, e.RampTime, e.Duration)
+		shape = fmt.Sprintf("ramp to %d %s over %s, total %s", e.Rate, rps, e.RampTime, e.Duration)
 	}
 	fmt.Fprintf(p.W, "  running %s (%s) on %s\n", e.Label, shape, strings.Join(backends, ", "))
 }

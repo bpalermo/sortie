@@ -1,0 +1,60 @@
+# Values for the template test that renders one engine per node: the
+# DaemonSet, its headless Service, and every knob a mesh-injected, pinned
+# loader needs on both pods. The values are placeholders the test asserts
+# on, not a recommended configuration.
+engine:
+  enabled: true
+  kind: DaemonSet
+  priorityClassName: loader-priority
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: loadgen
+      effect: NoSchedule
+  podAnnotations:
+    mesh.example.com/inject: "true"
+  podLabels:
+    mesh.example.com/managed: "true"
+    # A selector label: ignored, or the DaemonSet would select nothing.
+    app.kubernetes.io/component: mine
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 400m
+      memory: 1Gi
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist
+
+priorityClassName: loader-priority
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: loadgen
+    effect: NoSchedule
+podAnnotations:
+  mesh.example.com/inject: "true"
+podLabels:
+  mesh.example.com/managed: "true"
+
+plan: |
+  version: v1
+  pools:
+    - name: nodes
+      dns: release-sortie-engine-nodes.namespace.svc.cluster.local:8443
+  scenarios:
+    - name: soak
+      pool: nodes
+      target: http://target.invalid/
+      executor:
+        type: constant-rate
+        rate: 60
+        duration: 30s
+        per_backend: true
+        open_loop: true

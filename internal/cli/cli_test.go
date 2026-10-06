@@ -2,12 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -223,5 +225,78 @@ func TestRunWritesTheReportToAFile(t *testing.T) {
 	}
 	if !parsed.Pass {
 		t.Error("the written report should record a pass")
+	}
+}
+
+// A dns pool is accepted by validate and compile without being resolved: the
+// backends exist only once the run looks the name up, and neither command
+// should need a network to do its job.
+func TestValidateAndCompileAcceptADnsPoolWithoutResolving(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns.yaml")
+	if err := os.WriteFile(path, []byte(`
+version: v1
+pools: [{name: nodes, dns: engine.sortie-test.invalid:8443}]
+scenarios:
+  - name: soak
+    pool: nodes
+    target: http://target.invalid/
+    concurrency: "2"
+    executor: {type: constant-rate, rate: 60, duration: 1s, per_backend: true}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runCLI("validate", path)
+	if code != exitOK {
+		t.Fatalf("validate exit = %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "1 resolved from DNS when the run starts") {
+		t.Errorf("validate should say the pool is resolved later:\n%s", stdout)
+	}
+
+	code, stdout, stderr = runCLI("compile", path)
+	if code != exitOK {
+		t.Fatalf("compile exit = %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "engine.sortie-test.invalid:8443 (resolved when the run starts; each backend receives this)") {
+		t.Errorf("compile should name the unresolved pool:\n%s", stdout)
+	}
+	// protojson varies its whitespace on purpose.
+	if !regexp.MustCompile(`"requestsPerSecond":\s+30,`).MatchString(stdout) {
+		t.Errorf("compile should show one backend's share (60 per backend over 2 workers):\n%s", stdout)
+	}
+}
+
+// emptyResolver answers every name with no address.
+type emptyResolver struct{}
+
+func (emptyResolver) LookupHost(context.Context, string) ([]string, error) { return nil, nil }
+
+// A dns pool whose name has no address is the plan's fault, not the run's:
+// the run fails before any load with the usage exit code.
+func TestExitCodeTwoWhenADnsPoolResolvesToNothing(t *testing.T) {
+	// An empty answer is retried for the grace period, which the test cuts short.
+	prevResolver, prevTimeout := resolver, resolveTimeout
+	resolver, resolveTimeout = emptyResolver{}, time.Millisecond
+	t.Cleanup(func() { resolver, resolveTimeout = prevResolver, prevTimeout })
+
+	path := filepath.Join(t.TempDir(), "dns.yaml")
+	if err := os.WriteFile(path, []byte(`
+version: v1
+pools: [{name: nodes, dns: engine.sortie-test.invalid:8443}]
+scenarios:
+  - name: soak
+    pool: nodes
+    target: http://target.invalid/
+    executor: {type: constant-rate, rate: 60, duration: 1s, per_backend: true}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCLI("run", path)
+	if code != exitBadUsage {
+		t.Fatalf("exit = %d, want %d for a name that resolves to nothing\nstderr:\n%s", code, exitBadUsage, stderr)
+	}
+	if !strings.Contains(stderr, `pool "nodes": resolving engine.sortie-test.invalid:8443`) {
+		t.Errorf("the error should name the pool and the name:\n%s", stderr)
 	}
 }

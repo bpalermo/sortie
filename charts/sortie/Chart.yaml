@@ -7,8 +7,9 @@ description: |
   (2 rather than 1).
 
   This chart deploys the load generator's driver, and optionally
-  (engine.enabled) one Deployment of its engine, nighthawk_service, behind a
-  Service. The backends a plan dispatches to are addressed by name in the plan.
+  (engine.enabled) its engine, nighthawk_service, as a Deployment behind a
+  Service or as a DaemonSet -- one engine per node -- behind a headless one.
+  The backends a plan dispatches to are addressed by name in the plan.
 type: application
 # Stamped at package time from the workspace status.
 version: "0.1.0-{STABLE_GIT_COMMIT}"

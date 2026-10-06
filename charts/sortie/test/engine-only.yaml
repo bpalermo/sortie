@@ -1,0 +1,7 @@
+# Values for the template test that renders the engine alone: how a DaemonSet
+# of engines is brought up before the first run.
+engine:
+  enabled: true
+  kind: DaemonSet
+job:
+  enabled: false
