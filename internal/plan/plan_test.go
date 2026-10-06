@@ -445,3 +445,114 @@ scenarios:
 		t.Errorf("err = %v, want the duplicate name reported against defaults", err)
 	}
 }
+
+// stats has three levels: the plan's block, defaults.stats over it, and a
+// scenario's own over both, each replacing wholesale and each scenario owning
+// a copy.
+func TestStatsPrecedence(t *testing.T) {
+	p, err := Parse([]byte(`
+version: v1
+stats:
+  prefix: fromplan
+  statsd: {address: "10.0.0.1:8125"}
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+defaults:
+  pool: local
+  target: http://127.0.0.1:1/
+  executor: {type: constant-rate, rate: 10, duration: 1s}
+scenarios:
+  - name: inherits
+  - name: own
+    stats:
+      statsd: {address: "10.0.0.3:8125"}
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := p.Scenarios[0].GetStats(); got.GetPrefix() != "fromplan" || got.GetStatsd().GetAddress() != "10.0.0.1:8125" {
+		t.Errorf("inherits: stats = %v, want the plan's", got)
+	}
+	// Wholesale: the scenario's block does not pick up the plan's prefix.
+	if got := p.Scenarios[1].GetStats(); got.GetPrefix() != "" || got.GetStatsd().GetAddress() != "10.0.0.3:8125" {
+		t.Errorf("own: stats = %v, want only the scenario's", got)
+	}
+	p.Scenarios[0].Stats.Prefix = "changed"
+	if p.GetStats().GetPrefix() != "fromplan" {
+		t.Error("a scenario shares its inherited stats with the plan instead of owning a copy")
+	}
+
+	p, err = Parse([]byte(`
+version: v1
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+defaults:
+  pool: local
+  target: http://127.0.0.1:1/
+  executor: {type: constant-rate, rate: 10, duration: 1s}
+  stats:
+    statsd: {address: "10.0.0.2:8125"}
+scenarios:
+  - name: inherits
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := p.Scenarios[0].GetStats().GetStatsd().GetAddress(); got != "10.0.0.2:8125" {
+		t.Errorf("statsd address = %q, want defaults' over the plan's", got)
+	}
+}
+
+func TestStatsRejectsWhatWouldMisbehaveOnTheBackend(t *testing.T) {
+	const head = `
+version: v1
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+defaults:
+  pool: local
+  target: http://127.0.0.1:1/
+  executor: {type: constant-rate, rate: 10, duration: 1s}
+`
+	for name, c := range map[string]struct{ body, want string }{
+		"the otlp sink through the passthrough": {`
+stats:
+  sinks: [{name: envoy.stat_sinks.open_telemetry}]
+scenarios: [{name: a}]`, "aborts on its first flush"},
+		"a statsd host name": {`
+stats:
+  statsd: {address: "collector.monitoring:8125"}
+scenarios: [{name: a}]`, "not an IP address"},
+		"names that differ only in case": {`
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+scenarios: [{name: Foo}, {name: foo}]`, "same prefix"},
+		"a name with nothing to keep": {`
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+scenarios: [{name: "///"}]`, "no letter, digit or underscore"},
+	} {
+		_, err := Parse([]byte(head + c.body + "\n"))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want one containing %q", name, err, c.want)
+		}
+	}
+	// Without live metrics the same names are fine, and so are colliding
+	// names under different prefixes.
+	for name, body := range map[string]string{
+		"no stats": `
+scenarios: [{name: Foo}, {name: foo}]`,
+		"different prefixes": `
+scenarios:
+  - {name: Foo, stats: {prefix: one, statsd: {address: "10.0.0.1:8125"}}}
+  - {name: foo, stats: {prefix: two, statsd: {address: "10.0.0.1:8125"}}}`,
+	} {
+		if _, err := Parse([]byte(head + body + "\n")); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

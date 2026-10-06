@@ -478,7 +478,12 @@ Three limits, each deliberate:
 
 `stats.sinks` takes any other Envoy stats sink linked into the engine, written
 as it would be in an Envoy bootstrap. It is passed through as written, so the
-prefix scheme above does not apply to it.
+prefix scheme above does not apply to it. The OpenTelemetry sink is refused
+there too.
+
+Because the prefix is built from the sanitized name, two scenarios with live
+metrics whose names differ only in case or punctuation would share one. Such a
+plan is refused; rename one, or give them different `prefix` values.
 
 ## Thresholds
 
@@ -721,7 +726,9 @@ report:
 podSecurityContext: {runAsNonRoot: true, fsGroup: 65532}
 ```
 
-The next run on the same volume and path overwrites the file.
+The next run on the same volume and path overwrites the file. The volume is
+mounted at the file's directory, so give the file a directory of its own: a
+path directly under `/` or under `/etc/sortie` is refused.
 
 The Job and the engine come up together, so sortie waits up to 30 seconds for
 each backend to accept connections before the run starts; a backend that is

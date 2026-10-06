@@ -114,8 +114,9 @@ args:
 # container runs as a non-root user with a read-only root filesystem, so the
 # volume has to be writable by it (podSecurityContext.fsGroup).
 report:
-  # Absolute path of the report file. Empty: the report goes to the pod's log
-  # only.
+  # Absolute path of the report file, in a directory of its own: the volume is
+  # mounted at that directory, so / and /etc/sortie are refused. Empty: the
+  # report goes to the pod's log only.
   path: ""
   # json or text.
   format: json

@@ -31,6 +31,9 @@ const (
 	DefaultStatsPrefix = "sortie"
 )
 
+// The label's part is plan.StatsLabel, which plan validation also uses to
+// refuse two scenarios whose metrics would land under one prefix.
+//
 // StatsPrefix is the prefix the sinks of an execution emit their metrics
 // under: the stats block's prefix (or DefaultStatsPrefix), then the
 // execution's label with each `/`-separated segment lowercased and reduced to
@@ -44,33 +47,7 @@ func StatsPrefix(prefix, label string) string {
 	if prefix == "" {
 		prefix = DefaultStatsPrefix
 	}
-	parts := []string{prefix}
-	for _, segment := range strings.Split(label, "/") {
-		if s := sanitizeStatsSegment(segment); s != "" {
-			parts = append(parts, s)
-		}
-	}
-	return strings.Join(parts, ".")
-}
-
-// sanitizeStatsSegment lowercases a segment and replaces every run of
-// characters outside [a-z0-9_] with one underscore, trimmed at both ends.
-func sanitizeStatsSegment(segment string) string {
-	var b strings.Builder
-	pending := false
-	for _, r := range strings.ToLower(segment) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
-			if pending && b.Len() > 0 {
-				b.WriteByte('_')
-			}
-			pending = false
-			b.WriteRune(r)
-		default:
-			pending = true
-		}
-	}
-	return b.String()
+	return strings.Join(append([]string{prefix}, plan.StatsLabel(label)...), ".")
 }
 
 // applyStats adds a stats block's sinks to the options, after the sinks a

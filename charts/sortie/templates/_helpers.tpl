@@ -203,6 +203,13 @@ The format of the report file, checked.
 {{- if not (isAbs .Values.report.path) -}}
 {{- fail (printf "report.path must be an absolute file path, got %q" .Values.report.path) -}}
 {{- end -}}
+{{- /* The volume is mounted at the file's directory. At / it would replace
+the whole image, the sortie binary included; at /etc/sortie it would replace
+the plan. */ -}}
+{{- $dir := dir (clean .Values.report.path) -}}
+{{- if or (eq $dir "/") (eq $dir "/etc/sortie") (hasPrefix "/etc/sortie/" $dir) -}}
+{{- fail (printf "report.path %q would mount the report volume at %s, over the image or the plan; put the file in a directory of its own, such as /var/run/sortie" .Values.report.path $dir) -}}
+{{- end -}}
 {{- $format -}}
 {{- end -}}
 
@@ -251,7 +258,7 @@ spec:
           readOnly: true
         {{- if .Values.report.path }}
         - name: report
-          mountPath: {{ dir .Values.report.path | quote }}
+          mountPath: {{ dir (clean .Values.report.path) | quote }}
         {{- end }}
       resources:
         {{- toYaml .Values.resources | nindent 8 }}

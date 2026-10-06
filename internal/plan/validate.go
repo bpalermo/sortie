@@ -46,6 +46,9 @@ func validateBeyondSchema(p *Plan) error {
 	if err := validateStats(p.GetStats()); err != nil {
 		return fmt.Errorf("stats: %w", err)
 	}
+	if err := validateStatsPrefixes(p); err != nil {
+		return err
+	}
 	if err := validateStats(p.GetDefaults().GetStats()); err != nil {
 		return fmt.Errorf("defaults: stats: %w", err)
 	}
@@ -471,6 +474,15 @@ func share(rate uint32, w, total uint64) uint32 {
 // IP literal and no name, so a hostname would fail on the backend, at sink
 // creation, with the plan already dispatched.
 func validateStats(st *Stats) error {
+	for i, sink := range st.GetSinks() {
+		// The field for it was withdrawn because the sink aborts the engine on
+		// its first flush (see Stats in the schema); the passthrough must not
+		// be a way to configure it anyway and take a backend down mid-run.
+		if sink.GetName() == openTelemetrySink {
+			return fmt.Errorf("sinks[%d]: %s cannot run in the engine: it aborts on its first flush. "+
+				"Send statsd to the collector's statsd receiver instead", i, openTelemetrySink)
+		}
+	}
 	if st.GetStatsd() == nil {
 		return nil
 	}
@@ -481,6 +493,71 @@ func validateStats(st *Stats) error {
 	if net.ParseIP(host) == nil {
 		return fmt.Errorf("statsd.address: %q is not an IP address; the engine's statsd sink "+
 			"does not resolve names, so use the server's IP (a Service's clusterIP)", host)
+	}
+	return nil
+}
+
+const openTelemetrySink = "envoy.stat_sinks.open_telemetry"
+
+// StatsLabel is an execution label as it appears in a metric prefix: each
+// `/`-separated segment lowercased and reduced to [a-z0-9_] (every other run
+// of characters becomes one underscore, trimmed at both ends), with segments
+// that reduce to nothing dropped. `Live Metrics/stage-2` is
+// ["live_metrics", "stage_2"].
+func StatsLabel(label string) []string {
+	var out []string
+	for _, segment := range strings.Split(label, "/") {
+		var b strings.Builder
+		pending := false
+		for _, r := range strings.ToLower(segment) {
+			switch {
+			case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+				if pending && b.Len() > 0 {
+					b.WriteByte('_')
+				}
+				pending = false
+				b.WriteRune(r)
+			default:
+				pending = true
+			}
+		}
+		if b.Len() > 0 {
+			out = append(out, b.String())
+		}
+	}
+	return out
+}
+
+// validateStatsPrefixes refuses a plan in which two scenarios with live
+// metrics would emit under one prefix. Names are unique as written, but the
+// prefix is built from their sanitized form, where `Foo` and `foo` are the
+// same and `///` is nothing at all: their counters and timers would be summed
+// by the statsd server with nothing to tell them apart.
+func validateStatsPrefixes(p *Plan) error {
+	seen := map[string]string{}
+	for _, s := range p.GetScenarios() {
+		st := s.GetStats()
+		if st == nil {
+			st = p.GetDefaults().GetStats()
+		}
+		if st == nil {
+			st = p.GetStats()
+		}
+		if st == nil {
+			continue
+		}
+		label := StatsLabel(s.GetName())
+		if len(label) == 0 {
+			return fmt.Errorf("scenario %q: its name has no letter, digit or underscore to name its metrics by; "+
+				"rename it, or drop its stats block", s.GetName())
+		}
+		key := st.GetPrefix() + "\x00" + strings.Join(label, ".")
+		if other, dup := seen[key]; dup {
+			return fmt.Errorf("scenarios %q and %q would emit their metrics under the same prefix (%s); "+
+				"rename one, or give them different stats.prefix values",
+				other, s.GetName(), strings.Join(label, "."))
+		}
+		seen[key] = s.GetName()
 	}
 	return nil
 }

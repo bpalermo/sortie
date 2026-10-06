@@ -104,6 +104,7 @@ message Stats {
   // the engine's nighthawk.envoy_stats_sink_adapter, which is how an Envoy
   // sink is hosted in the engine. A sink whose name already starts with
   // "nighthawk." is one of the engine's own and is not wrapped.
+  // envoy.stat_sinks.open_telemetry is refused: see the note on field 4.
   repeated envoy.config.metrics.v3.StatsSink sinks = 5;
 }
 
@@ -386,7 +387,7 @@ message Scenario {
   Udp udp = 21;
 
   // Live metrics for this scenario, replacing the plan's stats wholesale. Its
-  // sinks are added to any a nighthawk_template carries in stats_sinks; its
+  // sinks are added to any that a nighthawk_template carries in stats_sinks; its
   // flush_interval replaces the template's.
   Stats stats = 22;
 
