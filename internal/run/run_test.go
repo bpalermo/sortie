@@ -374,6 +374,33 @@ func TestRunCancelledWhileWaitingForADnsPoolReturnsTheContextError(t *testing.T)
 	}
 }
 
+// The same when the cancellation lands while a lookup is blocked: the resolver
+// returns the context's error, and it must not come back dressed as a
+// ResolveError.
+func TestRunCancelledDuringALookupReturnsTheContextError(t *testing.T) {
+	p := dnsPlanFor(t, "{type: constant-rate, rate: 60, duration: 10s, per_backend: true}")
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	_, err := (&run.Runner{Plan: p, Resolver: blockingResolver{}}).Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	var re *plan.ResolveError
+	if errors.As(err, &re) {
+		t.Error("a cancellation during the lookup was reported as a ResolveError")
+	}
+}
+
+// blockingResolver answers only when its context ends, as a resolver waiting
+// on an unreachable name server does.
+type blockingResolver struct{}
+
+func (blockingResolver) LookupHost(ctx context.Context, _ string) ([]string, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 // The wait never runs past its timeout: with less than a poll interval left,
 // the last poll is that short.
 func TestRunDnsWaitDoesNotOutliveItsTimeout(t *testing.T) {

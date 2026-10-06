@@ -165,6 +165,12 @@ func (r *Runner) resolve(ctx context.Context) (*plan.Plan, error) {
 		if err == nil {
 			return p, nil
 		}
+		// Cancelled while a lookup was in flight: the resolver's error wraps
+		// the context's, inside a ResolveError the CLI would report as bad
+		// usage. An interrupted run is not a bad plan.
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		// A lookup that errored is final; only an answer that is empty for
 		// now is worth asking again, and only while there is time.
 		var re *plan.ResolveError
