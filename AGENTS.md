@@ -141,7 +141,10 @@ README's Limitations section; keep the two in sync.
   timer losing datagrams past `--udp-timeout`); `Scenario.udp` tunes it.
   Counters `benchmark.udp_*`, statistic `benchmark_udp.message_latency`. The
   test server's `udp-echo` is a UDP listener filter.
-- One execution per backend at a time; `nighthawk_service` refuses a second.
+- A backend runs as many executions at once as `nighthawk_service
+  --max-concurrent-executions` allows -- one by default -- and refuses the
+  rest. sortie only ever asks for more than one for the targets of a weighted
+  scenario; scenarios still run one after another.
 - `RequestSource` never sees responses, so there is no session flow and no
   response correlation.
 

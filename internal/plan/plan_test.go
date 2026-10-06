@@ -359,3 +359,89 @@ scenarios:
 		}
 	}
 }
+
+// The division rounds from the remainder, so the largest rates and weights
+// the schema admits stay exact instead of wrapping.
+func TestShareDoesNotOverflow(t *testing.T) {
+	const top = ^uint32(0)
+	targets := make([]*Target, 5)
+	for i := range targets {
+		targets[i] = &Target{Name: string(rune('a' + i)), Url: "http://t/", Weight: top}
+	}
+	s := &Scenario{Name: "big", Executor: &Executor{Type: "constant-rate", Rate: top}, Targets: targets}
+	if got := ForTarget(s, targets[0]).GetExecutor().GetRate(); got != 858993459 {
+		t.Errorf("share = %d, want 858993459 (MaxUint32 / 5)", got)
+	}
+}
+
+// defaults is a Scenario: a scenario that names no target takes defaults'
+// target or its weighted list, and one that names either takes neither.
+func TestTargetsInDefaults(t *testing.T) {
+	const head = `
+version: v1
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+`
+	p, err := Parse([]byte(head + `
+defaults:
+  pool: local
+  executor: {type: constant-rate, rate: 10, duration: 1s}
+  targets:
+    - {name: a, url: http://127.0.0.1:1/a, weight: 3}
+    - {name: b, url: http://127.0.0.1:1/b}
+scenarios:
+  - name: inherits
+  - name: own-target
+    target: http://127.0.0.1:1/own
+  - name: own-targets
+    targets: [{name: c, url: http://127.0.0.1:1/c}]
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	inherits, ownTarget, ownTargets := p.Scenarios[0], p.Scenarios[1], p.Scenarios[2]
+	if len(inherits.GetTargets()) != 2 || inherits.GetTarget() != "" {
+		t.Errorf("inherits: target %q, %d targets; want defaults' two targets", inherits.GetTarget(), len(inherits.GetTargets()))
+	}
+	inherits.Targets[0].Weight = 99
+	if p.GetDefaults().GetTargets()[0].GetWeight() != 3 {
+		t.Error("a scenario shares its inherited targets with defaults instead of owning a copy")
+	}
+	if ownTarget.GetTarget() != "http://127.0.0.1:1/own" || len(ownTarget.GetTargets()) != 0 {
+		t.Errorf("own-target: target %q, %d targets", ownTarget.GetTarget(), len(ownTarget.GetTargets()))
+	}
+	if len(ownTargets.GetTargets()) != 1 || ownTargets.GetTargets()[0].GetName() != "c" {
+		t.Errorf("own-targets: %v", ownTargets.GetTargets())
+	}
+
+	// defaults.target beside a scenario's own targets: the scenario's win, and
+	// the plan is not rejected for carrying both forms.
+	p, err = Parse([]byte(head + `
+defaults:
+  pool: local
+  target: http://127.0.0.1:1/default
+  executor: {type: constant-rate, rate: 10, duration: 1s}
+scenarios:
+  - name: weighted
+    targets: [{name: c, url: http://127.0.0.1:1/c}]
+`))
+	if err != nil {
+		t.Fatalf("Parse with defaults.target and a weighted scenario: %v", err)
+	}
+	if p.Scenarios[0].GetTarget() != "" || len(p.Scenarios[0].GetTargets()) != 1 {
+		t.Errorf("weighted: target %q, %d targets", p.Scenarios[0].GetTarget(), len(p.Scenarios[0].GetTargets()))
+	}
+
+	// A bad list in defaults is caught there.
+	if _, err := Parse([]byte(head + `
+defaults:
+  pool: local
+  executor: {type: constant-rate, rate: 10, duration: 1s}
+  targets: [{name: a, url: http://127.0.0.1:1/a}, {name: a, url: http://127.0.0.1:1/b}]
+scenarios:
+  - name: s
+`)); err == nil || !strings.Contains(err.Error(), "defaults") {
+		t.Errorf("err = %v, want the duplicate name reported against defaults", err)
+	}
+}

@@ -208,7 +208,8 @@ together on every backend in the pool and are reported and judged one by one,
 so a threshold on the scenario has to hold for every target, and a failing
 target is named. `targets` replaces `target`; every other field of the scenario
 applies to each target alike, so a target that needs its own method, headers or
-body is its own scenario.
+body is its own scenario. `defaults` may carry either form; a scenario that
+names a target or a list of its own takes neither from it.
 
 Two things differ from a per-request weighted draw, both deliberate:
 

@@ -23,11 +23,16 @@ namespace Client {
 
 void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionRequest& request,
                                          Stream* stream, std::shared_ptr<Execution> execution) {
-  // The slot was taken by the stream thread when it accepted the start. It is
-  // given back on every way out of here -- before the final response is written,
-  // so a client's follow-up start never finds the slot still held by a run it
-  // has already seen finish.
-  Envoy::Cleanup release_slot([this, &execution]() {
+  // The slot was taken by the stream thread when it accepted the start. It is given back on
+  // every way out of here -- and, on every path that answers, before the final response is
+  // written (see write_final): a client that starts its next run the moment it reads that
+  // response must never be refused as busy by the run it just watched end.
+  bool released = false;
+  auto release = [this, &execution, &released]() {
+    if (released) {
+      return;
+    }
+    released = true;
     {
       Envoy::Thread::LockGuard guard(active_lock_);
       ASSERT(active_executions_ > 0);
@@ -35,7 +40,14 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
     }
     Envoy::Thread::LockGuard guard(execution->lock);
     execution->done = true;
-  });
+  };
+  // For the exception paths out of Process::run().
+  Envoy::Cleanup release_on_exit(release);
+  // The one way a final response leaves this function, early errors included.
+  auto write_final = [this, stream, &release](const nighthawk::client::ExecutionResponse& r) {
+    release();
+    writeResponse(stream, r);
+  };
 
   nighthawk::client::ExecutionResponse response;
   OptionsPtr options;
@@ -44,7 +56,7 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   } catch (const MalformedArgvException& e) {
     response.mutable_error_detail()->set_code(grpc::StatusCode::INTERNAL);
     response.mutable_error_detail()->set_message(e.what());
-    writeResponse(stream, response);
+    write_final(response);
     return;
   }
   // A set interval asks for progress; one that cannot be honoured -- not positive, or below
@@ -58,7 +70,7 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
       response.mutable_error_detail()->set_code(grpc::StatusCode::INVALID_ARGUMENT);
       response.mutable_error_detail()->set_message(
           "progress_interval must be at least 1ms (it is the period of the progress timer)");
-      writeResponse(stream, response);
+      write_final(response);
       return;
     }
     // Rounded up: a snapshot never comes more often than asked for.
@@ -75,7 +87,7 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
     response.mutable_error_detail()->set_code(grpc::StatusCode::INTERNAL);
     response.mutable_error_detail()->set_message(
         fmt::format("Unable to create ProcessImpl: {}", process_or_status.status().ToString()));
-    writeResponse(stream, response);
+    write_final(response);
     return;
   }
   ProcessPtr process = std::move(*process_or_status);
@@ -161,25 +173,14 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   }
   *(response.mutable_output()) = output_collector.toProto();
   process->shutdown();
-  // The slot is released before the response is written (see release_slot): a
-  // client that starts its next run the moment it reads this response must not
-  // be refused as busy by the run it just watched end.
+  // Unpublished first, so a cancellation racing the end finds no Process; then the slot, then
+  // the response (see write_final).
   unpublish.cancel();
   {
     Envoy::Thread::LockGuard guard(execution->lock);
     execution->process = nullptr;
   }
-  release_slot.cancel();
-  {
-    Envoy::Thread::LockGuard guard(active_lock_);
-    ASSERT(active_executions_ > 0);
-    active_executions_--;
-  }
-  {
-    Envoy::Thread::LockGuard guard(execution->lock);
-    execution->done = true;
-  }
-  writeResponse(stream, response);
+  write_final(response);
 }
 
 void ServiceImpl::writeResponse(Stream* stream,

@@ -25,6 +25,19 @@ TEST_F(ServiceMainTest, BadArgs) {
   EXPECT_THROW(ServiceMain(argv.size(), argv.data()), std::exception);
 }
 
+// A service that allows no execution at all would start, look healthy and refuse every run.
+TEST_F(ServiceMainTest, ZeroConcurrentExecutionsIsRejected) {
+  std::vector<const char*> argv = {"foo", "--max-concurrent-executions", "0"};
+  EXPECT_THROW_WITH_REGEX(ServiceMain(argv.size(), argv.data()), MalformedArgvException,
+                          "--max-concurrent-executions must be at least 1");
+}
+
+TEST_F(ServiceMainTest, ConcurrentExecutionsFlagIsAccepted) {
+  std::vector<const char*> argv = {"foo", "--max-concurrent-executions", "4", "--listen",
+                                   "127.0.0.1:0"};
+  EXPECT_NO_THROW(ServiceMain(argv.size(), argv.data()));
+}
+
 TEST_F(ServiceMainTest, BadHost) {
   std::vector<const char*> argv = {"foo", "--listen", "b|-%ar"};
   ServiceMain service_main(argv.size(), argv.data());

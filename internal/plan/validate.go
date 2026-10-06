@@ -43,6 +43,12 @@ func validateBeyondSchema(p *Plan) error {
 		return fmt.Errorf("defaults: body and body_file are mutually exclusive")
 	}
 
+	// defaults is a Scenario too: its target list is copied into every
+	// scenario that names no target of its own, so it is held to the same rule.
+	if err := validateTargets(p.GetDefaults()); err != nil {
+		return fmt.Errorf("defaults: %w", err)
+	}
+
 	for _, s := range p.GetScenarios() {
 		if s.GetName() == "" {
 			return fmt.Errorf("every scenario needs a name")
@@ -59,7 +65,8 @@ func validateBeyondSchema(p *Plan) error {
 		if _, ok := pools[pool]; !ok {
 			return fmt.Errorf("scenario %q: pool %q is not declared", s.GetName(), pool)
 		}
-		if s.GetTarget() == "" && p.GetDefaults().GetTarget() == "" && len(s.GetTargets()) == 0 {
+		if s.GetTarget() == "" && len(s.GetTargets()) == 0 &&
+			p.GetDefaults().GetTarget() == "" && len(p.GetDefaults().GetTargets()) == 0 {
 			return fmt.Errorf("scenario %q: target is required (set it on the scenario or in defaults)",
 				s.GetName())
 		}
@@ -77,7 +84,14 @@ func validateBeyondSchema(p *Plan) error {
 		}
 		// The mode checks read the target: a weighted scenario is checked
 		// once per target, as the scenario each target will run as.
-		for _, variant := range Variants(s) {
+		subject := s
+		if s.GetTarget() == "" && len(s.GetTargets()) == 0 && len(p.GetDefaults().GetTargets()) > 0 {
+			// Defaults are applied after validation; judge the scenario with
+			// the target list it is about to inherit.
+			subject = proto.Clone(s).(*Scenario)
+			subject.Targets = p.GetDefaults().GetTargets()
+		}
+		for _, variant := range Variants(subject) {
 			if err := validateModes(p, variant); err != nil {
 				return fmt.Errorf("scenario %q: %w", variant.GetName(), err)
 			}
@@ -428,7 +442,14 @@ func share(rate uint32, w, total uint64) uint32 {
 	if rate == 0 {
 		return 0
 	}
-	v := (uint64(rate)*w + total/2) / total
+	// Divide first and round from the remainder: rate x w fits in 64 bits
+	// (both are below 2^32), but adding total/2 to it before dividing does
+	// not always.
+	product := uint64(rate) * w
+	v := product / total
+	if rem := product % total; rem >= total-rem {
+		v++
+	}
 	if v == 0 {
 		v = 1
 	}
