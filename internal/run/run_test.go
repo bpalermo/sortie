@@ -350,6 +350,44 @@ func TestRunFailsWhenADnsPoolResolvesToNothing(t *testing.T) {
 	}
 }
 
+// Interrupting a run that is still waiting for its dns pool is a cancelled
+// run, not a plan naming something missing: the error is the context's, which
+// the CLI does not report as bad usage, and it comes back at once rather than
+// after the wait.
+func TestRunCancelledWhileWaitingForADnsPoolReturnsTheContextError(t *testing.T) {
+	p := dnsPlanFor(t, "{type: constant-rate, rate: 60, duration: 10s, per_backend: true}")
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	runner := &run.Runner{Plan: p, Resolver: tableResolver{"engine.test": {}}, ResolveTimeout: time.Minute}
+	started := time.Now()
+	_, err := runner.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	var re *plan.ResolveError
+	if errors.As(err, &re) {
+		t.Error("a cancellation was reported as a ResolveError, which the CLI treats as bad usage")
+	}
+	if waited := time.Since(started); waited > 5*time.Second {
+		t.Errorf("the cancellation took %s to be noticed", waited)
+	}
+}
+
+// The wait never runs past its timeout: with less than a poll interval left,
+// the last poll is that short.
+func TestRunDnsWaitDoesNotOutliveItsTimeout(t *testing.T) {
+	p := dnsPlanFor(t, "{type: constant-rate, rate: 60, duration: 10s, per_backend: true}")
+	runner := &run.Runner{Plan: p, Resolver: tableResolver{"engine.test": {}}, ResolveTimeout: 100 * time.Millisecond}
+	started := time.Now()
+	if _, err := runner.Run(context.Background()); err == nil {
+		t.Fatal("want a ResolveError")
+	}
+	if waited := time.Since(started); waited > 800*time.Millisecond {
+		t.Errorf("a 100ms timeout was waited out for %s", waited)
+	}
+}
+
 // An empty answer is asked again until the timeout: the engines often come up
 // beside the run, and a headless Service lists a pod only once it is ready.
 func TestRunWaitsForADnsPoolToAnswer(t *testing.T) {

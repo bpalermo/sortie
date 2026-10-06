@@ -20,6 +20,31 @@ cut to leave room for the suffix.
 {{- end -}}
 
 {{/*
+The engine's Service. A DaemonSet's is headless and has a name of its own:
+spec.clusterIP is immutable, so turning the Deployment's ClusterIP Service
+headless in place would fail the upgrade that switches engine.kind. With two
+names Helm deletes one Service and creates the other.
+*/}}
+{{- define "sortie.engineServiceName" -}}
+{{- if eq (include "sortie.engineKind" .) "DaemonSet" -}}
+{{- printf "%s-engine-nodes" (include "sortie.fullname" . | trunc 50 | trimSuffix "-") -}}
+{{- else -}}
+{{- include "sortie.engineName" . -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Labels a user may add to a pod, without the ones the selectors match on: a
+podLabels entry for one of those would be a duplicate key that replaces the
+fixed value and leaves the workload and the Service selecting nothing.
+*/}}
+{{- define "sortie.extraPodLabels" -}}
+{{- with omit . "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component" }}
+{{- toYaml . }}
+{{- end }}
+{{- end -}}
+
+{{/*
 The engine's workload kind, checked: a misspelt kind would otherwise render
 nothing at all and install a Service pointing at no pods.
 */}}
@@ -40,8 +65,8 @@ metadata:
   labels:
     {{- include "sortie.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: engine
-    {{- with .Values.engine.podLabels }}
-    {{- toYaml . | nindent 4 }}
+    {{- with include "sortie.extraPodLabels" .Values.engine.podLabels }}
+    {{- . | nindent 4 }}
     {{- end }}
   {{- with .Values.engine.podAnnotations }}
   annotations:
@@ -164,8 +189,8 @@ place rather than start a new run.
 metadata:
   labels:
     {{- include "sortie.selectorLabels" . | nindent 4 }}
-    {{- with .Values.podLabels }}
-    {{- toYaml . | nindent 4 }}
+    {{- with include "sortie.extraPodLabels" .Values.podLabels }}
+    {{- . | nindent 4 }}
     {{- end }}
   {{- with .Values.podAnnotations }}
   annotations:

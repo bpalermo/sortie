@@ -117,7 +117,7 @@ distributor pool means building a host for that service yourself. The direct
 ```yaml
 pools:
   - name: nodes
-    dns: nightly-sortie-engine.loadtest.svc.cluster.local:8443
+    dns: nightly-sortie-engine-nodes.loadtest.svc.cluster.local:8443
 ```
 
 `sortie run` resolves the host's A and AAAA records once, when it starts, and
@@ -550,7 +550,7 @@ helm install nightly oci://quay.io/sortie/chart-sortie --version <chart version>
 # values.yaml
 engine:
   enabled: true
-  kind: DaemonSet                       # the Service becomes headless
+  kind: DaemonSet                       # behind a headless Service, <release>-sortie-engine-nodes
   priorityClassName: loadgen            # a class you create; see below
   tolerations: [{operator: Exists}]
   podAnnotations: {mesh.example.com/inject: "true"}
@@ -564,7 +564,7 @@ podAnnotations: {mesh.example.com/inject: "true"}   # the sortie pod itself
 version: v1
 pools:
   - name: nodes
-    dns: nightly-sortie-engine.loadtest.svc.cluster.local:8443
+    dns: nightly-sortie-engine-nodes.loadtest.svc.cluster.local:8443
 scenarios:
   - name: soak
     pool: nodes

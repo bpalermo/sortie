@@ -148,7 +148,8 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 // resolve returns the plan with its dns pools resolved, waiting up to
 // ResolveTimeout for a name that answers with nothing. Every other failure --
 // a name that does not exist, a resolver error -- is returned at once; so is
-// an empty answer once the wait is over, as the same ResolveError.
+// an empty answer once the wait is over, as the same ResolveError. A context
+// cancelled during the wait ends it with the context's error.
 func (r *Runner) resolve(ctx context.Context) (*plan.Plan, error) {
 	resolver := r.Resolver
 	if resolver == nil {
@@ -167,13 +168,21 @@ func (r *Runner) resolve(ctx context.Context) (*plan.Plan, error) {
 		// A lookup that errored is final; only an answer that is empty for
 		// now is worth asking again, and only while there is time.
 		var re *plan.ResolveError
-		if !errors.As(err, &re) || !emptyAnswer(re) || !time.Now().Before(deadline) {
+		if !errors.As(err, &re) || !emptyAnswer(re) {
+			return nil, err
+		}
+		// Never past the deadline: the last poll is as short as what is left.
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			return nil, err
 		}
 		select {
 		case <-ctx.Done():
-			return nil, err
-		case <-time.After(resolvePoll):
+			// Interrupted while waiting. That is a cancelled run, not a plan
+			// that names something missing, so it is the context's error and
+			// not the ResolveError the CLI reports as bad usage.
+			return nil, ctx.Err()
+		case <-time.After(min(resolvePoll, remaining)):
 		}
 	}
 }

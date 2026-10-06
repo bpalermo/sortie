@@ -15,6 +15,8 @@ engine:
     mesh.example.com/inject: "true"
   podLabels:
     mesh.example.com/managed: "true"
+    # A selector label: ignored, or the DaemonSet would select nothing.
+    app.kubernetes.io/component: mine
   resources:
     requests:
       cpu: 100m
@@ -45,7 +47,7 @@ plan: |
   version: v1
   pools:
     - name: nodes
-      dns: release-sortie-engine.namespace.svc.cluster.local:8443
+      dns: release-sortie-engine-nodes.namespace.svc.cluster.local:8443
   scenarios:
     - name: soak
       pool: nodes
