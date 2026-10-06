@@ -371,6 +371,7 @@ The finer counters refine the two older ones without changing them.
 | Counter | A request that |
 | --- | --- |
 | `benchmark.http_4xx`, `benchmark.http_5xx` | got a complete response with that status |
+| `benchmark.grpc_error` | was a unary gRPC call that ended with a status other than OK |
 | `benchmark.stream_resets` | had its stream reset, in any way |
 | `benchmark.stream_resets_before_headers` | was reset before any response header arrived |
 | `benchmark.stream_resets_incomplete_body` | was reset after the headers, before the body or trailers finished |
@@ -382,15 +383,23 @@ The finer counters refine the two older ones without changing them.
 
 The two phase counters sum to `stream_resets`, and so do the reason counters.
 `pool_failure_timeout` is outside `pool_connection_failure`, which never
-included it. A zero-failure soak is:
+included it. A zero-failure soak names every class, which costs nothing: a
+counter that never incremented reads as zero.
 
 ```yaml
 thresholds:
+  - "counter:benchmark.http_4xx == 0"
   - "counter:benchmark.http_5xx == 0"
+  - "counter:benchmark.grpc_error == 0"
   - "counter:benchmark.stream_resets == 0"
   - "counter:benchmark.pool_connection_failure == 0"
   - "counter:benchmark.pool_failure_timeout == 0"
+  - "counter:benchmark.pool_overflow == 0"
 ```
+
+Leave `pool_overflow` out and an open-loop run in which the client refused
+every request itself passes with nothing sent. Leave `http_4xx` out only if the
+target is meant to answer with one.
 
 Three things are not failure classes, and why:
 
