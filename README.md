@@ -377,7 +377,7 @@ non-2xx response.
 | `benchmark.http_4xx`, `benchmark.http_5xx` | got a complete response with that status |
 | `benchmark.grpc_error` | was a unary gRPC call that ended with a status other than OK |
 | `benchmark.stream_resets` | had its stream reset, in any way |
-| `benchmark.stream_resets_before_headers` | was reset before any response header arrived |
+| `benchmark.stream_resets_before_headers` | was reset before the final response headers arrived; an informational response such as `103 Early Hints` does not count as having arrived |
 | `benchmark.stream_resets_incomplete_body` | was reset after the headers, before the body or trailers finished |
 | `benchmark.stream_resets_<reason>` | was reset for that reason: Envoy's `StreamResetReason` in snake case, such as `connection_termination`, `remote_reset`, `protocol_error` |
 | `benchmark.pool_connection_failure` | never got a connection, because connecting failed |

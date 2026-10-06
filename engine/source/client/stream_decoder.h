@@ -30,7 +30,8 @@ using GrpcStatusOpt = std::optional<Envoy::Grpc::Status::GrpcStatus>;
  * directions (see StreamDecoder::onResetStream).
  */
 enum class StreamResetPhase {
-  // No response headers had been received.
+  // The final response headers had not been received. Informational (1xx) headers do not
+  // count: decode1xxHeaders() ignores them.
   BeforeHeaders,
   // Response headers had been received; the body or trailers had not finished.
   IncompleteBody,
