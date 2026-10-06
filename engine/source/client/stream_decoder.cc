@@ -111,7 +111,21 @@ void StreamDecoder::onComplete(bool success) {
 
 void StreamDecoder::onResetStream(Envoy::Http::StreamResetReason reason,
                                   absl::string_view /* transport_failure_reason */) {
-
+  // A reset cannot follow a complete response here. The request is fully encoded in
+  // onPoolReady(), before any response byte can be read, and Envoy's codecs only raise reset
+  // callbacks on a client stream while one of its two directions is still open: HTTP/1 drops the
+  // pending response at message complete (ClientConnectionImpl::onResetStream checks it) and only
+  // resets for Http1PrematureUpstreamHalfClose while the request is still being encoded; HTTP/2's
+  // onStreamClose, including its RemoteResetNoError branch, requires !remote_end_stream_ ||
+  // !local_end_stream_ on a client stream; HTTP/3's OnStreamReset, OnStopSending and
+  // OnConnectionClosed are each guarded on end-of-stream having been decoded and encoded. A
+  // server that closes the connection after a complete response therefore never reaches this
+  // decoder, which has already scheduled its own deletion in onComplete(). This assertion pins
+  // that: if it ever fires, onComplete() below would run twice for one request.
+  ASSERT(!complete_);
+  const StreamResetPhase phase = response_headers_ == nullptr ? StreamResetPhase::BeforeHeaders
+                                                              : StreamResetPhase::IncompleteBody;
+  decoder_completion_callback_.onStreamReset(phase, reason);
   stream_info_.setResponseFlag(streamResetReasonToResponseFlag(reason));
   onComplete(false);
 }
@@ -198,6 +212,43 @@ StreamDecoder::streamResetReasonToResponseFlag(Envoy::Http::StreamResetReason re
     return Envoy::StreamInfo::CoreResponseFlag::UpstreamProtocolError;
   case Envoy::Http::StreamResetReason::OverloadManager:
     return Envoy::StreamInfo::CoreResponseFlag::OverloadManager;
+  }
+  PANIC("not reached");
+}
+
+// No default case on purpose: the build compiles with -Wswitch as an error, so an enumerator Envoy
+// adds has to be named here, and in StreamDecoderTest.StreamResetReasonToStringCoversEveryReason.
+absl::string_view
+StreamDecoder::streamResetReasonToString(Envoy::Http::StreamResetReason reset_reason) {
+  switch (reset_reason) {
+  case Envoy::Http::StreamResetReason::LocalReset:
+    return "local_reset";
+  case Envoy::Http::StreamResetReason::LocalRefusedStreamReset:
+    return "local_refused_stream_reset";
+  case Envoy::Http::StreamResetReason::RemoteReset:
+    return "remote_reset";
+  case Envoy::Http::StreamResetReason::RemoteRefusedStreamReset:
+    return "remote_refused_stream_reset";
+  case Envoy::Http::StreamResetReason::LocalConnectionFailure:
+    return "local_connection_failure";
+  case Envoy::Http::StreamResetReason::RemoteConnectionFailure:
+    return "remote_connection_failure";
+  case Envoy::Http::StreamResetReason::ConnectionTimeout:
+    return "connection_timeout";
+  case Envoy::Http::StreamResetReason::ConnectionTermination:
+    return "connection_termination";
+  case Envoy::Http::StreamResetReason::Overflow:
+    return "overflow";
+  case Envoy::Http::StreamResetReason::ConnectError:
+    return "connect_error";
+  case Envoy::Http::StreamResetReason::ProtocolError:
+    return "protocol_error";
+  case Envoy::Http::StreamResetReason::OverloadManager:
+    return "overload_manager";
+  case Envoy::Http::StreamResetReason::Http1PrematureUpstreamHalfClose:
+    return "http1_premature_upstream_half_close";
+  case Envoy::Http::StreamResetReason::RemoteResetNoError:
+    return "remote_reset_no_error";
   }
   PANIC("not reached");
 }

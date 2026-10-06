@@ -363,6 +363,54 @@ present and zero, so a missing counter reads as zero — `counter:benchmark.http
 passes on a clean run. A threshold naming a statistic that does not exist fails,
 because it went unchecked rather than being satisfied.
 
+### failure classes
+
+A request that does not end in a response is counted once, by what stopped it.
+The finer counters refine the two older ones without changing them.
+
+| Counter | A request that |
+| --- | --- |
+| `benchmark.http_4xx`, `benchmark.http_5xx` | got a complete response with that status |
+| `benchmark.stream_resets` | had its stream reset, in any way |
+| `benchmark.stream_resets_before_headers` | was reset before any response header arrived |
+| `benchmark.stream_resets_incomplete_body` | was reset after the headers, before the body or trailers finished |
+| `benchmark.stream_resets_<reason>` | was reset for that reason: Envoy's `StreamResetReason` in snake case, such as `connection_termination`, `remote_reset`, `protocol_error` |
+| `benchmark.pool_connection_failure` | never got a connection, because connecting failed |
+| `benchmark.pool_failure_local_connection_failure`, `benchmark.pool_failure_remote_connection_failure` | the same, by which side failed |
+| `benchmark.pool_failure_timeout` | never got a connection, because connecting timed out |
+| `benchmark.pool_overflow` | was refused by the client's own pool; in open loop this is saturation |
+
+The two phase counters sum to `stream_resets`, and so do the reason counters.
+`pool_failure_timeout` is outside `pool_connection_failure`, which never
+included it. A zero-failure soak is:
+
+```yaml
+thresholds:
+  - "counter:benchmark.http_5xx == 0"
+  - "counter:benchmark.stream_resets == 0"
+  - "counter:benchmark.pool_connection_failure == 0"
+  - "counter:benchmark.pool_failure_timeout == 0"
+```
+
+Three things are not failure classes, and why:
+
+- **A disconnect after a complete response.** A server that closes the
+  connection once the whole response has arrived -- an HTTP/3 server going away
+  between requests does this -- is not a reset. The request has already been
+  counted under its status, and none of Envoy's codecs raise a reset on a
+  stream that is complete in both directions. It shows only in Envoy's
+  connection counters, `upstream_cx_destroy_remote`. So
+  `stream_resets_incomplete_body` is exactly the real mid-body cut.
+- **A response timeout.** The engine has no per-request one: a request waits
+  for its response until the run and its drain end. `timeout` on a scenario
+  bounds connecting and that final drain.
+- **A DNS failure.** The target is resolved once, when an execution starts. A
+  name that does not resolve fails the execution with an error, before any
+  request.
+
+The report prints a backend's non-zero failure counters beside its request
+count, and lists them under `failures` in JSON.
+
 ### percentiles resolve to the next histogram bucket
 
 Nighthawk returns an HdrHistogram's own buckets, not round percentiles. A

@@ -431,6 +431,49 @@ TEST_F(BenchmarkClientHttpTest, PoolFailures) {
   client_->onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason::Timeout);
   EXPECT_EQ(1, getCounter("pool_overflow"));
   EXPECT_EQ(2, getCounter("pool_connection_failure"));
+  // By reason. pool_overflow is the overflow reason's counter; the connect timeout has its own
+  // and is not part of pool_connection_failure.
+  EXPECT_EQ(1, getCounter("pool_failure_local_connection_failure"));
+  EXPECT_EQ(1, getCounter("pool_failure_remote_connection_failure"));
+  EXPECT_EQ(1, getCounter("pool_failure_timeout"));
+  EXPECT_EQ(0, getCounter("pool_failure_overflow"));
+}
+
+// A reset is counted once in stream_resets, once in exactly one phase counter and once in its
+// reason's counter, so the phase counters and the reason counters each sum to stream_resets.
+TEST_F(BenchmarkClientHttpTest, StreamResetsByPhaseAndReason) {
+  RequestGenerator default_request_generator = getDefaultRequestGenerator();
+  setupBenchmarkClient(default_request_generator);
+  Envoy::Http::ResponseHeaderMapPtr empty = Envoy::Http::ResponseHeaderMapImpl::create();
+  Envoy::Http::ResponseHeaderMapPtr header = Envoy::Http::ResponseHeaderMapImpl::create();
+  header->setStatus(200);
+
+  // Two connection terminations before any headers, as a server going away mid-run produces.
+  client_->onStreamReset(Client::StreamResetPhase::BeforeHeaders,
+                         Envoy::Http::StreamResetReason::ConnectionTermination);
+  client_->onComplete(false, *empty, std::nullopt);
+  client_->onStreamReset(Client::StreamResetPhase::BeforeHeaders,
+                         Envoy::Http::StreamResetReason::ConnectionTermination);
+  client_->onComplete(false, *empty, std::nullopt);
+  // One body cut short by a remote reset after a 200: the real mid-body failure.
+  client_->onStreamReset(Client::StreamResetPhase::IncompleteBody,
+                         Envoy::Http::StreamResetReason::RemoteReset);
+  client_->onComplete(false, *header, std::nullopt);
+  // One protocol error with headers in.
+  client_->onStreamReset(Client::StreamResetPhase::IncompleteBody,
+                         Envoy::Http::StreamResetReason::ProtocolError);
+  client_->onComplete(false, *header, std::nullopt);
+
+  EXPECT_EQ(4, getCounter("stream_resets"));
+  EXPECT_EQ(2, getCounter("stream_resets_before_headers"));
+  EXPECT_EQ(2, getCounter("stream_resets_incomplete_body"));
+  EXPECT_EQ(2, getCounter("stream_resets_connection_termination"));
+  EXPECT_EQ(1, getCounter("stream_resets_remote_reset"));
+  EXPECT_EQ(1, getCounter("stream_resets_protocol_error"));
+  EXPECT_EQ(0, getCounter("stream_resets_local_reset"));
+  // A reset never lands in a status class, whatever headers had arrived.
+  EXPECT_EQ(0, getCounter("http_2xx"));
+  client_.reset();
 }
 
 TEST_F(BenchmarkClientHttpTest, RequestMethodPost) {

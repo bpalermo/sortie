@@ -1,4 +1,7 @@
 #include <chrono>
+#include <optional>
+#include <utility>
+#include <vector>
 
 #include "source/common/common/random_generator.h"
 #include "source/common/event/dispatcher_impl.h"
@@ -11,6 +14,7 @@
 #include "engine/source/client/stream_decoder.h"
 #include "engine/source/common/statistic_impl.h"
 
+#include "absl/container/flat_hash_set.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
@@ -39,7 +43,15 @@ public:
     stream_decoder_completion_callbacks_++;
     completed_grpc_status_ = grpc_status;
   }
-  void onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason) override { pool_failures_++; }
+  void onStreamReset(StreamResetPhase phase, Envoy::Http::StreamResetReason reason) override {
+    stream_resets_++;
+    reset_phase_ = phase;
+    reset_reason_ = reason;
+  }
+  void onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason reason) override {
+    pool_failures_++;
+    pool_failure_reason_ = reason;
+  }
   void exportLatency(const uint32_t, const uint64_t, GrpcStatusOpt grpc_status) override {
     stream_decoder_export_latency_callbacks_++;
     exported_grpc_status_ = grpc_status;
@@ -58,7 +70,11 @@ public:
   HeaderMapPtr request_headers_;
   std::string request_body_;
   uint64_t stream_decoder_completion_callbacks_{0};
+  uint64_t stream_resets_{0};
+  std::optional<StreamResetPhase> reset_phase_;
+  std::optional<Envoy::Http::StreamResetReason> reset_reason_;
   uint64_t pool_failures_{0};
+  std::optional<Envoy::Http::ConnectionPool::PoolFailureReason> pool_failure_reason_;
   uint64_t stream_decoder_export_latency_callbacks_{0};
   uint64_t called_data_{0};
   GrpcStatusOpt completed_grpc_status_;
@@ -300,6 +316,60 @@ TEST_F(StreamDecoderTest, StreamResetTest) {
   EXPECT_TRUE(is_complete); // these do get reported.
   EXPECT_EQ(1, stream_decoder_completion_callbacks_);
   EXPECT_EQ(0, stream_decoder_export_latency_callbacks_);
+  // Headers had arrived, so the reset cut the body short.
+  EXPECT_EQ(1, stream_resets_);
+  EXPECT_EQ(StreamResetPhase::IncompleteBody, reset_phase_);
+  EXPECT_EQ(Envoy::Http::StreamResetReason::LocalReset, reset_reason_);
+}
+
+TEST_F(StreamDecoderTest, StreamResetBeforeHeadersIsReportedAsSuch) {
+  bool is_complete = false;
+  auto decoder = new StreamDecoder(
+      *dispatcher_, time_system_, *this, [&is_complete](bool, bool) { is_complete = true; },
+      connect_statistic_, latency_statistic_, response_header_size_statistic_,
+      response_body_size_statistic_, origin_latency_statistic_, request_headers_, request_body_,
+      false, 0, random_generator_, tracer_, "");
+  decoder->onResetStream(Envoy::Http::StreamResetReason::ConnectionTermination, "");
+  EXPECT_TRUE(is_complete);
+  EXPECT_EQ(1, stream_decoder_completion_callbacks_);
+  EXPECT_EQ(1, stream_resets_);
+  EXPECT_EQ(StreamResetPhase::BeforeHeaders, reset_phase_);
+  EXPECT_EQ(Envoy::Http::StreamResetReason::ConnectionTermination, reset_reason_);
+}
+
+// Body bytes having arrived does not change the phase: anything short of end_stream is an
+// incomplete body.
+TEST_F(StreamDecoderTest, StreamResetMidBodyIsAnIncompleteBody) {
+  auto decoder = new StreamDecoder(
+      *dispatcher_, time_system_, *this, [](bool, bool) {}, connect_statistic_, latency_statistic_,
+      response_header_size_statistic_, response_body_size_statistic_, origin_latency_statistic_,
+      request_headers_, request_body_, false, 0, random_generator_, tracer_, "");
+  decoder->decodeHeaders(std::move(test_header_), false);
+  Envoy::Buffer::OwnedImpl buf(std::string(10, 'a'));
+  decoder->decodeData(buf, false);
+  decoder->onResetStream(Envoy::Http::StreamResetReason::RemoteReset, "");
+  EXPECT_EQ(1, stream_decoder_completion_callbacks_);
+  EXPECT_EQ(StreamResetPhase::IncompleteBody, reset_phase_);
+  EXPECT_EQ(Envoy::Http::StreamResetReason::RemoteReset, reset_reason_);
+}
+
+// The reason reaches the completion callback unchanged, whatever it is.
+TEST_F(StreamDecoderTest, StreamResetReasonIsForwardedVerbatim) {
+  for (const auto reason :
+       {Envoy::Http::StreamResetReason::ProtocolError, Envoy::Http::StreamResetReason::Overflow,
+        Envoy::Http::StreamResetReason::ConnectError,
+        Envoy::Http::StreamResetReason::RemoteResetNoError}) {
+    auto decoder = new StreamDecoder(
+        *dispatcher_, time_system_, *this, [](bool, bool) {}, connect_statistic_,
+        latency_statistic_, response_header_size_statistic_, response_body_size_statistic_,
+        origin_latency_statistic_, request_headers_, request_body_, false, 0, random_generator_,
+        tracer_, "");
+    decoder->onResetStream(reason, "");
+    EXPECT_EQ(reason, reset_reason_);
+    EXPECT_EQ(StreamResetPhase::BeforeHeaders, reset_phase_);
+  }
+  EXPECT_EQ(4, stream_resets_);
+  EXPECT_EQ(4, stream_decoder_completion_callbacks_);
 }
 
 TEST_F(StreamDecoderTest, PoolFailureTest) {
@@ -313,6 +383,54 @@ TEST_F(StreamDecoderTest, PoolFailureTest) {
   decoder->onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason::Overflow, "fooreason",
                          ptr);
   EXPECT_EQ(1, pool_failures_);
+  EXPECT_EQ(Envoy::Http::ConnectionPool::PoolFailureReason::Overflow, pool_failure_reason_);
+  // A pool failure is not a stream reset: the stream never existed.
+  EXPECT_EQ(0, stream_resets_);
+  EXPECT_EQ(0, stream_decoder_completion_callbacks_);
+}
+
+TEST_F(StreamDecoderTest, PoolFailureReasonIsForwardedVerbatim) {
+  Envoy::Upstream::HostDescriptionConstSharedPtr ptr;
+  for (const auto reason : {Envoy::Http::ConnectionPool::PoolFailureReason::LocalConnectionFailure,
+                            Envoy::Http::ConnectionPool::PoolFailureReason::RemoteConnectionFailure,
+                            Envoy::Http::ConnectionPool::PoolFailureReason::Timeout}) {
+    auto decoder = new StreamDecoder(
+        *dispatcher_, time_system_, *this, [](bool, bool) {}, connect_statistic_,
+        latency_statistic_, response_header_size_statistic_, response_body_size_statistic_,
+        origin_latency_statistic_, request_headers_, request_body_, false, 0, random_generator_,
+        tracer_, "");
+    decoder->onPoolFailure(reason, "", ptr);
+    EXPECT_EQ(reason, pool_failure_reason_);
+  }
+  EXPECT_EQ(3, pool_failures_);
+}
+
+// Every enumerator of Envoy's StreamResetReason has a stable snake_case name. The switch in
+// streamResetReasonToString() has no default, so a new enumerator fails the build before it
+// fails this test; the table here pins the spelling, which is a counter name.
+TEST_F(StreamDecoderTest, StreamResetReasonToStringCoversEveryReason) {
+  const std::vector<std::pair<Envoy::Http::StreamResetReason, absl::string_view>> expected = {
+      {Envoy::Http::StreamResetReason::LocalReset, "local_reset"},
+      {Envoy::Http::StreamResetReason::LocalRefusedStreamReset, "local_refused_stream_reset"},
+      {Envoy::Http::StreamResetReason::RemoteReset, "remote_reset"},
+      {Envoy::Http::StreamResetReason::RemoteRefusedStreamReset, "remote_refused_stream_reset"},
+      {Envoy::Http::StreamResetReason::LocalConnectionFailure, "local_connection_failure"},
+      {Envoy::Http::StreamResetReason::RemoteConnectionFailure, "remote_connection_failure"},
+      {Envoy::Http::StreamResetReason::ConnectionTimeout, "connection_timeout"},
+      {Envoy::Http::StreamResetReason::ConnectionTermination, "connection_termination"},
+      {Envoy::Http::StreamResetReason::Overflow, "overflow"},
+      {Envoy::Http::StreamResetReason::ConnectError, "connect_error"},
+      {Envoy::Http::StreamResetReason::ProtocolError, "protocol_error"},
+      {Envoy::Http::StreamResetReason::OverloadManager, "overload_manager"},
+      {Envoy::Http::StreamResetReason::Http1PrematureUpstreamHalfClose,
+       "http1_premature_upstream_half_close"},
+      {Envoy::Http::StreamResetReason::RemoteResetNoError, "remote_reset_no_error"},
+  };
+  absl::flat_hash_set<absl::string_view> seen;
+  for (const auto& [reason, name] : expected) {
+    EXPECT_EQ(name, StreamDecoder::streamResetReasonToString(reason));
+    EXPECT_TRUE(seen.insert(name).second) << "duplicate name " << name;
+  }
 }
 
 TEST_F(StreamDecoderTest, StreamResetReasonToResponseFlag) {

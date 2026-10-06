@@ -161,6 +161,91 @@ func TestJSONIsParseableAndCarriesTheVerdict(t *testing.T) {
 	}
 }
 
+// A backend's failure classes are printed after its request count and carried
+// in the JSON, only when non-zero: a clean backend's line and JSON do not change.
+func TestReportsBreakDownFailuresPerBackend(t *testing.T) {
+	clean := backendResult(time.Millisecond, 1000)
+	failing := backendResult(time.Millisecond, 997)
+	failing.Counters = append(failing.Counters,
+		&client.Counter{Name: "benchmark.stream_resets", Value: 3},
+		&client.Counter{Name: "benchmark.stream_resets_incomplete_body", Value: 3},
+		&client.Counter{Name: "benchmark.stream_resets_remote_reset", Value: 3},
+		&client.Counter{Name: "benchmark.pool_failure_timeout", Value: 1},
+		&client.Counter{Name: "benchmark.pool_overflow", Value: 0},
+		&client.Counter{Name: "upstream_cx_destroy_remote", Value: 12},
+	)
+	set := &result.Set{Backends: []result.Backend{
+		{Addr: "10.0.0.1:8443", Global: clean, Output: &client.Output{Results: []*client.Result{clean}}},
+		{Addr: "10.0.0.2:8443", Global: failing, Output: &client.Output{Results: []*client.Result{failing}}},
+	}}
+	r := &run.Report{Executions: []run.ExecutionReport{{
+		Label: "soak", Pool: "mesh", Rate: 100, Duration: 10 * time.Second, Set: set,
+	}}}
+
+	var text bytes.Buffer
+	if err := report.Text(&text, r); err != nil {
+		t.Fatal(err)
+	}
+	out := text.String()
+	if !strings.Contains(out, "10.0.0.1:8443: 1000 requests in 10s\n") {
+		t.Errorf("a clean backend's line must be unchanged:\n%s", out)
+	}
+	want := "10.0.0.2:8443: 997 requests in 10s  (stream_resets 3, stream_resets_incomplete_body 3, pool_failure_timeout 1, stream_resets_remote_reset 3)"
+	if !strings.Contains(out, want) {
+		t.Errorf("text report is missing %q:\n%s", want, out)
+	}
+	if strings.Contains(out, "pool_overflow") || strings.Contains(out, "upstream_cx") {
+		t.Errorf("zero and non-failure counters must not be printed:\n%s", out)
+	}
+
+	var jsonBuf bytes.Buffer
+	if err := report.JSON(&jsonBuf, r); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Executions []struct {
+			Backends []string `json:"backends"`
+			Failures []struct {
+				Backend  string            `json:"backend"`
+				Counters map[string]uint64 `json:"counters"`
+			} `json:"failures"`
+		} `json:"executions"`
+	}
+	if err := json.Unmarshal(jsonBuf.Bytes(), &got); err != nil {
+		t.Fatalf("JSON report does not parse: %v\n%s", err, jsonBuf.String())
+	}
+	e := got.Executions[0]
+	if len(e.Backends) != 2 {
+		t.Errorf("backends = %v, the address list must keep its shape", e.Backends)
+	}
+	if len(e.Failures) != 1 || e.Failures[0].Backend != "10.0.0.2:8443" {
+		t.Fatalf("failures = %+v, want only the failing backend", e.Failures)
+	}
+	wantCounters := map[string]uint64{
+		"benchmark.stream_resets":                 3,
+		"benchmark.stream_resets_incomplete_body": 3,
+		"benchmark.stream_resets_remote_reset":    3,
+		"benchmark.pool_failure_timeout":          1,
+	}
+	if len(e.Failures[0].Counters) != len(wantCounters) {
+		t.Errorf("counters = %v, want %v", e.Failures[0].Counters, wantCounters)
+	}
+	for name, v := range wantCounters {
+		if e.Failures[0].Counters[name] != v {
+			t.Errorf("counters[%s] = %d, want %d", name, e.Failures[0].Counters[name], v)
+		}
+	}
+
+	// A clean run has no failures key at all.
+	jsonBuf.Reset()
+	if err := report.JSON(&jsonBuf, reportWith(t, time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(jsonBuf.String(), "failures") {
+		t.Errorf("a clean run's JSON must not carry a failures key:\n%s", jsonBuf.String())
+	}
+}
+
 // An execution that never ran has no Set, and the reporters must not panic on it.
 func TestReportersHandleAFailedExecution(t *testing.T) {
 	r := &run.Report{Executions: []run.ExecutionReport{{
