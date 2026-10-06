@@ -389,6 +389,19 @@ TEST_P(ConcurrentServiceTest, TwoExecutionsRunAtOnceAndEachStreamCancelsItsOwn) 
     auto d = stub_->ExecutionStream(&context_d);
     EXPECT_TRUE(d->Write(request_, {}));
     std::this_thread::sleep_for(std::chrono::seconds(1)); // NO_CHECK_FORMAT(real_time)
+    {
+      // b survived a's cancellation: with d running too both slots are taken, so one more
+      // start is refused. Had cancelling a stopped b as well, this would be accepted.
+      grpc::ClientContext context_e;
+      auto e = stub_->ExecutionStream(&context_e);
+      EXPECT_TRUE(e->Write(request_, {}));
+      EXPECT_TRUE(e->WritesDone());
+      nighthawk::client::ExecutionResponse response_e;
+      EXPECT_FALSE(e->Read(&response_e));
+      const auto status = e->Finish();
+      EXPECT_FALSE(status.ok());
+      EXPECT_THAT(status.error_message(), HasSubstr("Busy: 2 executions are running"));
+    }
     EXPECT_TRUE(d->Write(cancel, {}));
     EXPECT_TRUE(d->WritesDone());
     nighthawk::client::ExecutionResponse response_d;

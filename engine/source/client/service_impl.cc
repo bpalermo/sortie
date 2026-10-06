@@ -59,14 +59,14 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
       // Process sets from its own options when it is built. With one execution at a time
       // that honours each request; with several at once the last one built would set the
       // level for all of them. A service that runs executions concurrently therefore logs at
-      // its own level throughout. Set unconditionally: a request that names no verbosity
-      // would otherwise get the options' default, which is a different level again.
-      if (requested.has_verbosity() &&
-          requested.verbosity().value() != nighthawk::client::Verbosity::INFO) {
+      // its own level throughout -- the one it was constructed with. Set unconditionally: a request
+      // that names no verbosity would otherwise get the options' default, which is a different
+      // level again.
+      if (requested.has_verbosity() && requested.verbosity().value() != service_verbosity_) {
         ENVOY_LOG(info, "Ignoring the request's verbosity: this service runs executions "
                         "concurrently, and the log level is process-wide.");
       }
-      requested.mutable_verbosity()->set_value(nighthawk::client::Verbosity::INFO);
+      requested.mutable_verbosity()->set_value(service_verbosity_);
     }
     options = std::make_unique<OptionsImpl>(requested);
   } catch (const MalformedArgvException& e) {
@@ -199,6 +199,24 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   write_final(response);
 }
 
+nighthawk::client::Verbosity::VerbosityOptions ServiceImpl::currentVerbosity() {
+  switch (Envoy::Logger::Registry::getLog(Envoy::Logger::Id::main).level()) {
+  case spdlog::level::trace:
+    return nighthawk::client::Verbosity::TRACE;
+  case spdlog::level::debug:
+    return nighthawk::client::Verbosity::DEBUG;
+  case spdlog::level::info:
+    return nighthawk::client::Verbosity::INFO;
+  case spdlog::level::warn:
+    return nighthawk::client::Verbosity::WARN;
+  case spdlog::level::err:
+    return nighthawk::client::Verbosity::ERROR;
+  default:
+    // critical, and off: the options have nothing quieter.
+    return nighthawk::client::Verbosity::CRITICAL;
+  }
+}
+
 void ServiceImpl::writeResponse(Stream* stream,
                                 const nighthawk::client::ExecutionResponse& response) {
   ENVOY_LOG(debug, "Write response: {}", absl::StrCat(redactedForLog(response)));
@@ -265,25 +283,25 @@ grpc::Status ServiceImpl::ExecutionStream(
         }
         active_executions_++;
       }
-      execution = std::make_shared<Execution>();
-      // std::launch::async: the run starts now, on its own thread, not when
-      // the future is first waited on.
+      // Everything between taking the slot and the run's thread existing can throw -- the
+      // allocation as well as the thread -- and nothing has been started that would release
+      // the slot. Give it back on any such failure, or each one would leave the service one
+      // execution closer to reporting busy forever.
       try {
+        execution = std::make_shared<Execution>();
+        // std::launch::async: the run starts now, on its own thread, not when
+        // the future is first waited on.
         execution->future = std::async(std::launch::async, &ServiceImpl::handleExecutionRequest,
                                        this, request, stream, execution);
-      } catch (const std::system_error& e) {
-        // No thread to run it on. Nothing was started, so nothing will ever release the slot
-        // taken above: give it back here, or each such failure would leave the service one
-        // execution closer to reporting busy forever.
+      } catch (const std::exception& e) {
         {
           Envoy::Thread::LockGuard guard(active_lock_);
           ASSERT(active_executions_ > 0);
           active_executions_--;
         }
         execution.reset();
-        return finishGrpcStream(
-            nullptr, false,
-            fmt::format("Unable to start a thread for the execution: {}", e.what()));
+        return finishGrpcStream(nullptr, false,
+                                fmt::format("Unable to start the execution: {}", e.what()));
       }
     } else if (request.has_cancellation_request()) {
       // Stops this stream's execution early; its response, with whatever it

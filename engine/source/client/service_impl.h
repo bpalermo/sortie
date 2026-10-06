@@ -48,12 +48,14 @@ public:
         max_concurrent_executions_(max_concurrent_executions) {
     logging_context_ = std::make_unique<Envoy::Logger::Context>(
         spdlog::level::from_str("info"), "[%T.%f][%t][%L] %v", log_lock_, false);
+    service_verbosity_ = currentVerbosity();
   }
   ServiceImpl(std::unique_ptr<Envoy::Logger::Context>&& logging_context,
               uint32_t max_concurrent_executions = 1)
       : process_wide_(std::make_shared<Envoy::ProcessWide>()),
         max_concurrent_executions_(max_concurrent_executions) {
     logging_context_ = std::move(logging_context);
+    service_verbosity_ = currentVerbosity();
   }
 
   grpc::Status
@@ -93,6 +95,12 @@ private:
   std::shared_ptr<Envoy::ProcessWide> process_wide_;
   Envoy::Event::RealTimeSystem time_system_; // NO_CHECK_FORMAT(real_time)
   const uint32_t max_concurrent_executions_;
+  // The level this service logs at: read back from the logging context it was constructed
+  // with, and what every execution of a concurrent service runs at (the log level is
+  // process-wide, so a request's own verbosity cannot be honoured there).
+  nighthawk::client::Verbosity::VerbosityOptions service_verbosity_{
+      nighthawk::client::Verbosity::INFO};
+  static nighthawk::client::Verbosity::VerbosityOptions currentVerbosity();
   // How many executions are running right now, across all streams. Taken when
   // a start is accepted -- on the stream's thread, before the run's thread
   // exists, so a second start racing the first is counted correctly -- and

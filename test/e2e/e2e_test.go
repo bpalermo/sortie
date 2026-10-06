@@ -309,10 +309,11 @@ func TestWeightedTargetsRunConcurrentlyAgainstTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sortie run failed: %v", err)
 	}
-	// Three 5 s executions run together take about 5 s; one after another
-	// would take 15 s. The bound leaves room for process start-up, not for a
-	// second execution.
-	if elapsed > 12*time.Second {
+	// Three 5 s executions run together take about 5 s. Two together and then
+	// the third would take 10 s, and one after another 15 s, so the bound sits
+	// below the first of those: it leaves room for process start-up and the
+	// drain, not for a second batch.
+	if elapsed > 9*time.Second {
 		t.Errorf("the three targets took %s, so they did not run concurrently", elapsed)
 	}
 	for _, want := range []string{`mix/a`, `mix/b`, `mix/c`} {
