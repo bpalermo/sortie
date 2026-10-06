@@ -406,6 +406,24 @@ TEST_P(ConcurrentServiceTest, TwoExecutionsRunAtOnceAndEachStreamCancelsItsOwn) 
   EXPECT_TRUE(b->Finish().ok());
 }
 
+// The log level is process-wide, so a service that runs executions concurrently does not
+// let one request change it for the others: the options the run reports back carry the
+// service's level, not the one asked for.
+TEST_P(ConcurrentServiceTest, RequestVerbosityIsNotApplied) {
+  auto options = request_.mutable_start_request()->mutable_options();
+  options->mutable_duration()->set_seconds(1);
+  options->mutable_verbosity()->set_value(nighthawk::client::Verbosity::TRACE);
+  (*options->mutable_failure_predicates())["benchmark.nonexistent"] = 0;
+  auto r = stub_->ExecutionStream(&context_);
+  EXPECT_TRUE(r->Write(request_, {}));
+  EXPECT_TRUE(r->WritesDone());
+  EXPECT_TRUE(r->Read(&response_));
+  ASSERT_TRUE(response_.has_output());
+  EXPECT_EQ(nighthawk::client::Verbosity::INFO, response_.output().options().verbosity().value());
+  EXPECT_FALSE(r->Read(&response_));
+  EXPECT_TRUE(r->Finish().ok());
+}
+
 // With progress_interval set, interim responses carrying `progress` and a snapshot of the
 // run arrive while it is in flight; the final response has no `progress` and ends the stream.
 TEST_P(ServiceTest, ProgressIsStreamedWhenRequested) {

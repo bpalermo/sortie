@@ -227,7 +227,10 @@ The backend has to accept one execution per target at a time:
 `nighthawk_service --max-concurrent-executions N`, default 1. The chart sets
 `engine.maxConcurrentExecutions` (default 16). A backend at its limit refuses
 the start and the scenario fails naming it. Every execution has its own worker
-threads, so a ten-target scenario at `concurrency: "2"` runs twenty.
+threads, so a ten-target scenario at `concurrency: "2"` runs twenty. An engine
+that allows more than one execution logs at its own level throughout: the log
+level is one setting per process, so a `verbosity` passed through
+`nighthawk_template` is not applied there.
 
 A staircase scenario with targets runs its stages in order, with every
 target's execution of a stage running together.

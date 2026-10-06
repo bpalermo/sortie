@@ -42,7 +42,8 @@ ServiceMain::ServiceMain(int argc, const char** argv) {
       "", "max-concurrent-executions",
       "How many executions the traffic-generator-service runs at once, each started by its own "
       "stream; a start beyond this is refused as busy. Each execution has its own worker threads, "
-      "so N executions cost N times the threads one asks for. Default: 1.",
+      "so N executions cost N times the threads one asks for. Above 1, a request's verbosity is "
+      "not applied: the log level is process-wide, and the service keeps its own. Default: 1.",
       false, 1, "uint32_t", cmd);
   Utility::parseCommand(cmd, argc, argv);
 

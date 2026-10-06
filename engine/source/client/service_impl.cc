@@ -7,6 +7,7 @@
 
 #include <grpc++/grpc++.h>
 
+#include <system_error>
 #include <thread>
 
 #include "envoy/config/core/v3/base.pb.h"
@@ -52,7 +53,18 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   nighthawk::client::ExecutionResponse response;
   OptionsPtr options;
   try {
-    options = std::make_unique<OptionsImpl>(request.start_request().options());
+    nighthawk::client::CommandLineOptions requested = request.start_request().options();
+    if (max_concurrent_executions_ > 1 && requested.has_verbosity()) {
+      // The log level is one process-wide setting (Envoy's logger registry), which every
+      // Process sets from its own options when it is built. With one execution at a time
+      // that honours each request; with several at once the last one built would set the
+      // level for all of them. A service that runs executions concurrently therefore logs at
+      // its own level throughout, and a request's verbosity is not applied.
+      ENVOY_LOG(info, "Ignoring the request's verbosity: this service runs executions "
+                      "concurrently, and the log level is process-wide.");
+      requested.mutable_verbosity()->set_value(nighthawk::client::Verbosity::INFO);
+    }
+    options = std::make_unique<OptionsImpl>(requested);
   } catch (const MalformedArgvException& e) {
     response.mutable_error_detail()->set_code(grpc::StatusCode::INTERNAL);
     response.mutable_error_detail()->set_message(e.what());
@@ -252,8 +264,23 @@ grpc::Status ServiceImpl::ExecutionStream(
       execution = std::make_shared<Execution>();
       // std::launch::async: the run starts now, on its own thread, not when
       // the future is first waited on.
-      execution->future = std::async(std::launch::async, &ServiceImpl::handleExecutionRequest, this,
-                                     request, stream, execution);
+      try {
+        execution->future = std::async(std::launch::async, &ServiceImpl::handleExecutionRequest,
+                                       this, request, stream, execution);
+      } catch (const std::system_error& e) {
+        // No thread to run it on. Nothing was started, so nothing will ever release the slot
+        // taken above: give it back here, or each such failure would leave the service one
+        // execution closer to reporting busy forever.
+        {
+          Envoy::Thread::LockGuard guard(active_lock_);
+          ASSERT(active_executions_ > 0);
+          active_executions_--;
+        }
+        execution.reset();
+        return finishGrpcStream(
+            nullptr, false,
+            fmt::format("Unable to start a thread for the execution: {}", e.what()));
+      }
     } else if (request.has_cancellation_request()) {
       // Stops this stream's execution early; its response, with whatever it
       // collected, follows on this stream as usual. The stream stays open:
