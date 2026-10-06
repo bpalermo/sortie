@@ -241,10 +241,14 @@ func JSON(w io.Writer, r *run.Report) error {
 		if e.Err != nil {
 			je.Error = e.Err.Error()
 		}
-		if je.Backends == nil && e.Set != nil {
-			// A report assembled without the dispatch list, as the tests do.
+		if e.Set != nil {
+			// The dispatch list is normally there; only a report assembled
+			// without it, as some tests do, takes its backends from the results.
+			fromSet := je.Backends == nil
 			for _, b := range e.Set.Backends {
-				je.Backends = append(je.Backends, b.Addr)
+				if fromSet {
+					je.Backends = append(je.Backends, b.Addr)
+				}
 				if fs := failures(b.Global.GetCounters()); len(fs) > 0 {
 					bf := jsonBackendFailures{Backend: b.Addr, Counters: map[string]uint64{}}
 					for _, c := range fs {

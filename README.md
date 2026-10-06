@@ -543,9 +543,20 @@ To load every node's proxy from that node -- a service-mesh soak -- run the
 engine as a DaemonSet and let the plan find its pods:
 
 ```console
+# The engines first, on every node, and wait for them all.
 helm install nightly oci://quay.io/sortie/chart-sortie --version <chart version> \
+  --namespace loadtest --values values.yaml --set job.enabled=false
+kubectl --namespace loadtest rollout status daemonset/nightly-sortie-engine
+
+# Then the run.
+helm upgrade nightly oci://quay.io/sortie/chart-sortie --version <chart version> \
   --namespace loadtest --values values.yaml --set-file plan=plan.yaml
 ```
+
+Two steps, because the plan's name is resolved once, when the run starts, and
+the first non-empty answer is taken: a Job installed together with the
+DaemonSet would drive whichever engine pods happened to be ready first and
+leave the other nodes out for the whole soak.
 
 ```yaml
 # values.yaml
@@ -591,11 +602,8 @@ a PriorityClass above the workloads under test, which makes one of them the
 eviction victim instead. The class is cluster-scoped and not the chart's to
 own, so create it yourself.
 
-The name is resolved once, at the start of the run, so the backends are the
-engine pods that are ready at that moment. To keep a run from starting against
-a DaemonSet that is still rolling out, install the engine alone first
-(`--set job.enabled=false`) and add the plan with an upgrade, or run the plan
-as a CronJob.
+A CronJob has the same property for free: by the time its schedule fires, the
+engines have long been up.
 
 The Job and the engine come up together, so sortie waits up to 30 seconds for
 each backend to accept connections before the run starts; a backend that is

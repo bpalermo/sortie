@@ -178,8 +178,11 @@ func TestReportsBreakDownFailuresPerBackend(t *testing.T) {
 		{Addr: "10.0.0.1:8443", Global: clean, Output: &client.Output{Results: []*client.Result{clean}}},
 		{Addr: "10.0.0.2:8443", Global: failing, Output: &client.Output{Results: []*client.Result{failing}}},
 	}}
+	// With the dispatch list set, as the runner always sets it: the failure
+	// breakdown must not depend on it being absent.
 	r := &run.Report{Executions: []run.ExecutionReport{{
 		Label: "soak", Pool: "mesh", Rate: 100, Duration: 10 * time.Second, Set: set,
+		Backends: []string{"10.0.0.1:8443", "10.0.0.2:8443"},
 	}}}
 
 	var text bytes.Buffer
