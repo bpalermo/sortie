@@ -100,13 +100,19 @@ message Stats {
   reserved 4;
   reserved "open_telemetry";
 
-  // Any other stats sink that is an Envoy extension linked into the engine,
-  // configured as it would be in an Envoy bootstrap's stats_sinks. Passed
-  // through as written -- the prefix scheme above does not apply -- wrapped in
-  // the engine's nighthawk.envoy_stats_sink_adapter, which is how an Envoy
-  // sink is hosted in the engine. A sink whose name already starts with
-  // "nighthawk." is one of the engine's own and is not wrapped.
-  // envoy.stat_sinks.open_telemetry is refused: see the note on field 4.
+  // Other Envoy stats sinks, configured as they would be in an Envoy
+  // bootstrap's stats_sinks. Passed through as written -- the prefix scheme
+  // above does not apply -- wrapped in the engine's
+  // nighthawk.envoy_stats_sink_adapter, which is how an Envoy sink is hosted
+  // in the engine.
+  //
+  // Limited to sinks whose configuration is a message of
+  // envoy.config.metrics.v3 (DogStatsdSink, StatsdSink, HystrixSink,
+  // MetricsServiceConfig): a plan's typed_config is decoded by sortie, which
+  // links those types and no extension's. A sink the engine links but whose
+  // config lives elsewhere -- graphite_statsd, wasm -- fails when the plan is
+  // parsed. envoy.stat_sinks.open_telemetry is refused outright (see the note
+  // on field 4), and so is the adapter itself.
   repeated envoy.config.metrics.v3.StatsSink sinks = 5;
 }
 

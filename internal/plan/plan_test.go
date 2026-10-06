@@ -649,3 +649,40 @@ func TestStatsJudgesASinkByItsConfigType(t *testing.T) {
 		t.Errorf("an ordinary sink was refused: %v", err)
 	}
 }
+
+// stats.sinks reaches the sinks configured by an envoy.config.metrics.v3
+// message, which sortie links, and no extension's own config type: that one
+// fails at parse, as the schema says.
+func TestStatsSinksAcceptTheMetricsV3ConfigTypesOnly(t *testing.T) {
+	plan := func(typ string) string {
+		return `
+version: v1
+stats:
+  sinks:
+    - name: a-sink
+      typed_config:
+        "@type": type.googleapis.com/` + typ + `
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+scenarios:
+  - name: s
+    pool: local
+    target: http://127.0.0.1:1/
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+`
+	}
+	for _, typ := range []string{
+		"envoy.config.metrics.v3.DogStatsdSink",
+		"envoy.config.metrics.v3.StatsdSink",
+		"envoy.config.metrics.v3.HystrixSink",
+		"envoy.config.metrics.v3.MetricsServiceConfig",
+	} {
+		if _, err := Parse([]byte(plan(typ))); err != nil {
+			t.Errorf("%s: %v", typ, err)
+		}
+	}
+	if _, err := Parse([]byte(plan("envoy.extensions.stat_sinks.graphite_statsd.v3.GraphiteStatsdSink"))); err == nil {
+		t.Error("an extension's config type parsed; the schema and README say it cannot")
+	}
+}

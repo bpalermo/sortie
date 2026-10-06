@@ -476,11 +476,15 @@ Three limits, each deliberate:
   the engine creates sinks on its main thread and flushes them on another. To
   reach an OpenTelemetry collector, send statsd to its statsd receiver.
 
-`stats.sinks` takes any other Envoy stats sink linked into the engine, written
-as it would be in an Envoy bootstrap. It is passed through as written, so the
-prefix scheme above does not apply to it. The OpenTelemetry sink is refused
-there too, and so is the engine's own adapter: name the Envoy sink and sortie
-wraps it.
+`stats.sinks` takes other Envoy stats sinks, written as they would be in an
+Envoy bootstrap, and passes them through, so the prefix scheme above does not
+apply to them. It reaches the sinks whose configuration is an
+`envoy.config.metrics.v3` message -- `dog_statsd`, `statsd`, `hystrix`,
+`metrics_service` -- because sortie decodes the plan's `typed_config` and
+links those types only. A sink configured by an extension's own message, such
+as `graphite_statsd`, fails when the plan is parsed. The OpenTelemetry sink is
+refused there too, and so is the engine's own adapter: name the Envoy sink and
+sortie wraps it.
 
 Because the statsd prefix is built from sanitized labels, two scenarios can
 land on one: names that differ only in case or punctuation, or a scenario
