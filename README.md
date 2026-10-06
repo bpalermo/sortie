@@ -232,7 +232,8 @@ the start and the scenario fails naming it. Every execution has its own worker
 threads, so a ten-target scenario at `concurrency: "2"` runs twenty. An engine
 that allows more than one execution logs at its own level throughout: the log
 level is one setting per process, so a `verbosity` passed through
-`nighthawk_template` is not applied there.
+`nighthawk_template` is not applied there. Concurrent executions are tested
+over HTTP/1; the other protocols and modes have not been run concurrently.
 
 A staircase scenario with targets runs its stages in order, with every
 target's execution of a stage running together.
