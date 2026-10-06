@@ -17,8 +17,10 @@
 namespace Nighthawk {
 namespace Client {
 
-// Only a single live flush worker instance can be created in Nighthawk at any
-// time.
+// One live flush worker per Process: it flushes that Process's own stats store, through that
+// Process's Api, thread-local instance and cluster manager, to that Process's sinks, and keeps
+// no state outside them. Several Processes alive at once -- the service running executions
+// concurrently -- therefore each have their own, independent flush worker.
 // Flush worker periodically flushes metrics snapshot to all configured stats sinks in Nighthawk. It
 // will keep running until exitDispatcher() gets called after all client workers are completed in
 // process_impl.cc. It will make the last flush before shutdown in shutdownThread().

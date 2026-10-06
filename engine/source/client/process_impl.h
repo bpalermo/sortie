@@ -49,14 +49,35 @@ namespace Client {
 
 class ClusterManagerFactory;
 /**
- * Only a single instance is allowed at a time machine-wide in this implementation.
- * Running multiple instances at the same might introduce noise into the measurements.
- * If there turns out to be a desire to run multiple instances at the same time, we could
- * introduce a --lock-name option. Note that multiple instances in the same process may
- * be problematic because of Envoy enforcing a single runtime instance.
+ * One execution: its own Envoy Api, thread-local instance, stats store, runtime loader,
+ * cluster manager and worker threads.
+ *
+ * Several may be alive in one OS process at the same time: nighthawk_service does that with
+ * --max-concurrent-executions above 1. What they share is process-wide and is handled where
+ * it is set:
+ *  - Envoy::ProcessWide, which the service creates once and passes in;
+ *  - the log level, which a concurrent service fixes at its own (see ServiceImpl);
+ *  - EVENT_PRECISE_TIMER, set once, by the service before any Process exists
+ *    (setupForHRTimers);
+ *  - Envoy's runtime feature flags, which a runtime loader writes only for keys its layered
+ *    runtime names. The bootstrap built here names none, so no Process changes them. (Envoy
+ *    once enforced a single runtime loader per process; that singleton is gone.)
+ *
+ * Running several at once still means their measurements share the machine. Concurrency is
+ * exercised by the service and end-to-end tests over HTTP/1; the other client modes have not
+ * been run concurrently.
  */
 class ProcessImpl : public Process, public Envoy::Logger::Loggable<Envoy::Logger::Id::main> {
 public:
+  /**
+   * Tells libevent to favour timer precision, by setting EVENT_PRECISE_TIMER in the process
+   * environment, once. Every ProcessImpl calls it, which is enough when there is one at a
+   * time. A host that builds several concurrently must call it first, before any of them
+   * exists: the environment is process-wide, and a dispatcher being created on one thread
+   * reads it while this writes it on another.
+   */
+  static void setupForHRTimers();
+
   /**
    * Creates a ProcessImpl.
    * @param options provides the options configuration to be used.
@@ -126,7 +147,6 @@ private:
   // mergeWorkerStatistics merges the live ones; workers that did not answer are empty and skipped.
   std::vector<StatisticPtr>
   mergeStatistics(const std::vector<std::vector<StatisticPtr>>& per_worker) const;
-  void setupForHRTimers();
   /**
    * If there are sinks configured in bootstrap, populate stats_sinks with sinks
    * created through NighthawkStatsSinkFactory and add them to store_root_.

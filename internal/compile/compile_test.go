@@ -982,3 +982,48 @@ func TestForPoolUnresolvedDnsPoolIsOneBackend(t *testing.T) {
 		t.Errorf("addrs = %v, %d options; want the resolved services", addrs, len(opts))
 	}
 }
+
+// A weighted staircase expands stage-major: every target's execution of one
+// stage shares a Group and is adjacent, and stages stay in order.
+func TestExpandWeightedTargetsGroupsByStage(t *testing.T) {
+	s := &plan.Scenario{
+		Name: "mix",
+		Executor: &plan.Executor{Type: plan.Staircase, Stages: []*plan.Stage{
+			{Rate: 10, Duration: durationpb.New(time.Second)},
+			{Rate: 20, Duration: durationpb.New(time.Second)},
+		}},
+		Targets: []*plan.Target{
+			{Name: "a", Url: "http://a.test/", Weight: 3},
+			{Name: "b", Url: "http://b.test/", Weight: 1},
+		},
+	}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	type row struct {
+		label, group, uri string
+		rate              uint32
+	}
+	var got []row
+	for _, e := range execs {
+		got = append(got, row{e.Label, e.Group, e.Options.GetUri().GetValue(), e.Rate})
+	}
+	want := []row{
+		{"mix/a/stage-1", "mix/stage-1", "http://a.test/", 8},
+		{"mix/b/stage-1", "mix/stage-1", "http://b.test/", 3},
+		{"mix/a/stage-2", "mix/stage-2", "http://a.test/", 15},
+		{"mix/b/stage-2", "mix/stage-2", "http://b.test/", 5},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d executions, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("execution %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if execs[0].Scenario != s || execs[0].Target != s.Targets[0] {
+		t.Error("the execution does not point back at the original scenario and its target")
+	}
+}

@@ -141,7 +141,10 @@ README's Limitations section; keep the two in sync.
   timer losing datagrams past `--udp-timeout`); `Scenario.udp` tunes it.
   Counters `benchmark.udp_*`, statistic `benchmark_udp.message_latency`. The
   test server's `udp-echo` is a UDP listener filter.
-- One execution per backend at a time; `nighthawk_service` refuses a second.
+- A backend runs as many executions at once as `nighthawk_service
+  --max-concurrent-executions` allows -- one by default -- and refuses the
+  rest. sortie only ever asks for more than one for the targets of a weighted
+  scenario; scenarios still run one after another.
 - `RequestSource` never sees responses, so there is no session flow and no
   response correlation.
 
@@ -161,6 +164,14 @@ schema does not model. Do not add a field mirroring a Nighthawk flag unless
 sortie needs to reason about it — the template already reaches it. The fields
 sortie overwrites are listed in `internal/compile.options`; everything else in a
 template survives compilation.
+
+A scenario with `targets` is expanded by `compile.Expand` into one execution
+per target (`plan.ForTarget`: the scenario with that target's url and its
+share of the rate), all carrying the same `Group`. The runner starts a group's
+executions together and everything else one at a time. The engine side of
+that is `ServiceImpl`'s per-stream `Execution` and its
+`--max-concurrent-executions` cap: a stream owns at most one running
+execution, and a cancellation only ever reaches the stream's own.
 
 ## gRPC modes
 

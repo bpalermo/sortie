@@ -21,8 +21,15 @@ func applyDefaults(p *Plan) {
 		if s.GetPool() == "" {
 			s.Pool = d.GetPool()
 		}
-		if s.GetTarget() == "" {
+		// target and targets are two forms of one thing: a scenario that
+		// sets either has said where its load goes, and takes neither from
+		// defaults. Copying defaults.target beside a scenario's own targets
+		// would leave it with both, which the schema forbids.
+		if s.GetTarget() == "" && len(s.GetTargets()) == 0 {
 			s.Target = d.GetTarget()
+			for _, t := range d.GetTargets() {
+				s.Targets = append(s.Targets, proto.Clone(t).(*Target))
+			}
 		}
 		if s.GetMethod() == "" {
 			s.Method = d.GetMethod()

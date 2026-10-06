@@ -7,6 +7,7 @@
 
 #include <grpc++/grpc++.h>
 
+#include <system_error>
 #include <thread>
 
 #include "envoy/config/core/v3/base.pb.h"
@@ -21,27 +22,57 @@
 namespace Nighthawk {
 namespace Client {
 
-
 void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionRequest& request,
-                                         Stream* stream) {
-  std::unique_ptr<Envoy::Thread::LockGuard> busy_lock;
-  {
-    // Lock accepted_lock, in case we get here before accepted_event_.wait() is entered.
-    auto accepted_lock = std::make_unique<Envoy::Thread::LockGuard>(accepted_lock_);
-    // Acquire busy_lock_, and signal that we did so, allowing the service to continue
-    // processing inbound requests on the stream.
-    busy_lock = std::make_unique<Envoy::Thread::LockGuard>(busy_lock_);
-    accepted_event_.notifyOne();
-  }
+                                         Stream* stream, std::shared_ptr<Execution> execution) {
+  // The slot was taken by the stream thread when it accepted the start. It is given back on
+  // every way out of here -- and, on every path that answers, before the final response is
+  // written (see write_final): a client that starts its next run the moment it reads that
+  // response must never be refused as busy by the run it just watched end.
+  bool released = false;
+  auto release = [this, &execution, &released]() {
+    if (released) {
+      return;
+    }
+    released = true;
+    {
+      Envoy::Thread::LockGuard guard(active_lock_);
+      ASSERT(active_executions_ > 0);
+      active_executions_--;
+    }
+    Envoy::Thread::LockGuard guard(execution->lock);
+    execution->done = true;
+  };
+  // For the exception paths out of Process::run().
+  Envoy::Cleanup release_on_exit(release);
+  // The one way a final response leaves this function, early errors included.
+  auto write_final = [this, stream, &release](const nighthawk::client::ExecutionResponse& r) {
+    release();
+    writeResponse(stream, r);
+  };
 
   nighthawk::client::ExecutionResponse response;
   OptionsPtr options;
   try {
-    options = std::make_unique<OptionsImpl>(request.start_request().options());
+    nighthawk::client::CommandLineOptions requested = request.start_request().options();
+    if (max_concurrent_executions_ > 1) {
+      // The log level is one process-wide setting (Envoy's logger registry), which every
+      // Process sets from its own options when it is built. With one execution at a time
+      // that honours each request; with several at once the last one built would set the
+      // level for all of them. A service that runs executions concurrently therefore logs at
+      // its own level throughout -- the one it was constructed with. Set unconditionally: a request
+      // that names no verbosity would otherwise get the options' default, which is a different
+      // level again.
+      if (requested.has_verbosity() && requested.verbosity().value() != service_verbosity_) {
+        ENVOY_LOG(info, "Ignoring the request's verbosity: this service runs executions "
+                        "concurrently, and the log level is process-wide.");
+      }
+      requested.mutable_verbosity()->set_value(service_verbosity_);
+    }
+    options = std::make_unique<OptionsImpl>(requested);
   } catch (const MalformedArgvException& e) {
     response.mutable_error_detail()->set_code(grpc::StatusCode::INTERNAL);
     response.mutable_error_detail()->set_message(e.what());
-    writeResponse(stream, response);
+    write_final(response);
     return;
   }
   // A set interval asks for progress; one that cannot be honoured -- not positive, or below
@@ -55,7 +86,7 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
       response.mutable_error_detail()->set_code(grpc::StatusCode::INVALID_ARGUMENT);
       response.mutable_error_detail()->set_message(
           "progress_interval must be at least 1ms (it is the period of the progress timer)");
-      writeResponse(stream, response);
+      write_final(response);
       return;
     }
     // Rounded up: a snapshot never comes more often than asked for.
@@ -72,14 +103,13 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
     response.mutable_error_detail()->set_code(grpc::StatusCode::INTERNAL);
     response.mutable_error_detail()->set_message(
         fmt::format("Unable to create ProcessImpl: {}", process_or_status.status().ToString()));
-    writeResponse(stream, response);
+    write_final(response);
     return;
   }
   ProcessPtr process = std::move(*process_or_status);
   {
-    Envoy::Thread::LockGuard guard(process_lock_);
-    active_process_ = process.get();
-    active_stream_ = stream;
+    Envoy::Thread::LockGuard guard(execution->lock);
+    execution->process = process.get();
   }
   // Unpublished on every way out of this scope -- a normal return, or one of
   // the exceptions Process::run() rethrows -- and before `process` itself is
@@ -87,10 +117,9 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   // then finds nothing rather than a Process mid-teardown or already freed.
   // A run that was cancelled returns early with what it collected, and that
   // is the response the client gets.
-  Envoy::Cleanup unpublish([this]() {
-    Envoy::Thread::LockGuard guard(process_lock_);
-    active_process_ = nullptr;
-    active_stream_ = nullptr;
+  Envoy::Cleanup unpublish([&execution]() {
+    Envoy::Thread::LockGuard guard(execution->lock);
+    execution->process = nullptr;
   });
 
   // Progress, when the request asks for it: a thread that snapshots the run every interval
@@ -160,11 +189,32 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   }
   *(response.mutable_output()) = output_collector.toProto();
   process->shutdown();
-  // We release before writing the response to avoid a race with the client's follow up request
-  // coming in before we release the lock, which would lead up to us declining service when
-  // we should not.
-  busy_lock.reset();
-  writeResponse(stream, response);
+  // Unpublished first, so a cancellation racing the end finds no Process; then the slot, then
+  // the response (see write_final).
+  unpublish.cancel();
+  {
+    Envoy::Thread::LockGuard guard(execution->lock);
+    execution->process = nullptr;
+  }
+  write_final(response);
+}
+
+nighthawk::client::Verbosity::VerbosityOptions ServiceImpl::currentVerbosity() {
+  switch (Envoy::Logger::Registry::getLog(Envoy::Logger::Id::main).level()) {
+  case spdlog::level::trace:
+    return nighthawk::client::Verbosity::TRACE;
+  case spdlog::level::debug:
+    return nighthawk::client::Verbosity::DEBUG;
+  case spdlog::level::info:
+    return nighthawk::client::Verbosity::INFO;
+  case spdlog::level::warn:
+    return nighthawk::client::Verbosity::WARN;
+  case spdlog::level::err:
+    return nighthawk::client::Verbosity::ERROR;
+  default:
+    // critical, and off: the options have nothing quieter.
+    return nighthawk::client::Verbosity::CRITICAL;
+  }
 }
 
 void ServiceImpl::writeResponse(Stream* stream,
@@ -175,14 +225,14 @@ void ServiceImpl::writeResponse(Stream* stream,
   }
 }
 
-grpc::Status ServiceImpl::finishGrpcStream(const bool owner, const bool success,
+grpc::Status ServiceImpl::finishGrpcStream(Execution* execution, const bool success,
                                            absl::string_view description) {
   // The stream that started an execution may get here while it is still in
   // flight, in the error paths: let it wrap up and put its response on the
   // stream before finishing the stream. A stream that started nothing has
   // nothing to wait for -- least of all another client's run.
-  if (owner && future_.valid()) {
-    future_.wait();
+  if (execution != nullptr && execution->future.valid()) {
+    execution->future.wait();
   }
   return success ? grpc::Status::OK
                  : grpc::Status(grpc::StatusCode::INTERNAL, std::string(description));
@@ -197,50 +247,88 @@ grpc::Status ServiceImpl::ExecutionStream(
     grpc::ServerReaderWriter<nighthawk::client::ExecutionResponse,
                              nighthawk::client::ExecutionRequest>* stream) {
   nighthawk::client::ExecutionRequest request;
-  // Whether this stream is the one that started an execution.
-  bool owner = false;
+  // The execution this stream most recently started, if any. A stream runs
+  // one at a time: it may start the next once the previous one has answered.
+  std::shared_ptr<Execution> execution;
 
   while (stream->Read(&request)) {
     ENVOY_LOG(debug, "Read ExecutionRequest data {}", absl::StrCat(redactedForLog(request)));
     if (request.has_start_request()) {
-      // If busy_lock_ is held we can't start a new benchmark run because one is active already.
-      if (busy_lock_.tryLock()) {
-        busy_lock_.unlock();
-        Envoy::Thread::LockGuard accepted_lock(accepted_lock_);
-        // We pass in std::launch::async to avoid lazy evaluation, as we want this to run
-        // asap. See: https://en.cppreference.com/w/cpp/thread/async
-        owner = true;
-        future_ = std::future<void>(std::async(
-            std::launch::async, &ServiceImpl::handleExecutionRequest, this, request, stream));
-        // Block until the thread associated to the future has acquired busy_lock_
-        accepted_event_.wait(accepted_lock_);
-      } else {
-        return finishGrpcStream(owner, false,
-                                "Only a single benchmark session is allowed at a time.");
+      if (execution != nullptr) {
+        bool done;
+        {
+          Envoy::Thread::LockGuard guard(execution->lock);
+          done = execution->done;
+        }
+        if (!done) {
+          return finishGrpcStream(execution.get(), false,
+                                  "This stream already has an execution running.");
+        }
+        // Finished, or about to write its response: let the thread wind down
+        // before this stream reuses the variable.
+        execution->future.wait();
+      }
+      {
+        // Counted here, on the stream thread, so two streams starting at once
+        // cannot both be accepted into the last slot.
+        Envoy::Thread::LockGuard guard(active_lock_);
+        if (active_executions_ >= max_concurrent_executions_) {
+          return finishGrpcStream(
+              nullptr, false,
+              max_concurrent_executions_ == 1
+                  ? "Only a single benchmark session is allowed at a time."
+                  : fmt::format("Busy: {} executions are running, the maximum this service "
+                                "allows (--max-concurrent-executions).",
+                                active_executions_));
+        }
+        active_executions_++;
+      }
+      // Everything between taking the slot and the run's thread existing can throw -- the
+      // allocation as well as the thread -- and nothing has been started that would release
+      // the slot. Give it back on any such failure, or each one would leave the service one
+      // execution closer to reporting busy forever.
+      try {
+        execution = std::make_shared<Execution>();
+        // std::launch::async: the run starts now, on its own thread, not when
+        // the future is first waited on.
+        execution->future = std::async(std::launch::async, &ServiceImpl::handleExecutionRequest,
+                                       this, request, stream, execution);
+      } catch (const std::exception& e) {
+        {
+          Envoy::Thread::LockGuard guard(active_lock_);
+          ASSERT(active_executions_ > 0);
+          active_executions_--;
+        }
+        execution.reset();
+        return finishGrpcStream(nullptr, false,
+                                fmt::format("Unable to start the execution: {}", e.what()));
       }
     } else if (request.has_cancellation_request()) {
-      // Stops the active execution early; its response, with whatever it
+      // Stops this stream's execution early; its response, with whatever it
       // collected, follows on this stream as usual. The stream stays open:
       // the client half-closes when it has read that response. Without an
-      // active execution there is nothing to do, and that is not an error --
-      // a cancellation racing the end of a run is the expected case.
-      Envoy::Thread::LockGuard guard(process_lock_);
-      if (active_process_ == nullptr) {
-        ENVOY_LOG(info, "Cancellation requested with no active execution; nothing to cancel.");
-      } else if (active_stream_ != stream) {
-        ENVOY_LOG(warn, "Cancellation requested by a stream that did not start the active "
-                        "execution; ignored.");
+      // execution of its own there is nothing to do, and that is not an error
+      // -- a cancellation racing the end of a run is the expected case. Another
+      // stream's execution is out of reach by construction: one client cannot
+      // stop another's run.
+      if (execution == nullptr) {
+        ENVOY_LOG(info, "Cancellation requested by a stream that started no execution; ignored.");
       } else {
-        ENVOY_LOG(info, "Cancelling the active execution on the client's request.");
-        active_process_->requestExecutionCancellation();
+        Envoy::Thread::LockGuard guard(execution->lock);
+        if (execution->process == nullptr) {
+          ENVOY_LOG(info, "Cancellation requested with no active execution; nothing to cancel.");
+        } else {
+          ENVOY_LOG(info, "Cancelling the active execution on the client's request.");
+          execution->process->requestExecutionCancellation();
+        }
       }
     } else if (request.has_update_request()) {
-      return finishGrpcStream(owner, false, "Request is not supported yet.");
+      return finishGrpcStream(execution.get(), false, "Request is not supported yet.");
     } else {
       PANIC("not reached");
     }
   }
-  return finishGrpcStream(owner, true);
+  return finishGrpcStream(execution.get(), true);
 }
 
 namespace {

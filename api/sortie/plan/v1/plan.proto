@@ -202,6 +202,12 @@ message Tls {
 // Scenario is one unit of load: a target, an executor that shapes the request
 // rate over time, and the client tuning that goes with it.
 message Scenario {
+  option (buf.validate.message).cel = {
+    id: "scenario.one_target_form"
+    message: "set either target or targets, not both"
+    expression: "!(this.target != '' && this.targets.size() > 0)"
+  };
+
   string name = 1;
 
   string pool = 2;
@@ -327,6 +333,38 @@ message Scenario {
   // Nighthawk's own adaptive load controller takes a
   // nighthawk_traffic_template.
   nighthawk.client.CommandLineOptions nighthawk_template = 15;
+
+  // Several targets driven AT ONCE by this scenario, each with a share of
+  // rate: what k6 calls one scenario drawing a weighted target per request.
+  // Mutually exclusive with target. Each entry becomes its own execution --
+  // its own connection pool, rate limiter, counters and latency histograms --
+  // and they run concurrently on every backend in the pool, so the backend
+  // must allow that many executions at once (nighthawk_service
+  // --max-concurrent-executions; the chart sets it). Every other field of the
+  // scenario applies to each target alike; a target that needs its own method,
+  // headers or body is its own scenario.
+  //
+  // Each target's rate is rate x weight / (sum of weights), rounded to the
+  // nearest integer and at least 1, and then subject to the usual division
+  // over backends and workers. The report lists each target's share.
+  repeated Target targets = 23;
+}
+
+// Target is one entry of Scenario.targets.
+message Target {
+  // Names the target in reports, thresholds and metric prefixes
+  // (`<scenario>/<name>`). Required and unique within the scenario.
+  string name = 1 [(buf.validate.field).string.min_len = 1];
+
+  // The URI, with the same schemes as Scenario.target.
+  string url = 2 [(buf.validate.field).cel = {
+    id: "target.url.scheme"
+    message: "url scheme must be http, https, tcp, tcps or udp"
+    expression: "this.startsWith('http://') || this.startsWith('https://') || this.startsWith('tcp://') || this.startsWith('tcps://') || this.startsWith('udp://')"
+  }];
+
+  // Relative share of the scenario's rate. Default 1.
+  uint32 weight = 3;
 }
 
 // Grpc selects one of the engine's gRPC modes.

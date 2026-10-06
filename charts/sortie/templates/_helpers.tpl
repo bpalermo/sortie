@@ -90,6 +90,10 @@ spec:
       args:
         - --listen
         - 0.0.0.0:8443
+        # A weighted scenario runs one execution per target at once on
+        # every backend; this is how many the engine accepts.
+        - --max-concurrent-executions
+        - {{ .Values.engine.maxConcurrentExecutions | quote }}
       ports:
         - name: grpc
           containerPort: 8443

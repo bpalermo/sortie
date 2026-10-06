@@ -59,6 +59,7 @@ type (
 	Tcp = planv1.Tcp
 
 	Udp      = planv1.Udp
+	Target   = planv1.Target
 	Executor = planv1.Executor
 	Stage    = planv1.Stage
 )

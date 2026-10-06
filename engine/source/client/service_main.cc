@@ -7,6 +7,7 @@
 
 #include "nighthawk/common/exception.h"
 
+#include "engine/source/client/options_impl.h"
 #include "engine/source/client/service_impl.h"
 #include "engine/source/common/utility.h"
 #include "engine/source/common/version_info.h"
@@ -38,10 +39,26 @@ ServiceMain::ServiceMain(int argc, const char** argv) {
   TCLAP::ValueArg<std::string> service_arg(
       "", "service", "Specifies which service to run. Default 'traffic-generator-service'.", false,
       "traffic-generator-service", &service_names_allowed, cmd);
+  TCLAP::ValueArg<uint32_t> max_concurrent_arg(
+      "", "max-concurrent-executions",
+      "How many executions the traffic-generator-service runs at once, each started by its own "
+      "stream; a start beyond this is refused as busy. Each execution has its own worker threads, "
+      "so N executions cost N times the threads one asks for. Above 1, a request's verbosity is "
+      "not applied: the log level is process-wide, and the service keeps its own. Default: 1.",
+      false, 1, "uint32_t", cmd);
   Utility::parseCommand(cmd, argc, argv);
 
+  if (max_concurrent_arg.getValue() == 0) {
+    throw MalformedArgvException("--max-concurrent-executions must be at least 1");
+  }
+  // TCLAP reads a negative number into an unsigned option as a very large one, which here
+  // would be a cap of four billion: no cap at all. Refused the way the client's own unsigned
+  // options are.
+  if (max_concurrent_arg.getValue() > OptionsImpl::largest_acceptable_uint32_option_value) {
+    throw MalformedArgvException("Invalid value for --max-concurrent-executions");
+  }
   if (service_arg.getValue() == "traffic-generator-service") {
-    service_ = std::make_unique<ServiceImpl>();
+    service_ = std::make_unique<ServiceImpl>(max_concurrent_arg.getValue());
   } else if (service_arg.getValue() == "dummy-request-source") {
     service_ = std::make_unique<RequestSourceServiceImpl>();
   }

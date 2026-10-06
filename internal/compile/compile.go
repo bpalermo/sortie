@@ -39,6 +39,14 @@ type Execution struct {
 	// Stage is the 1-based stage index, or 0 for a single-execution scenario.
 	Stage int
 
+	// Group names the executions that run AT THE SAME TIME: the per-target
+	// executions of one weighted scenario (and of one of its stages). Empty
+	// for an execution that runs alone.
+	Group string
+
+	// Target is the weighted target this execution drives, nil otherwise.
+	Target *plan.Target
+
 	// Rate is the requests per second this execution targets: the aggregate
 	// across the whole pool, before it is divided among backends, or -- with
 	// PerBackend -- the rate of each backend.
@@ -58,6 +66,51 @@ type Execution struct {
 
 // Expand turns a scenario into the executions it runs as.
 func Expand(s *plan.Scenario) ([]Execution, error) {
+	if len(s.GetTargets()) == 0 {
+		return expandOne(s)
+	}
+	// One execution per target per stage, with the stage's executions grouped
+	// so the runner starts them together: that is what makes the scenario one
+	// weighted load rather than a sequence of single-target runs. Grouping is
+	// by stage (a staircase still runs its stages one after another).
+	var out []Execution
+	for _, t := range s.GetTargets() {
+		variant := plan.ForTarget(s, t)
+		variant.Name = s.GetName() + "/" + t.GetName()
+		execs, err := expandOne(variant)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range execs {
+			e.Scenario = s
+			e.Target = t
+			e.Group = s.GetName()
+			if e.Stage > 0 {
+				e.Group = fmt.Sprintf("%s/stage-%d", s.GetName(), e.Stage)
+			}
+			out = append(out, e)
+		}
+	}
+	// Stage-major order, so a group's executions are adjacent.
+	stages := 0
+	for _, e := range out {
+		stages = max(stages, e.Stage)
+	}
+	if stages > 0 {
+		byStage := make([]Execution, 0, len(out))
+		for st := 1; st <= stages; st++ {
+			for _, e := range out {
+				if e.Stage == st {
+					byStage = append(byStage, e)
+				}
+			}
+		}
+		out = byStage
+	}
+	return out, nil
+}
+
+func expandOne(s *plan.Scenario) ([]Execution, error) {
 	perBackend := s.Executor.GetPerBackend()
 	switch s.Executor.Type {
 	case plan.ConstantRate:

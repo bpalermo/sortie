@@ -73,6 +73,10 @@ engine:
     pullPolicy: IfNotPresent
   # Deployment only; a DaemonSet has one pod per eligible node.
   replicas: 1
+  # Executions one engine runs at once. A scenario with weighted targets
+  # starts one execution per target on every backend, so this is the largest
+  # target list a plan may use; each execution has its own worker threads.
+  maxConcurrentExecutions: 16
   # The generated load runs on this pod's CPUs: give it the cores a plan's
   # concurrency asks for.
   resources: {}

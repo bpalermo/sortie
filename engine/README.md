@@ -506,13 +506,24 @@ The gRPC service can be used to start a server which is able to perform back-to-
 
 USAGE:
 
-bazel-bin/engine/nighthawk_service  [--service <traffic-generator-service
+bazel-bin/engine/nighthawk_service  [--max-concurrent-executions
+<uint32_t>] [--service
+<traffic-generator-service
 |dummy-request-source>]
-[--listener-address-file <>] [--listen
-<address:port>] [--] [--version] [-h]
+[--listener-address-file <>]
+[--listen <address:port>] [--]
+[--version] [-h]
 
 
 Where:
+
+--max-concurrent-executions <uint32_t>
+How many executions the traffic-generator-service runs at once, each
+started by its own stream; a start beyond this is refused as busy.
+Each execution has its own worker threads, so N executions cost N
+times the threads one asks for. Above 1, a request's verbosity is not
+applied: the log level is process-wide, and the service keeps its own.
+Default: 1.
 
 --service <traffic-generator-service|dummy-request-source>
 Specifies which service to run. Default 'traffic-generator-service'.
