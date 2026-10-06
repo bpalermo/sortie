@@ -38,10 +38,19 @@ ServiceMain::ServiceMain(int argc, const char** argv) {
   TCLAP::ValueArg<std::string> service_arg(
       "", "service", "Specifies which service to run. Default 'traffic-generator-service'.", false,
       "traffic-generator-service", &service_names_allowed, cmd);
+  TCLAP::ValueArg<uint32_t> max_concurrent_arg(
+      "", "max-concurrent-executions",
+      "How many executions the traffic-generator-service runs at once, each started by its own "
+      "stream; a start beyond this is refused as busy. Each execution has its own worker threads, "
+      "so N executions cost N times the threads one asks for. Default: 1.",
+      false, 1, "uint32_t", cmd);
   Utility::parseCommand(cmd, argc, argv);
 
+  if (max_concurrent_arg.getValue() == 0) {
+    throw MalformedArgvException("--max-concurrent-executions must be at least 1");
+  }
   if (service_arg.getValue() == "traffic-generator-service") {
-    service_ = std::make_unique<ServiceImpl>();
+    service_ = std::make_unique<ServiceImpl>(max_concurrent_arg.getValue());
   } else if (service_arg.getValue() == "dummy-request-source") {
     service_ = std::make_unique<RequestSourceServiceImpl>();
   }

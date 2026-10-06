@@ -297,3 +297,65 @@ func TestBodyFileIsRelativeToThePlan(t *testing.T) {
 		t.Errorf("body_file = %q, want %q", got, want)
 	}
 }
+
+func TestForTargetSharesRateByWeightRoundedToNearestAtLeastOne(t *testing.T) {
+	s := &Scenario{
+		Name:     "mix",
+		Executor: &Executor{Type: "staircase", Stages: []*Stage{{Rate: 100}, {Rate: 7}}},
+		Targets: []*Target{
+			{Name: "a", Url: "http://a/", Weight: 6},
+			{Name: "b", Url: "http://b/", Weight: 3},
+			{Name: "c", Url: "http://c/"}, // weight defaults to 1
+		},
+	}
+	want := map[string][2]uint32{"a": {60, 4}, "b": {30, 2}, "c": {10, 1}}
+	for _, tg := range s.Targets {
+		v := ForTarget(s, tg)
+		if v.GetTarget() != tg.GetUrl() || len(v.GetTargets()) != 0 {
+			t.Errorf("%s: target = %q, targets = %d", tg.Name, v.GetTarget(), len(v.GetTargets()))
+		}
+		got := [2]uint32{v.GetExecutor().GetStages()[0].GetRate(), v.GetExecutor().GetStages()[1].GetRate()}
+		if got != want[tg.Name] {
+			t.Errorf("%s: stage rates = %v, want %v", tg.Name, got, want[tg.Name])
+		}
+	}
+	// 7 x 1/10 rounds to 1; a share can never round to zero.
+	if v := ForTarget(s, &Target{Name: "tiny", Url: "http://t/", Weight: 1}); v.GetExecutor().GetStages()[1].GetRate() != 1 {
+		t.Errorf("tiny share = %d, want 1", v.GetExecutor().GetStages()[1].GetRate())
+	}
+	if len(s.GetTargets()) != 3 || s.GetTargets()[0].GetWeight() != 6 {
+		t.Error("ForTarget mutated the original scenario")
+	}
+}
+
+func TestParseRejectsBadTargetLists(t *testing.T) {
+	for name, scenario := range map[string]string{
+		"target and targets": `
+    target: http://127.0.0.1:1/
+    targets: [{name: a, url: http://127.0.0.1:1/a}]`,
+		"unnamed": `
+    targets: [{url: http://127.0.0.1:1/a}]`,
+		"duplicate name": `
+    targets: [{name: a, url: http://127.0.0.1:1/a}, {name: a, url: http://127.0.0.1:1/b}]`,
+		"slash in name": `
+    targets: [{name: a/b, url: http://127.0.0.1:1/a}]`,
+		"bad scheme": `
+    targets: [{name: a, url: ftp://127.0.0.1:1/a}]`,
+		"tls on a plain target": `
+    tls: {ca_file: /dev/null}
+    targets: [{name: a, url: https://127.0.0.1:1/a}, {name: b, url: http://127.0.0.1:1/b}]`,
+	} {
+		raw := `
+version: v1
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+scenarios:
+  - name: mix
+    pool: local
+    executor: {type: constant-rate, rate: 10, duration: 1s}` + scenario + "\n"
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Errorf("%s: parsed, want an error", name)
+		}
+	}
+}

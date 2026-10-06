@@ -162,6 +162,14 @@ sortie needs to reason about it — the template already reaches it. The fields
 sortie overwrites are listed in `internal/compile.options`; everything else in a
 template survives compilation.
 
+A scenario with `targets` is expanded by `compile.Expand` into one execution
+per target (`plan.ForTarget`: the scenario with that target's url and its
+share of the rate), all carrying the same `Group`. The runner starts a group's
+executions together and everything else one at a time. The engine side of
+that is `ServiceImpl`'s per-stream `Execution` and its
+`--max-concurrent-executions` cap: a stream owns at most one running
+execution, and a cancellation only ever reaches the stream's own.
+
 ## gRPC modes
 
 `Scenario.grpc` maps to the engine's `grpc_mode` and `grpc_stream` options and

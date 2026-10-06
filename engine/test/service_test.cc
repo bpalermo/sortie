@@ -27,8 +27,11 @@ using nighthawk::client::ExecutionResponse;
 
 class ServiceTest : public TestWithParam<Envoy::Network::Address::IpVersion> {
 public:
+  // How many executions the service under test runs at once; 1 is the default.
+  virtual uint32_t maxConcurrentExecutions() { return 1; }
+
   void SetUp() override {
-    service_ = std::make_unique<ServiceImpl>();
+    service_ = std::make_unique<ServiceImpl>(maxConcurrentExecutions());
     grpc::ServerBuilder builder;
     loopback_address_ = Envoy::Network::Test::getLoopbackAddressUrlString(GetParam());
 
@@ -313,6 +316,94 @@ TEST_P(ServiceTest, CancelFromAnotherStreamIsIgnored) {
   EXPECT_TRUE(response_.has_output());
   EXPECT_FALSE(owner->Read(&response_));
   EXPECT_TRUE(owner->Finish().ok());
+}
+
+// A stream runs one execution at a time (back to back is fine, see above): a
+// second start while the first still runs is refused, whatever the service's
+// concurrency allows.
+TEST_P(ServiceTest, SecondStartOnTheSameStreamIsRefused) {
+  auto options = request_.mutable_start_request()->mutable_options();
+  options->mutable_duration()->set_seconds(3);
+  (*options->mutable_failure_predicates())["benchmark.nonexistent"] = 0;
+  auto r = stub_->ExecutionStream(&context_);
+  EXPECT_TRUE(r->Write(request_, {}));
+  std::this_thread::sleep_for(std::chrono::seconds(1)); // NO_CHECK_FORMAT(real_time)
+  EXPECT_TRUE(r->Write(request_, {}));
+  EXPECT_TRUE(r->WritesDone());
+  // As on every error path, the stream ends only after the run it started has
+  // put its response on the stream; then comes the error status.
+  EXPECT_TRUE(r->Read(&response_));
+  EXPECT_TRUE(response_.has_output());
+  EXPECT_FALSE(r->Read(&response_));
+  const auto status = r->Finish();
+  EXPECT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(), HasSubstr("already has an execution running"));
+}
+
+class ConcurrentServiceTest : public ServiceTest {
+public:
+  uint32_t maxConcurrentExecutions() override { return 2; }
+};
+
+INSTANTIATE_TEST_SUITE_P(IpVersions, ConcurrentServiceTest,
+                         ValuesIn(Envoy::TestEnvironment::getIpVersionsForTest()),
+                         Envoy::TestUtility::ipTestParamsToString);
+
+// With --max-concurrent-executions 2, two streams run at once, each cancels
+// only its own execution, and a third start is refused as busy while both run.
+TEST_P(ConcurrentServiceTest, TwoExecutionsRunAtOnceAndEachStreamCancelsItsOwn) {
+  auto options = request_.mutable_start_request()->mutable_options();
+  options->mutable_duration()->set_seconds(60);
+  (*options->mutable_failure_predicates())["benchmark.nonexistent"] = 0;
+  grpc::ClientContext context_a;
+  grpc::ClientContext context_b;
+  auto a = stub_->ExecutionStream(&context_a);
+  auto b = stub_->ExecutionStream(&context_b);
+  EXPECT_TRUE(a->Write(request_, {}));
+  EXPECT_TRUE(b->Write(request_, {}));
+  std::this_thread::sleep_for(std::chrono::seconds(2)); // NO_CHECK_FORMAT(real_time)
+  {
+    grpc::ClientContext context_c;
+    auto c = stub_->ExecutionStream(&context_c);
+    EXPECT_TRUE(c->Write(request_, {}));
+    EXPECT_TRUE(c->WritesDone());
+    nighthawk::client::ExecutionResponse response;
+    EXPECT_FALSE(c->Read(&response));
+    const auto status = c->Finish();
+    EXPECT_FALSE(status.ok());
+    EXPECT_THAT(status.error_message(), HasSubstr("Busy: 2 executions are running"));
+  }
+  nighthawk::client::ExecutionRequest cancel;
+  cancel.mutable_cancellation_request();
+  // Cancelling a ends a only: b is still running afterwards, so a new start is
+  // accepted into the slot a released, and refused once that one runs too.
+  EXPECT_TRUE(a->Write(cancel, {}));
+  EXPECT_TRUE(a->WritesDone());
+  nighthawk::client::ExecutionResponse response_a;
+  EXPECT_TRUE(a->Read(&response_a));
+  EXPECT_TRUE(response_a.has_output());
+  EXPECT_FALSE(a->Read(&response_a));
+  EXPECT_TRUE(a->Finish().ok());
+  {
+    grpc::ClientContext context_d;
+    auto d = stub_->ExecutionStream(&context_d);
+    EXPECT_TRUE(d->Write(request_, {}));
+    std::this_thread::sleep_for(std::chrono::seconds(1)); // NO_CHECK_FORMAT(real_time)
+    EXPECT_TRUE(d->Write(cancel, {}));
+    EXPECT_TRUE(d->WritesDone());
+    nighthawk::client::ExecutionResponse response_d;
+    EXPECT_TRUE(d->Read(&response_d));
+    EXPECT_TRUE(response_d.has_output());
+    EXPECT_FALSE(d->Read(&response_d));
+    EXPECT_TRUE(d->Finish().ok());
+  }
+  EXPECT_TRUE(b->Write(cancel, {}));
+  EXPECT_TRUE(b->WritesDone());
+  nighthawk::client::ExecutionResponse response_b;
+  EXPECT_TRUE(b->Read(&response_b));
+  EXPECT_TRUE(response_b.has_output());
+  EXPECT_FALSE(b->Read(&response_b));
+  EXPECT_TRUE(b->Finish().ok());
 }
 
 // With progress_interval set, interim responses carrying `progress` and a snapshot of the

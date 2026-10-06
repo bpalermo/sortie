@@ -528,3 +528,77 @@ func (r *countingResolver) LookupHost(context.Context, string) ([]string, error)
 	}
 	return r.addrs, nil
 }
+
+// A weighted scenario drives its targets at the same time: the backend sees
+// every target's start before it answers any of them, each target gets its
+// share of the rate and its own report entry, and a threshold is judged per
+// target.
+func TestRunWeightedTargetsRunConcurrently(t *testing.T) {
+	// Hold every response until all three starts have arrived, so a sequential
+	// dispatch would deadlock here (and fail the test by timeout) rather than
+	// pass by accident.
+	var mu sync.Mutex
+	arrived := 0
+	all := make(chan struct{})
+	fake := startFake(t, func(_ int, opts *client.CommandLineOptions) *client.ExecutionResponse {
+		mu.Lock()
+		arrived++
+		if arrived == 3 {
+			close(all)
+		}
+		mu.Unlock()
+		select {
+		case <-all:
+		case <-time.After(10 * time.Second):
+			t.Error("the targets' executions were not started together")
+		}
+		// The slow target answers with a high p95; the others are fine.
+		p95 := time.Millisecond
+		if strings.HasSuffix(opts.GetUri().GetValue(), "/slow") {
+			p95 = time.Second
+		}
+		return okResponse(100, p95, time.Second)
+	})
+
+	p := planFor(t, `
+scenarios:
+  - name: mix
+    executor: {type: constant-rate, rate: 100, duration: 1s}
+    targets:
+      - {name: a, url: http://127.0.0.1:1/a, weight: 6}
+      - {name: b, url: http://127.0.0.1:1/b, weight: 3}
+      - {name: slow, url: http://127.0.0.1:1/slow, weight: 1}
+    thresholds:
+      - "latency_2xx.p95 < 50ms"
+`, fake.addr)
+
+	report, err := (&run.Runner{Plan: p}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(report.Executions); got != 3 {
+		t.Fatalf("got %d executions, want one per target", got)
+	}
+	labels := []string{report.Executions[0].Label, report.Executions[1].Label, report.Executions[2].Label}
+	if labels[0] != "mix/a" || labels[1] != "mix/b" || labels[2] != "mix/slow" {
+		t.Errorf("labels = %q", labels)
+	}
+	if report.Executions[0].Rate != 60 || report.Executions[1].Rate != 30 || report.Executions[2].Rate != 10 {
+		t.Errorf("shares = %d %d %d, want 60 30 10",
+			report.Executions[0].Rate, report.Executions[1].Rate, report.Executions[2].Rate)
+	}
+	if !report.Executions[0].Pass || !report.Executions[1].Pass || report.Executions[2].Pass {
+		t.Errorf("pass = %v %v %v, want only the slow target to fail",
+			report.Executions[0].Pass, report.Executions[1].Pass, report.Executions[2].Pass)
+	}
+	if report.Pass {
+		t.Error("the report passed although one target breached its threshold")
+	}
+	rates := map[string]uint32{}
+	for _, o := range fake.received() {
+		rates[o.GetUri().GetValue()] = o.GetRequestsPerSecond().GetValue()
+	}
+	if rates["http://127.0.0.1:1/a"] != 60 || rates["http://127.0.0.1:1/b"] != 30 || rates["http://127.0.0.1:1/slow"] != 10 {
+		t.Errorf("backend rates = %v", rates)
+	}
+}

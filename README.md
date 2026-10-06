@@ -185,6 +185,52 @@ RPC exists in `api/client/service.proto` but the service rejects it. Each stage
 is therefore its own execution: connections are re-established at every
 boundary, and each stage is reported and judged separately.
 
+## Weighted targets
+
+A scenario can drive several targets at once, each with a share of its rate.
+This is the shape of a soak that draws a weighted target per request.
+
+```yaml
+scenarios:
+  - name: mesh
+    executor: {type: constant-rate, rate: 60, duration: 8h, open_loop: true}
+    targets:
+      - {name: orders,  url: "http://orders.shop.svc:8080/",  weight: 6}
+      - {name: catalog, url: "http://catalog.shop.svc:8080/", weight: 3}
+      - {name: search,  url: "http://search.shop.svc:8080/",  weight: 1}
+    thresholds:
+      - "counter:benchmark.http_5xx == 0"
+```
+
+Each entry becomes its own execution, labelled `<scenario>/<name>`, with its
+own connection pool, rate limiter, counters and latency histograms. They start
+together on every backend in the pool and are reported and judged one by one,
+so a threshold on the scenario has to hold for every target, and a failing
+target is named. `targets` replaces `target`; every other field of the scenario
+applies to each target alike, so a target that needs its own method, headers or
+body is its own scenario.
+
+Two things differ from a per-request weighted draw, both deliberate:
+
+- **Each target is paced on its own.** A target's rate is a constant
+  `rate x weight / sum(weights)`, not a random share that averages out to it.
+  The mix is exact over any window rather than only over a long one, and one
+  slow target cannot starve the others of their slots.
+- **Shares are rounded.** A share is rounded to the nearest whole request per
+  second and is never less than 1, so the shares may not sum to `rate`: 100
+  split 1:1:1 is 33 + 33 + 33. The report shows the rate each target ran at.
+  Each share is then divided over backends and workers by the usual rule, so
+  it must be a multiple of `concurrency`.
+
+The backend has to accept one execution per target at a time:
+`nighthawk_service --max-concurrent-executions N`, default 1. The chart sets
+`engine.maxConcurrentExecutions` (default 16). A backend at its limit refuses
+the start and the scenario fails naming it. Every execution has its own worker
+threads, so a ten-target scenario at `concurrency: "2"` runs twenty.
+
+A staircase scenario with targets runs its stages in order, with every
+target's execution of a stage running together.
+
 ## gRPC
 
 A scenario with a `grpc` block generates gRPC load instead of plain HTTP. It
@@ -505,8 +551,10 @@ TCP and UDP are all in.
 - **No scripting.** Nighthawk's `RequestSource` yields independent requests and
   never sees responses, so there is no session flow — no login, capture a token,
   reuse it. Scenarios are stateless load.
-- **One execution per backend at a time.** `nighthawk_service` refuses a second
-  concurrent run, so scenarios are sequential by design.
+- **Scenarios run one after another.** Only the targets of one scenario run
+  at the same time (see Weighted targets); two scenarios never overlap.
+  `nighthawk_service` runs as many executions at once as
+  `--max-concurrent-executions` allows, one by default, and refuses the rest.
 
 ## Running it in Kubernetes
 

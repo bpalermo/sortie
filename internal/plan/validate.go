@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/bpalermo/sortie/internal/threshold"
 )
 
@@ -57,9 +59,12 @@ func validateBeyondSchema(p *Plan) error {
 		if _, ok := pools[pool]; !ok {
 			return fmt.Errorf("scenario %q: pool %q is not declared", s.GetName(), pool)
 		}
-		if s.GetTarget() == "" && p.GetDefaults().GetTarget() == "" {
+		if s.GetTarget() == "" && p.GetDefaults().GetTarget() == "" && len(s.GetTargets()) == 0 {
 			return fmt.Errorf("scenario %q: target is required (set it on the scenario or in defaults)",
 				s.GetName())
+		}
+		if err := validateTargets(s); err != nil {
+			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
 		}
 		if s.GetExecutor() == nil && p.GetDefaults().GetExecutor() == nil {
 			return fmt.Errorf("scenario %q: executor is required (set it on the scenario or in defaults)",
@@ -70,23 +75,46 @@ func validateBeyondSchema(p *Plan) error {
 				return fmt.Errorf("scenario %q: thresholds[%d]: %w", s.GetName(), i, err)
 			}
 		}
-		if err := validateGrpc(p, s); err != nil {
-			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
-		}
-		if err := validateWebSocket(p, s); err != nil {
-			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
-		}
-		if err := validateTls(p, s); err != nil {
-			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
-		}
-		if err := validateTcp(p, s); err != nil {
-			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
-		}
-		if err := validateUdp(p, s); err != nil {
-			return fmt.Errorf("scenario %q: %w", s.GetName(), err)
+		// The mode checks read the target: a weighted scenario is checked
+		// once per target, as the scenario each target will run as.
+		for _, variant := range Variants(s) {
+			if err := validateModes(p, variant); err != nil {
+				return fmt.Errorf("scenario %q: %w", variant.GetName(), err)
+			}
 		}
 	}
 	return nil
+}
+
+// Variants is the scenario itself, or -- for one with weighted targets -- the
+// per-target scenarios it runs as (ForTarget), named `<scenario>/<target>`.
+func Variants(s *Scenario) []*Scenario {
+	if len(s.GetTargets()) == 0 {
+		return []*Scenario{s}
+	}
+	out := make([]*Scenario, 0, len(s.GetTargets()))
+	for _, t := range s.GetTargets() {
+		v := ForTarget(s, t)
+		v.Name = s.GetName() + "/" + t.GetName()
+		out = append(out, v)
+	}
+	return out
+}
+
+func validateModes(p *Plan, s *Scenario) error {
+	if err := validateGrpc(p, s); err != nil {
+		return err
+	}
+	if err := validateWebSocket(p, s); err != nil {
+		return err
+	}
+	if err := validateTls(p, s); err != nil {
+		return err
+	}
+	if err := validateTcp(p, s); err != nil {
+		return err
+	}
+	return validateUdp(p, s)
 }
 
 // validateTls checks a tls block against the effective target: it means
@@ -344,4 +372,65 @@ func validateGrpc(p *Plan, s *Scenario) error {
 		return fmt.Errorf("grpc.streams, max_inflight_per_stream and drain_duration apply to mode bidi-stream only")
 	}
 	return nil
+}
+
+// validateTargets checks a scenario's weighted target list: names present
+// and unique, so reports and thresholds can tell the targets apart.
+func validateTargets(s *Scenario) error {
+	seen := make(map[string]struct{}, len(s.GetTargets()))
+	for i, t := range s.GetTargets() {
+		if t.GetName() == "" {
+			return fmt.Errorf("targets[%d]: name is required", i)
+		}
+		if strings.ContainsAny(t.GetName(), "/ ") {
+			return fmt.Errorf("targets[%d]: name %q must not contain '/' or spaces", i, t.GetName())
+		}
+		if _, dup := seen[t.GetName()]; dup {
+			return fmt.Errorf("targets[%d]: name %q is used twice", i, t.GetName())
+		}
+		seen[t.GetName()] = struct{}{}
+	}
+	return nil
+}
+
+// ForTarget returns the scenario as it applies to one of its weighted
+// targets: a copy with target set to that entry's url and the list cleared,
+// and the executor's rates scaled to the entry's share of the total weight
+// (rounded to the nearest integer, at least 1). Everything that validates or
+// compiles a single-target scenario works on the result unchanged.
+func ForTarget(s *Scenario, t *Target) *Scenario {
+	out := proto.Clone(s).(*Scenario)
+	out.Target = t.GetUrl()
+	out.Targets = nil
+	var total uint64
+	for _, x := range s.GetTargets() {
+		total += uint64(weightOf(x))
+	}
+	if ex := out.GetExecutor(); ex != nil && total > 0 {
+		w := uint64(weightOf(t))
+		ex.Rate = share(ex.GetRate(), w, total)
+		for _, st := range ex.GetStages() {
+			st.Rate = share(st.GetRate(), w, total)
+		}
+	}
+	return out
+}
+
+func weightOf(t *Target) uint32 {
+	if t.GetWeight() == 0 {
+		return 1
+	}
+	return t.GetWeight()
+}
+
+// share is rate x w / total, rounded to nearest, at least 1 when rate is set.
+func share(rate uint32, w, total uint64) uint32 {
+	if rate == 0 {
+		return 0
+	}
+	v := (uint64(rate)*w + total/2) / total
+	if v == 0 {
+		v = 1
+	}
+	return uint32(v)
 }

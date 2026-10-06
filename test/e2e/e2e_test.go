@@ -204,7 +204,8 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 
 	servicePath := filepath.Join(tmp, "service_address")
 	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
-		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath)
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath,
+		"--max-concurrent-executions", "4")
 	serviceAddr := waitForAddress(t, servicePath)
 	if _, _, err := net.SplitHostPort(serviceAddr); err != nil {
 		t.Fatalf("service address %q: %v", serviceAddr, err)
@@ -238,6 +239,99 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 		t.Errorf("sortie output lacks the backend line with about 500 requests")
 	}
 	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict")
+	}
+}
+
+// Three weighted targets on one backend, driven at the same time: 100 rps for
+// 5 s split 6:3:1 is 300, 150 and 50 requests, each target with its own counters
+// and judged on its own. Two workers, so each share has to divide by two.
+const weightedPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+defaults:
+  pool: local
+  protocol: http1
+  concurrency: "2"
+  connections: 2
+thresholds:
+  - "counter:benchmark.http_5xx == 0"
+  - "counter:benchmark.pool_connection_failure == 0"
+scenarios:
+  - name: mix
+    executor:
+      type: constant-rate
+      rate: 100
+      duration: 5s
+    targets:
+      - {name: a, url: "http://127.0.0.1:%d/a", weight: 6}
+      - {name: b, url: "http://127.0.0.1:%d/b", weight: 3}
+      - {name: c, url: "http://127.0.0.1:%d/c", weight: 1}
+    thresholds:
+      - "latency_2xx.p99 < 500ms"
+`
+
+func TestWeightedTargetsRunConcurrentlyAgainstTheEngine(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tmp := t.TempDir()
+
+	configPath := filepath.Join(tmp, "test_server.yaml")
+	if err := os.WriteFile(configPath, []byte(testServerConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adminPath := filepath.Join(tmp, "admin_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_test_server"),
+		"--config-path", configPath, "--admin-address-path", adminPath,
+		"--disable-hot-restart", "--concurrency", "1")
+	targetPort := listenerPort(t, waitForAddress(t, adminPath))
+
+	servicePath := filepath.Join(tmp, "service_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath,
+		"--max-concurrent-executions", "4")
+	serviceAddr := waitForAddress(t, servicePath)
+	assertHealthy(t, ctx, serviceAddr)
+
+	planPath := filepath.Join(tmp, "plan.yaml")
+	plan := fmt.Sprintf(weightedPlanTemplate, serviceAddr, targetPort, targetPort, targetPort)
+	if err := os.WriteFile(planPath, []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath)
+	out, err := cmd.CombinedOutput()
+	elapsed := time.Since(started)
+	t.Logf("sortie run:\n%s", out)
+	if err != nil {
+		t.Fatalf("sortie run failed: %v", err)
+	}
+	// Three 5 s executions run together take about 5 s; one after another
+	// would take 15 s. The bound leaves room for process start-up, not for a
+	// second execution.
+	if elapsed > 12*time.Second {
+		t.Errorf("the three targets took %s, so they did not run concurrently", elapsed)
+	}
+	for _, want := range []string{`mix/a`, `mix/b`, `mix/c`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("sortie output lacks the per-target execution %q", want)
+		}
+	}
+	// Per-target request counts: 300, 150 and 50, each within a few in-flight
+	// requests at the deadline.
+	for _, re := range []string{
+		`(?s)mix/a.*?\S+: (29[0-9]|30[0-9]) requests in`,
+		`(?s)mix/b.*?\S+: (14[0-9]|15[0-9]) requests in`,
+		`(?s)mix/c.*?\S+: (4[5-9]|5[0-5]) requests in`,
+	} {
+		if !regexp.MustCompile(re).Match(out) {
+			t.Errorf("sortie output lacks a backend line matching %q", re)
+		}
+	}
+	if !strings.Contains(string(out), "PASS  3/3 executions passed") {
 		t.Errorf("sortie output lacks the PASS verdict")
 	}
 }
@@ -322,7 +416,8 @@ func TestWebSocketPlanAgainstTheEngine(t *testing.T) {
 
 	servicePath := filepath.Join(tmp, "service_address")
 	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
-		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath)
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath,
+		"--max-concurrent-executions", "4")
 	serviceAddr := waitForAddress(t, servicePath)
 	assertHealthy(t, ctx, serviceAddr)
 
@@ -501,7 +596,8 @@ func TestMutualTLSPlanAgainstTheEngine(t *testing.T) {
 
 	servicePath := filepath.Join(tmp, "service_address")
 	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
-		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath)
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath,
+		"--max-concurrent-executions", "4")
 	serviceAddr := waitForAddress(t, servicePath)
 	assertHealthy(t, ctx, serviceAddr)
 
@@ -608,7 +704,8 @@ func TestTcpPlanAgainstTheEngine(t *testing.T) {
 
 	servicePath := filepath.Join(tmp, "service_address")
 	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
-		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath)
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath,
+		"--max-concurrent-executions", "4")
 	serviceAddr := waitForAddress(t, servicePath)
 	assertHealthy(t, ctx, serviceAddr)
 
@@ -690,7 +787,8 @@ func TestUdpPlanAgainstTheEngine(t *testing.T) {
 
 	servicePath := filepath.Join(tmp, "service_address")
 	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
-		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath)
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath,
+		"--max-concurrent-executions", "4")
 	serviceAddr := waitForAddress(t, servicePath)
 	assertHealthy(t, ctx, serviceAddr)
 

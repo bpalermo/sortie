@@ -130,17 +130,33 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 		}
 		pool := plan.PoolFor(p, scenario)
 
-		for _, e := range executions {
-			er := r.runExecution(ctx, e, pool, thresholds)
-			if !er.Pass {
-				report.Pass = false
+		// Executions that share a Group -- the targets of a weighted scenario
+		// -- start together and are reported in plan order once all are done.
+		// Everything else runs one at a time, as before.
+		for i := 0; i < len(executions); {
+			j := i + 1
+			if executions[i].Group != "" {
+				for j < len(executions) && executions[j].Group == executions[i].Group {
+					j++
+				}
 			}
-			report.Executions = append(report.Executions, er)
-			if r.Observer != nil {
-				r.Observer.ExecutionFinished(er)
+			reports := r.runGroup(ctx, executions[i:j], pool, thresholds)
+			i = j
+			for _, er := range reports {
+				if !er.Pass {
+					report.Pass = false
+				}
+				report.Executions = append(report.Executions, er)
+				if r.Observer != nil {
+					r.Observer.ExecutionFinished(er)
+				}
 			}
-			if er.Err != nil && ctx.Err() != nil {
-				return report, ctx.Err()
+			if ctx.Err() != nil {
+				for _, er := range reports {
+					if er.Err != nil {
+						return report, ctx.Err()
+					}
+				}
 			}
 		}
 	}
@@ -235,6 +251,31 @@ func emptyAnswer(re *plan.ResolveError) bool {
 	return errors.Is(re.Err, plan.ErrNoAddress)
 }
 
+// runGroup runs the executions concurrently, one goroutine each, and returns
+// their reports in the same order. A single execution runs inline.
+func (r *Runner) runGroup(
+	ctx context.Context,
+	group []compile.Execution,
+	pool *plan.Pool,
+	thresholds []threshold.Threshold,
+) []ExecutionReport {
+	reports := make([]ExecutionReport, len(group))
+	if len(group) == 1 {
+		reports[0] = r.runExecution(ctx, group[0], pool, thresholds)
+		return reports
+	}
+	var wg sync.WaitGroup
+	for i, e := range group {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reports[i] = r.runExecution(ctx, e, pool, thresholds)
+		}()
+	}
+	wg.Wait()
+	return reports
+}
+
 func (r *Runner) runExecution(
 	ctx context.Context,
 	e compile.Execution,
@@ -259,7 +300,10 @@ func (r *Runner) runExecution(
 	}
 	er.Backends = backends
 	if r.Observer != nil {
+		// Grouped executions start from several goroutines at once.
+		r.observerMu.Lock()
 		r.Observer.ExecutionStarted(e, backends)
+		r.observerMu.Unlock()
 	}
 
 	addrs, outputs, err := r.dispatch(ctx, e, pool)
