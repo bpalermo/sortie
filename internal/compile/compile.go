@@ -301,7 +301,7 @@ func workersPerBackend(s *plan.Scenario) (int, error) {
 		return 1, nil
 	case "auto":
 		return 0, fmt.Errorf(
-			`concurrency "auto" cannot be combined with an aggregate rate, because ` +
+			`concurrency "auto" cannot be combined with a rate, because ` +
 				`Nighthawk's --rps is per worker and the worker count is only decided ` +
 				`on the backend; set concurrency to a number`)
 	}

@@ -151,10 +151,13 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 // up until it answers with at least one address, for up to ResolveTimeout of
 // its own -- lookups in flight included -- and is then left alone: a name that
 // has answered is not asked again while another is still empty, so its
-// backends are the ones it gave the first time. Every other failure -- a name
-// that does not exist, a resolver error -- is returned at once; so is an empty
-// answer once its wait is over, as the same ResolveError. A context cancelled
-// during a wait ends it with the context's error.
+// backends are the ones it gave the first time. "Empty" includes NXDOMAIN,
+// which is how a headless Service with no ready pod often answers (see
+// emptyAnswer), so a name that does not exist is waited on for the timeout
+// too rather than failing at once. Any other resolver error is returned
+// immediately; an answer still empty when the wait is over is the same
+// ResolveError. A context cancelled during a wait ends it with the context's
+// error.
 func (r *Runner) resolve(ctx context.Context) (*plan.Plan, error) {
 	resolver := r.Resolver
 	if resolver == nil {
