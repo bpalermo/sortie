@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -41,6 +42,15 @@ func validateBeyondSchema(p *Plan) error {
 	// these into every scenario that sets neither.
 	if d := p.GetDefaults(); d.GetBody() != "" && d.GetBodyFile() != "" {
 		return fmt.Errorf("defaults: body and body_file are mutually exclusive")
+	}
+	if err := validateStats(p.GetStats()); err != nil {
+		return fmt.Errorf("stats: %w", err)
+	}
+	if err := validateStatsPrefixes(p); err != nil {
+		return err
+	}
+	if err := validateStats(p.GetDefaults().GetStats()); err != nil {
+		return fmt.Errorf("defaults: stats: %w", err)
 	}
 
 	// defaults is a Scenario too: its target list is copied into every
@@ -95,6 +105,9 @@ func validateBeyondSchema(p *Plan) error {
 			if err := validateModes(p, variant); err != nil {
 				return fmt.Errorf("scenario %q: %w", variant.GetName(), err)
 			}
+		}
+		if err := validateStats(s.GetStats()); err != nil {
+			return fmt.Errorf("scenario %q: stats: %w", s.GetName(), err)
 		}
 	}
 	return nil
@@ -454,4 +467,170 @@ func share(rate uint32, w, total uint64) uint32 {
 		v = 1
 	}
 	return uint32(v)
+}
+
+// validateStats checks what the schema's host:port rule cannot: the engine's
+// statsd sink resolves its address with Envoy's IP resolver, which takes an
+// IP literal and no name, so a hostname would fail on the backend, at sink
+// creation, with the plan already dispatched.
+func validateStats(st *Stats) error {
+	for i, sink := range st.GetSinks() {
+		// Judged by name AND by the type of the configuration: Envoy finds a
+		// sink's factory by its typed config when the name matches none, so a
+		// sink called anything at all still becomes the one its config says.
+		typ := sink.GetTypedConfig().GetTypeUrl()
+		if i := strings.LastIndex(typ, "/"); i >= 0 {
+			typ = typ[i+1:]
+		}
+		// The field for it was withdrawn because the sink aborts the engine on
+		// its first flush (see Stats in the schema); the passthrough must not
+		// be a way to configure it anyway and take a backend down mid-run.
+		if sink.GetName() == openTelemetrySink || typ == openTelemetrySinkConfig {
+			return fmt.Errorf("sinks[%d]: %s cannot run in the engine: it aborts on its first flush. "+
+				"Send statsd to the collector's statsd receiver instead", i, openTelemetrySink)
+		}
+		// sortie wraps every Envoy sink in the adapter itself. One written
+		// out here would carry a sink this check cannot see into, the
+		// OpenTelemetry one included, so it is not accepted at all.
+		if sink.GetName() == envoyStatsSinkAdapter || typ == envoyStatsSinkAdapterConfig {
+			return fmt.Errorf("sinks[%d]: name the Envoy sink itself, not %s: sortie adds the adapter",
+				i, envoyStatsSinkAdapter)
+		}
+	}
+	if st.GetStatsd() == nil {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(st.GetStatsd().GetAddress())
+	if err != nil {
+		return fmt.Errorf("statsd.address: %w", err)
+	}
+	// SplitHostPort only separates the two; the range is checked here so that
+	// validate and compile, which builds a socket address from it, agree.
+	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+		return fmt.Errorf("statsd.address: port %q is not in 1..65535", port)
+	}
+	if net.ParseIP(host) == nil {
+		return fmt.Errorf("statsd.address: %q is not an IP address; the engine's statsd sink "+
+			"does not resolve names, so use the server's IP (a Service's clusterIP)", host)
+	}
+	return nil
+}
+
+const (
+	openTelemetrySink     = "envoy.stat_sinks.open_telemetry"
+	envoyStatsSinkAdapter = "nighthawk.envoy_stats_sink_adapter"
+
+	// The configuration types of the two, as they end a type URL.
+	openTelemetrySinkConfig     = "envoy.extensions.stat_sinks.open_telemetry.v3.SinkConfig"
+	envoyStatsSinkAdapterConfig = "nighthawk.EnvoyStatsSinkAdapterConfig"
+
+	// DefaultStatsPrefix is the first component of every metric name when a
+	// stats block sets no prefix.
+	DefaultStatsPrefix = "sortie"
+)
+
+// StatsLabel is an execution label as it appears in a metric prefix: each
+// `/`-separated segment lowercased and reduced to [a-z0-9_] (every other run
+// of characters becomes one underscore, trimmed at both ends), with segments
+// that reduce to nothing dropped. `Live Metrics/stage-2` is
+// ["live_metrics", "stage_2"].
+func StatsLabel(label string) []string {
+	var out []string
+	for _, segment := range strings.Split(label, "/") {
+		var b strings.Builder
+		pending := false
+		for _, r := range strings.ToLower(segment) {
+			switch {
+			case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+				if pending && b.Len() > 0 {
+					b.WriteByte('_')
+				}
+				pending = false
+				b.WriteRune(r)
+			default:
+				pending = true
+			}
+		}
+		if b.Len() > 0 {
+			out = append(out, b.String())
+		}
+	}
+	return out
+}
+
+// validateStatsPrefixes refuses a plan in which two executions with a statsd
+// sink would emit under one prefix. Names are unique as written, but a prefix
+// is built from an execution's sanitized label, where `Foo` and `foo` are the
+// same, `///` is nothing at all, and stage 1 of a staircase named `foo` is
+// the constant scenario named `foo/stage-1`: their counters and timers would
+// be summed by the statsd server with nothing to tell them apart.
+//
+// Only the statsd sink is concerned. It is the one whose prefix sortie
+// writes; a sink passed through stats.sinks names its metrics itself.
+func validateStatsPrefixes(p *Plan) error {
+	seen := map[string]string{}
+	for _, s := range p.GetScenarios() {
+		st := s.GetStats()
+		if st == nil {
+			st = p.GetDefaults().GetStats()
+		}
+		if st == nil {
+			st = p.GetStats()
+		}
+		if st.GetStatsd() == nil {
+			continue
+		}
+		executor := s.GetExecutor()
+		if executor == nil {
+			executor = p.GetDefaults().GetExecutor()
+		}
+		// Every label compile.Expand gives this scenario's executions: one per
+		// weighted target (its own or inherited from defaults), times one per
+		// staircase stage. Each must have a prefix no other execution in the
+		// plan has, in this scenario or another.
+		subject := s
+		if s.GetTarget() == "" && len(s.GetTargets()) == 0 && len(p.GetDefaults().GetTargets()) > 0 {
+			subject = proto.Clone(s).(*Scenario)
+			subject.Targets = p.GetDefaults().GetTargets()
+		}
+		var labels []string
+		for _, variant := range Variants(subject) {
+			if executor.GetType() != Staircase {
+				labels = append(labels, variant.GetName())
+				continue
+			}
+			for i := range executor.GetStages() {
+				labels = append(labels, fmt.Sprintf("%s/stage-%d", variant.GetName(), i+1))
+			}
+		}
+		if len(StatsLabel(s.GetName())) == 0 {
+			return fmt.Errorf("scenario %q: its name has no letter, digit or underscore to name its metrics by; "+
+				"rename it, or drop its statsd sink", s.GetName())
+		}
+		for _, label := range labels {
+			// The prefix as emitted: see compile.StatsPrefix.
+			prefix := StatsPrefix(st.GetPrefix(), label)
+			if other, dup := seen[prefix]; dup {
+				return fmt.Errorf("executions %q and %q would emit their metrics under the same prefix (%s); "+
+					"rename a scenario or a target, or give the scenarios different stats.prefix values",
+					other, label, prefix)
+			}
+			seen[prefix] = label
+		}
+	}
+	return nil
+}
+
+// StatsPrefix is the prefix an execution's statsd sink emits its metrics
+// under: the stats block's prefix (or DefaultStatsPrefix), then StatsLabel of
+// the execution's label, joined with dots.
+//
+//	StatsPrefix("", "smoke")           == "sortie.smoke"
+//	StatsPrefix("", "smoke/stage-2")   == "sortie.smoke.stage_2"
+//	StatsPrefix("soak", "Checkout/eu") == "soak.checkout.eu"
+func StatsPrefix(prefix, label string) string {
+	if prefix == "" {
+		prefix = DefaultStatsPrefix
+	}
+	return strings.Join(append([]string{prefix}, StatsLabel(label)...), ".")
 }

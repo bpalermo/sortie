@@ -1,6 +1,8 @@
 package plan
 
 import (
+	metricsv3 "github.com/envoyproxy/go-control-plane/envoy/config/metrics/v3"
+	"google.golang.org/protobuf/types/known/anypb"
 	"os"
 	"path/filepath"
 	"strings"
@@ -443,5 +445,244 @@ scenarios:
   - name: s
 `)); err == nil || !strings.Contains(err.Error(), "defaults") {
 		t.Errorf("err = %v, want the duplicate name reported against defaults", err)
+	}
+}
+
+// stats has three levels: the plan's block, defaults.stats over it, and a
+// scenario's own over both, each replacing wholesale and each scenario owning
+// a copy.
+func TestStatsPrecedence(t *testing.T) {
+	p, err := Parse([]byte(`
+version: v1
+stats:
+  prefix: fromplan
+  statsd: {address: "10.0.0.1:8125"}
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+defaults:
+  pool: local
+  target: http://127.0.0.1:1/
+  executor: {type: constant-rate, rate: 10, duration: 1s}
+scenarios:
+  - name: inherits
+  - name: own
+    stats:
+      statsd: {address: "10.0.0.3:8125"}
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := p.Scenarios[0].GetStats(); got.GetPrefix() != "fromplan" || got.GetStatsd().GetAddress() != "10.0.0.1:8125" {
+		t.Errorf("inherits: stats = %v, want the plan's", got)
+	}
+	// Wholesale: the scenario's block does not pick up the plan's prefix.
+	if got := p.Scenarios[1].GetStats(); got.GetPrefix() != "" || got.GetStatsd().GetAddress() != "10.0.0.3:8125" {
+		t.Errorf("own: stats = %v, want only the scenario's", got)
+	}
+	p.Scenarios[0].Stats.Prefix = "changed"
+	if p.GetStats().GetPrefix() != "fromplan" {
+		t.Error("a scenario shares its inherited stats with the plan instead of owning a copy")
+	}
+
+	p, err = Parse([]byte(`
+version: v1
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+defaults:
+  pool: local
+  target: http://127.0.0.1:1/
+  executor: {type: constant-rate, rate: 10, duration: 1s}
+  stats:
+    statsd: {address: "10.0.0.2:8125"}
+scenarios:
+  - name: inherits
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := p.Scenarios[0].GetStats().GetStatsd().GetAddress(); got != "10.0.0.2:8125" {
+		t.Errorf("statsd address = %q, want defaults' over the plan's", got)
+	}
+}
+
+func TestStatsRejectsWhatWouldMisbehaveOnTheBackend(t *testing.T) {
+	const head = `
+version: v1
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+defaults:
+  pool: local
+  target: http://127.0.0.1:1/
+  executor: {type: constant-rate, rate: 10, duration: 1s}
+`
+	for name, c := range map[string]struct{ body, want string }{
+		"the otlp sink through the passthrough": {`
+stats:
+  sinks: [{name: envoy.stat_sinks.open_telemetry}]
+scenarios: [{name: a}]`, "aborts on its first flush"},
+		"a statsd host name": {`
+stats:
+  statsd: {address: "collector.monitoring:8125"}
+scenarios: [{name: a}]`, "not an IP address"},
+		"names that differ only in case": {`
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+scenarios: [{name: Foo}, {name: foo}]`, "same prefix"},
+		"a name with nothing to keep": {`
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+scenarios: [{name: "///"}]`, "no letter, digit or underscore"},
+	} {
+		_, err := Parse([]byte(head + c.body + "\n"))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want one containing %q", name, err, c.want)
+		}
+	}
+	for name, c := range map[string]struct{ body, want string }{
+		"a flush interval below a millisecond": {`
+stats:
+  flush_interval: 0.000001s
+  statsd: {address: "10.0.0.1:8125"}
+scenarios: [{name: a}]`, "flush_interval"},
+		"the adapter written out": {`
+stats:
+  sinks: [{name: nighthawk.envoy_stats_sink_adapter}]
+scenarios: [{name: a}]`, "sortie adds the adapter"},
+		"a stage label and a scenario of that name": {`
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+scenarios:
+  - name: foo
+    executor: {type: staircase, stages: [{rate: 10, duration: 1s}]}
+  - name: foo/stage-1`, "same prefix (sortie.foo.stage_1)"},
+		"the default prefix and the same one spelled out": {`
+scenarios:
+  - {name: foo, stats: {statsd: {address: "10.0.0.1:8125"}}}
+  - {name: Foo, stats: {prefix: sortie, statsd: {address: "10.0.0.1:8125"}}}`, "same prefix (sortie.foo)"},
+		"targets that differ only in case": {`
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+scenarios:
+  - name: mix
+    targets:
+      - {name: US-East, url: "http://127.0.0.1:1/a"}
+      - {name: us-east, url: "http://127.0.0.1:1/b"}`, "same prefix (sortie.mix.us_east)"},
+		"a target and a scenario of that name": {`
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+scenarios:
+  - name: mix
+    targets: [{name: a, url: "http://127.0.0.1:1/a"}]
+  - name: mix/a`, "same prefix (sortie.mix.a)"},
+		"a statsd port out of range": {`
+stats:
+  statsd: {address: "10.0.0.1:99999"}
+scenarios: [{name: a}]`, "not in 1..65535"},
+		"a statsd port of zero": {`
+stats:
+  statsd: {address: "10.0.0.1:0"}
+scenarios: [{name: a}]`, "not in 1..65535"},
+		"a dotted prefix that meets another": {`
+scenarios:
+  - {name: b, stats: {prefix: x.a, statsd: {address: "10.0.0.1:8125"}}}
+  - {name: a/b, stats: {prefix: x, statsd: {address: "10.0.0.1:8125"}}}`, "same prefix (x.a.b)"},
+	} {
+		_, err := Parse([]byte(head + c.body + "\n"))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want one containing %q", name, err, c.want)
+		}
+	}
+	// Without a statsd sink the same names are fine -- a passthrough sink
+	// names its own metrics -- and so are colliding names under different
+	// prefixes.
+	for name, body := range map[string]string{
+		"no stats": `
+scenarios: [{name: Foo}, {name: foo}]`,
+		"only passthrough sinks": `
+stats:
+  sinks: [{name: envoy.stat_sinks.dog_statsd}]
+scenarios: [{name: Foo}, {name: foo}]`,
+		"different prefixes": `
+scenarios:
+  - {name: Foo, stats: {prefix: one, statsd: {address: "10.0.0.1:8125"}}}
+  - {name: foo, stats: {prefix: two, statsd: {address: "10.0.0.1:8125"}}}`,
+	} {
+		if _, err := Parse([]byte(head + body + "\n")); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A sink is judged by the type of its configuration as well as by its name:
+// Envoy picks a sink's factory from the typed config when the name matches
+// none, so a renamed OpenTelemetry sink, or a renamed adapter carrying one,
+// is still what its config says. Built in Go: neither type is linked into
+// sortie, so a YAML plan cannot even spell them, and this is the guard for a
+// plan that arrives as a message.
+func TestStatsJudgesASinkByItsConfigType(t *testing.T) {
+	for name, c := range map[string]struct{ typeURL, want string }{
+		"otlp under another name": {
+			"type.googleapis.com/envoy.extensions.stat_sinks.open_telemetry.v3.SinkConfig", "aborts on its first flush",
+		},
+		"the adapter under another name": {
+			"type.googleapis.com/nighthawk.EnvoyStatsSinkAdapterConfig", "sortie adds the adapter",
+		},
+	} {
+		st := &Stats{Sinks: []*metricsv3.StatsSink{{
+			Name:       "anything",
+			ConfigType: &metricsv3.StatsSink_TypedConfig{TypedConfig: &anypb.Any{TypeUrl: c.typeURL}},
+		}}}
+		if err := validateStats(st); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want one containing %q", name, err, c.want)
+		}
+	}
+	ok := &Stats{Sinks: []*metricsv3.StatsSink{{
+		Name:       "envoy.stat_sinks.dog_statsd",
+		ConfigType: &metricsv3.StatsSink_TypedConfig{TypedConfig: &anypb.Any{TypeUrl: "type.googleapis.com/envoy.config.metrics.v3.DogStatsdSink"}},
+	}}}
+	if err := validateStats(ok); err != nil {
+		t.Errorf("an ordinary sink was refused: %v", err)
+	}
+}
+
+// stats.sinks reaches the sinks configured by an envoy.config.metrics.v3
+// message, which sortie links, and no extension's own config type: that one
+// fails at parse, as the schema says.
+func TestStatsSinksAcceptTheMetricsV3ConfigTypesOnly(t *testing.T) {
+	plan := func(typ string) string {
+		return `
+version: v1
+stats:
+  sinks:
+    - name: a-sink
+      typed_config:
+        "@type": type.googleapis.com/` + typ + `
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+scenarios:
+  - name: s
+    pool: local
+    target: http://127.0.0.1:1/
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+`
+	}
+	for _, typ := range []string{
+		"envoy.config.metrics.v3.DogStatsdSink",
+		"envoy.config.metrics.v3.StatsdSink",
+		"envoy.config.metrics.v3.HystrixSink",
+		"envoy.config.metrics.v3.MetricsServiceConfig",
+	} {
+		if _, err := Parse([]byte(plan(typ))); err != nil {
+			t.Errorf("%s: %v", typ, err)
+		}
+	}
+	if _, err := Parse([]byte(plan("envoy.extensions.stat_sinks.graphite_statsd.v3.GraphiteStatsdSink"))); err == nil {
+		t.Error("an extension's config type parsed; the schema and README say it cannot")
 	}
 }

@@ -28,4 +28,8 @@ go_test(
         "plan_test.go",
     ],
     embed = [":plan"],
+    deps = [
+        "@envoy_api//envoy/config/metrics/v3:pkg_go_proto",
+        "@org_golang_google_protobuf//types/known/anypb",
+    ],
 )

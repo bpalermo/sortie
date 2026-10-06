@@ -189,6 +189,42 @@ place rather than start a new run.
 {{- include "sortie.podSpec" . | sha256sum | trunc 8 -}}
 {{- end -}}
 
+{{/*
+The format of the report file, checked.
+*/}}
+{{- define "sortie.reportFormat" -}}
+{{- $format := .Values.report.format | default "json" -}}
+{{- if not (has $format (list "json" "text")) -}}
+{{- fail (printf "report.format must be json or text, got %q" $format) -}}
+{{- end -}}
+{{- if not .Values.report.volume -}}
+{{- fail "report.volume is required with report.path: the root filesystem is read-only, and a report written to the pod itself is gone with the pod" -}}
+{{- end -}}
+{{- if not (isAbs .Values.report.path) -}}
+{{- fail (printf "report.path must be an absolute file path, got %q" .Values.report.path) -}}
+{{- end -}}
+{{- /* The volume is mounted at the file's directory, so that directory must
+not be one the image needs: / is the whole image, /sortie is the binary the
+container runs, /etc holds the plan's mount, and /etc/sortie is the plan. */ -}}
+{{- /* A file, not a directory: --output creates the path it is given, and a
+trailing slash or a dot segment at the end names a directory. */ -}}
+{{- $last := base .Values.report.path -}}
+{{- if or (hasSuffix "/" .Values.report.path) (eq $last ".") (eq $last "..") -}}
+{{- fail (printf "report.path must name a file, got the directory %q" .Values.report.path) -}}
+{{- end -}}
+{{- $path := clean .Values.report.path -}}
+{{- $dir := dir $path -}}
+{{- range $reserved := list "/sortie" "/etc/sortie" -}}
+{{- if or (eq $path $reserved) (eq $dir $reserved) (hasPrefix (printf "%s/" $reserved) $dir) -}}
+{{- fail (printf "report.path %q is at or under %s, which the container needs; put the file in a directory of its own, such as /var/run/sortie" $.Values.report.path $reserved) -}}
+{{- end -}}
+{{- end -}}
+{{- if or (eq $dir "/") (eq $dir "/etc") -}}
+{{- fail (printf "report.path %q would mount the report volume at %s, over the image; put the file in a directory of its own, such as /var/run/sortie" .Values.report.path $dir) -}}
+{{- end -}}
+{{- $format -}}
+{{- end -}}
+
 {{- define "sortie.podSpec" -}}
 metadata:
   labels:
@@ -220,17 +256,32 @@ spec:
         {{- toYaml .Values.securityContext | nindent 8 }}
       args:
         {{- toYaml .Values.args | nindent 8 }}
+        {{- if .Values.report.path }}
+        {{- /* Stated either way: args may already carry --json, and the last
+        one on the command line wins. */}}
+        - --json={{ eq (include "sortie.reportFormat" .) "json" }}
+        - --output
+        - {{ clean .Values.report.path | quote }}
+        {{- end }}
         - /etc/sortie/plan.yaml
       volumeMounts:
         - name: plan
           mountPath: /etc/sortie
           readOnly: true
+        {{- if .Values.report.path }}
+        - name: report
+          mountPath: {{ dir (clean .Values.report.path) | quote }}
+        {{- end }}
       resources:
         {{- toYaml .Values.resources | nindent 8 }}
   volumes:
     - name: plan
       configMap:
         name: {{ include "sortie.configMapName" . }}
+    {{- if .Values.report.path }}
+    - name: report
+      {{- toYaml .Values.report.volume | nindent 6 }}
+    {{- end }}
   {{- with .Values.nodeSelector }}
   nodeSelector:
     {{- toYaml . | nindent 4 }}

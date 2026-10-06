@@ -21,7 +21,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -334,6 +336,230 @@ func TestWeightedTargetsRunConcurrentlyAgainstTheEngine(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "PASS  3/3 executions passed") {
 		t.Errorf("sortie output lacks the PASS verdict")
+	}
+}
+
+// A plan with live metrics: the statsd sink, to a UDP socket this test owns.
+const statsPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+stats:
+  flush_interval: 1s
+  statsd:
+    address: "%s"
+defaults:
+  pool: local
+  target: http://127.0.0.1:%d/
+  protocol: http1
+  concurrency: "1"
+  connections: 2
+scenarios:
+  - name: Live Metrics
+    executor:
+      type: constant-rate
+      rate: 50
+      duration: 4s
+    thresholds:
+      - "counter:benchmark.http_5xx == 0"
+`
+
+// awaitStatsdLines waits until every pattern has matched some line the UDP
+// reader has collected, and returns the patterns still unmatched when the wait
+// runs out. The run ending says the engine has sent its datagrams, not that
+// this process's reader goroutine has read them: one still queued in the
+// socket would be missed by a single look.
+func awaitStatsdLines(mu *sync.Mutex, lines *[]string, patterns map[string]*regexp.Regexp) []string {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		var missing []string
+		for name, re := range patterns {
+			seen := false
+			for _, l := range *lines {
+				if re.MatchString(l) {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				missing = append(missing, name)
+			}
+		}
+		mu.Unlock()
+		if len(missing) == 0 || time.Now().After(deadline) {
+			sort.Strings(missing)
+			return missing
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestLiveMetricsReachAStatsdSink(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tmp := t.TempDir()
+
+	// The statsd "server": every datagram's lines, collected.
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { udp.Close() })
+	var mu sync.Mutex
+	var lines []string
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, _, err := udp.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			lines = append(lines, strings.Split(strings.TrimSpace(string(buf[:n])), "\n")...)
+			mu.Unlock()
+		}
+	}()
+	configPath := filepath.Join(tmp, "test_server.yaml")
+	if err := os.WriteFile(configPath, []byte(testServerConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adminPath := filepath.Join(tmp, "admin_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_test_server"),
+		"--config-path", configPath, "--admin-address-path", adminPath,
+		"--disable-hot-restart", "--concurrency", "1")
+	targetPort := listenerPort(t, waitForAddress(t, adminPath))
+
+	servicePath := filepath.Join(tmp, "service_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath)
+	serviceAddr := waitForAddress(t, servicePath)
+	assertHealthy(t, ctx, serviceAddr)
+
+	planPath := filepath.Join(tmp, "plan.yaml")
+	plan := fmt.Sprintf(statsPlanTemplate, serviceAddr, udp.LocalAddr().String(), targetPort)
+	if err := os.WriteFile(planPath, []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath)
+	out, err := cmd.CombinedOutput()
+	t.Logf("sortie run:\n%s", out)
+	if err != nil {
+		t.Fatalf("sortie run failed: %v", err)
+	}
+
+	// The scenario's name, sanitized, under the default prefix; a counter the
+	// engine keeps in its store, and a latency sample as a statsd timer.
+	missing := awaitStatsdLines(&mu, &lines, map[string]*regexp.Regexp{
+		"an http_2xx counter": regexp.MustCompile(`^sortie\.live_metrics\..*benchmark\.http_2xx:\d+\|c`),
+		"a latency timer":     regexp.MustCompile(`^sortie\.live_metrics\..*latency.*:\d+(\.\d+)?\|ms`),
+	})
+	mu.Lock()
+	t.Logf("statsd received %d lines; a sample:\n%s", len(lines), strings.Join(lines[:min(len(lines), 40)], "\n"))
+	mu.Unlock()
+	for _, m := range missing {
+		t.Errorf("%s under sortie.live_metrics did not reach the statsd socket", m)
+	}
+}
+
+// Weighted targets with live metrics: three executions at once on one backend,
+// each with its own stats sink and its own flush worker inside the engine,
+// each emitting under its own prefix. This is the per-target dashboard a soak
+// reads, and the case in which several flush workers are alive in one engine.
+const weightedStatsPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+stats:
+  flush_interval: 1s
+  statsd:
+    address: "%s"
+defaults:
+  pool: local
+  protocol: http1
+  concurrency: "1"
+  connections: 2
+scenarios:
+  - name: mix
+    executor:
+      type: constant-rate
+      rate: 60
+      duration: 4s
+    targets:
+      - {name: a, url: "http://127.0.0.1:%d/a", weight: 3}
+      - {name: b, url: "http://127.0.0.1:%d/b", weight: 2}
+      - {name: c, url: "http://127.0.0.1:%d/c", weight: 1}
+    thresholds:
+      - "counter:benchmark.http_5xx == 0"
+`
+
+func TestWeightedTargetsEachEmitTheirOwnLiveMetrics(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tmp := t.TempDir()
+
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { udp.Close() })
+	var mu sync.Mutex
+	var lines []string
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, _, err := udp.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			lines = append(lines, strings.Split(strings.TrimSpace(string(buf[:n])), "\n")...)
+			mu.Unlock()
+		}
+	}()
+
+	configPath := filepath.Join(tmp, "test_server.yaml")
+	if err := os.WriteFile(configPath, []byte(testServerConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adminPath := filepath.Join(tmp, "admin_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_test_server"),
+		"--config-path", configPath, "--admin-address-path", adminPath,
+		"--disable-hot-restart", "--concurrency", "1")
+	targetPort := listenerPort(t, waitForAddress(t, adminPath))
+
+	servicePath := filepath.Join(tmp, "service_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath,
+		"--max-concurrent-executions", "4")
+	serviceAddr := waitForAddress(t, servicePath)
+	assertHealthy(t, ctx, serviceAddr)
+
+	planPath := filepath.Join(tmp, "plan.yaml")
+	plan := fmt.Sprintf(weightedStatsPlanTemplate, serviceAddr, udp.LocalAddr().String(), targetPort, targetPort, targetPort)
+	if err := os.WriteFile(planPath, []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath)
+	out, err := cmd.CombinedOutput()
+	t.Logf("sortie run:\n%s", out)
+	if err != nil {
+		t.Fatalf("sortie run failed: %v", err)
+	}
+	if !strings.Contains(string(out), "PASS  3/3 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict")
+	}
+
+	want := map[string]*regexp.Regexp{}
+	for _, target := range []string{"a", "b", "c"} {
+		want["an http_2xx counter under sortie.mix."+target] = regexp.MustCompile(`^sortie\.mix\.` + target + `\..*benchmark\.http_2xx:\d+\|c`)
+	}
+	for _, m := range awaitStatsdLines(&mu, &lines, want) {
+		t.Errorf("%s did not reach the statsd socket", m)
 	}
 }
 

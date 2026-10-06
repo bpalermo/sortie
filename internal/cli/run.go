@@ -43,7 +43,7 @@ func newRunCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "write the report as JSON")
-	cmd.Flags().StringVarP(&out, "output", "o", "", "write the report to this file instead of stdout")
+	cmd.Flags().StringVarP(&out, "output", "o", "", "write the report to this file; stdout then gets the text summary")
 	cmd.Flags().DurationVar(&progress, "progress", 0,
 		"print each backend's progress this often while it runs, on stderr (0: only when it finishes)")
 	return cmd
@@ -114,6 +114,14 @@ func runPlan(parent context.Context, path string, asJSON bool, out string, progr
 	}
 	if err != nil {
 		return err
+	}
+	// With the report in a file, stdout still gets the readable summary: in a
+	// pod that is the log, and a run whose only record is a file on a volume
+	// nobody mounted afterwards has no record at all.
+	if out != "" {
+		if err := report.Text(stdout, r); err != nil {
+			return err
+		}
 	}
 	if runErr != nil {
 		return runErr

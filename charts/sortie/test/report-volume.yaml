@@ -1,0 +1,10 @@
+# Values for the template test that renders a durable report: the output
+# arguments, and the volume they write to, on the Job's pod.
+report:
+  path: /var/run/sortie/report.json
+  volume:
+    persistentVolumeClaim:
+      claimName: soak-reports
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 65532

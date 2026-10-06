@@ -77,7 +77,7 @@ moves the pin and everything that has to move with it (see `AGENTS.md`).
 
 | Command | What it does |
 | --- | --- |
-| `sortie run <plan.yaml>` | Run the plan and report a verdict. `-json` for CI, `-o FILE` to redirect, `--progress 5s` to narrate each backend's run on stderr. |
+| `sortie run <plan.yaml>` | Run the plan and report a verdict. `--json` for CI, `-o FILE` to write the report to a file (stdout then gets the text summary), `--progress 5s` to narrate each backend's run on stderr. |
 | `sortie validate <plan.yaml>` | Check the plan without running anything. |
 | `sortie compile <plan.yaml>` | Print the `CommandLineOptions` it would send to each backend. |
 
@@ -431,6 +431,67 @@ This mirrors how upstream Nighthawk's adaptive load controller (not carried in `
 for every Nighthawk flag — transport sockets, request-source plugins,
 tunnelling and user-defined output plugins are all reachable without one.
 
+## Live metrics
+
+The report arrives when a run ends. To watch a run while it is running, give
+the plan a `stats` block and the engine flushes its metrics to a statsd server:
+
+```yaml
+stats:
+  flush_interval: 5s
+  statsd:
+    address: "10.96.14.7:8125"   # an OpenTelemetry collector's statsd receiver
+```
+
+At the top of a plan it applies to every scenario. A scenario's own `stats`
+replaces it wholesale. The report at the end is unaffected.
+
+What goes out is everything the engine keeps in its Envoy stats store: the
+`benchmark.*` counters thresholds are written against, Envoy's own cluster
+counters (`upstream_cx_total`, `upstream_rq_total`, and so on), and every
+latency sample as a statsd timer in milliseconds. Names are
+
+```
+<prefix>.<scenario>.cluster.<worker>.benchmark.http_2xx                   counter
+<prefix>.<scenario>.cluster.<worker>.benchmark_http_client.latency_2xx   timer, ms
+```
+
+`prefix` defaults to `sortie`. The scenario's label is lowercased and reduced
+to `[a-z0-9_]`, with a `/` becoming a level of its own, so `Live Metrics`
+is `sortie.live_metrics` and stage 2 of a staircase named `ramp` is
+`sortie.ramp.stage_2`. That is what tells scenarios, stages and targets apart
+on a dashboard. Counters are per worker; sum over the worker to get a
+backend's total, and over backends to get the pool's.
+
+Three limits, each deliberate:
+
+- **The statsd address is an IP, not a name.** Envoy's statsd sink does not
+  resolve names, and a name would fail on the backend with the plan already
+  dispatched, so the plan is refused instead. In Kubernetes use the Service's
+  cluster IP.
+- **UDP only.** Envoy's TCP statsd sink addresses a cluster of the bootstrap,
+  and the engine writes its bootstrap itself.
+- **No OpenTelemetry sink.** Envoy's OTLP sink aborts the engine on its first
+  flush here: its gRPC client must be used on the thread that created it, and
+  the engine creates sinks on its main thread and flushes them on another. To
+  reach an OpenTelemetry collector, send statsd to its statsd receiver.
+
+`stats.sinks` takes other Envoy stats sinks, written as they would be in an
+Envoy bootstrap, and passes them through, so the prefix scheme above does not
+apply to them. It reaches the sinks whose configuration is an
+`envoy.config.metrics.v3` message -- `dog_statsd`, `statsd`, `hystrix`,
+`metrics_service` -- because sortie decodes the plan's `typed_config` and
+links those types only. A sink configured by an extension's own message, such
+as `graphite_statsd`, fails when the plan is parsed. The OpenTelemetry sink is
+refused there too, and so is the engine's own adapter: name the Envoy sink and
+sortie wraps it.
+
+Because the statsd prefix is built from sanitized labels, two scenarios can
+land on one: names that differ only in case or punctuation, or a scenario
+named `ramp/stage-1` beside a staircase named `ramp`. A plan in which two
+statsd-reporting executions would share a prefix is refused; rename one, or
+give them different `prefix` values.
+
 ## Thresholds
 
 Thresholds are `<metric> <op> <value>` strings. Operators are `<`, `<=`, `>`,
@@ -659,6 +720,23 @@ own, so create it yourself.
 
 A CronJob has the same property for free: by the time its schedule fires, the
 engines have long been up.
+
+The report is the pod's log unless you keep it. `report.path` with a
+`report.volume` writes it to a file on a volume of your choosing, as JSON by
+default, and the readable summary still goes to the log:
+
+```yaml
+report:
+  path: /var/run/sortie/report.json
+  volume:
+    persistentVolumeClaim: {claimName: soak-reports}
+podSecurityContext: {runAsNonRoot: true, fsGroup: 65532}
+```
+
+The next run on the same volume and path overwrites the file. The volume is
+mounted at the file's directory, so give the file a directory of its own: a
+path directly under `/` or `/etc`, or at or under `/sortie` or `/etc/sortie`,
+is refused.
 
 The Job and the engine come up together, so sortie waits up to 30 seconds for
 each backend to accept connections before the run starts; a backend that is

@@ -62,6 +62,9 @@ type (
 	Target   = planv1.Target
 	Executor = planv1.Executor
 	Stage    = planv1.Stage
+
+	Stats  = planv1.Stats
+	Statsd = planv1.Statsd
 )
 
 // Load reads and validates a plan from path.

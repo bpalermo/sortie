@@ -99,6 +99,30 @@ engine:
 args:
   - run
 
+# Keep the report after the pod is gone. With a path, sortie writes the report
+# there (--output) and still prints the readable summary to the pod's log. The
+# volume is yours to choose and is rendered as written: a PVC for a report that
+# outlives the Job, an emptyDir for a sidecar to ship.
+#
+#   report:
+#     path: /var/run/sortie/report.json
+#     volume:
+#       persistentVolumeClaim: {claimName: soak-reports}
+#
+# The file is overwritten by the next run that uses the same volume and path;
+# a CronJob that should keep every run needs something to move it. The
+# container runs as a non-root user with a read-only root filesystem, so the
+# volume has to be writable by it (podSecurityContext.fsGroup).
+report:
+  # Absolute path of the report file, in a directory of its own: the volume is
+  # mounted at that directory, so /, /etc, /sortie and /etc/sortie are refused. Empty: the
+  # report goes to the pod's log only.
+  path: ""
+  # json or text.
+  format: json
+  # The pod volume to write it to, without a name. Required with path.
+  volume: {}
+
 # Run on a schedule instead of once. A load test that runs once is a gate; one
 # that runs on a schedule is a canary.
 cronJob:
