@@ -49,6 +49,24 @@ helm_template_test(
     values = ["test/engine-enabled.yaml"],
 )
 
+# One engine per node: the DaemonSet, the headless Service, and the scheduling
+# and mesh-injection knobs on both pods.
+helm_template_test(
+    name = "sortie_engine_daemonset_template_test",
+    size = "small",
+    chart = ":sortie",
+    values = ["test/engine-daemonset.yaml"],
+)
+
+# The engine alone (job.enabled: false), which is how a DaemonSet of engines is
+# installed before the first run.
+helm_template_test(
+    name = "sortie_engine_only_template_test",
+    size = "small",
+    chart = ":sortie",
+    values = ["test/engine-only.yaml"],
+)
+
 filegroup(
     name = "starlark_srcs",
     srcs = glob(

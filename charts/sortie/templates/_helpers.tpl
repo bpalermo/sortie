@@ -19,6 +19,82 @@ cut to leave room for the suffix.
 {{- printf "%s-engine" (include "sortie.fullname" . | trunc 56 | trimSuffix "-") -}}
 {{- end -}}
 
+{{/*
+The engine's workload kind, checked: a misspelt kind would otherwise render
+nothing at all and install a Service pointing at no pods.
+*/}}
+{{- define "sortie.engineKind" -}}
+{{- $kind := .Values.engine.kind | default "Deployment" -}}
+{{- if not (has $kind (list "Deployment" "DaemonSet")) -}}
+{{- fail (printf "engine.kind must be Deployment or DaemonSet, got %q" $kind) -}}
+{{- end -}}
+{{- $kind -}}
+{{- end -}}
+
+{{/*
+The engine's pod template, shared by the Deployment and the DaemonSet so the
+two cannot drift. Which one owns it is engine.kind; the pod is the same.
+*/}}
+{{- define "sortie.enginePodTemplate" -}}
+metadata:
+  labels:
+    {{- include "sortie.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: engine
+    {{- with .Values.engine.podLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.engine.podAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  serviceAccountName: {{ include "sortie.serviceAccountName" . }}
+  automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+  {{- with .Values.engine.priorityClassName }}
+  priorityClassName: {{ . }}
+  {{- end }}
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    - name: engine
+      image: {{ .Values.engine.image.ref | quote }}
+      imagePullPolicy: {{ .Values.engine.image.pullPolicy }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      # The image's entrypoint is nighthawk_service.
+      args:
+        - --listen
+        - 0.0.0.0:8443
+      ports:
+        - name: grpc
+          containerPort: 8443
+          protocol: TCP
+      # nighthawk_service serves grpc.health.v1.Health, which is what the
+      # kubelet's gRPC probe queries; the image has no shell or curl, so a
+      # probe has to be one the kubelet performs itself.
+      readinessProbe:
+        grpc:
+          port: 8443
+      livenessProbe:
+        grpc:
+          port: 8443
+        initialDelaySeconds: 10
+      resources:
+        {{- toYaml .Values.engine.resources | nindent 8 }}
+  {{- with .Values.engine.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.engine.affinity }}
+  affinity:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.engine.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end -}}
+
 {{- define "sortie.labels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 app.kubernetes.io/name: {{ include "sortie.name" . }}
@@ -88,6 +164,9 @@ place rather than start a new run.
 metadata:
   labels:
     {{- include "sortie.selectorLabels" . | nindent 4 }}
+    {{- with .Values.podLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
   {{- with .Values.podAnnotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -95,6 +174,9 @@ metadata:
 spec:
   restartPolicy: Never
   serviceAccountName: {{ include "sortie.serviceAccountName" . }}
+  {{- with .Values.priorityClassName }}
+  priorityClassName: {{ . }}
+  {{- end }}
   # sortie makes outbound gRPC calls and never touches the Kubernetes API, so a
   # mounted bearer token is a credential a compromised load generator could use
   # and nothing else.

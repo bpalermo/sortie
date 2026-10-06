@@ -1,13 +1,16 @@
-{{- if and .Values.engine.enabled (eq (include "sortie.engineKind" .) "Deployment") -}}
+{{- if and .Values.engine.enabled (eq (include "sortie.engineKind" .) "DaemonSet") -}}
+# One engine per node, so each node's share of a run -- and, behind a mesh,
+# each node's proxy -- carries its own load. The Service in front of it is
+# headless: a plan finds the pods through DNS (a `dns:` pool) rather than by
+# listing them.
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: {{ include "sortie.engineName" . }}
   labels:
     {{- include "sortie.labels" . | nindent 4 }}
     app.kubernetes.io/component: engine
 spec:
-  replicas: {{ .Values.engine.replicas }}
   selector:
     matchLabels:
       {{- include "sortie.selectorLabels" . | nindent 6 }}

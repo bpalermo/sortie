@@ -112,6 +112,30 @@ no released binary hosts it and `nighthawk_service` does not. Using a
 distributor pool means building a host for that service yourself. The direct
 `services:` pool is the path that works out of the box.
 
+### pools found through DNS
+
+```yaml
+pools:
+  - name: nodes
+    dns: nightly-sortie-engine.loadtest.svc.cluster.local:8443
+```
+
+`sortie run` resolves the host's A and AAAA records once, when it starts, and
+drives every address it got at that port for the whole run. A Kubernetes
+headless Service answers with one address per ready pod, so a DaemonSet of
+engines behind one is a pool of one backend per node that needs no editing
+when nodes come and go.
+
+The addresses are sorted, so the backend order is a property of the addresses
+and not of the order the name server answered in, and the report says what the
+name resolved to: it is the only record of which nodes a run drove. A name that
+answers with nothing is retried for up to 30 seconds, because a headless
+Service lists a pod only once it is ready; nothing after that is an error
+before any load is generated, with exit code 2. A node that joins during a run
+gets no load, and one that leaves fails its backend's execution visibly rather
+than silently shrinking the pool. `validate` and `compile` accept the pool
+without resolving it.
+
 ## Executors
 
 | Type | Shape |
@@ -137,6 +161,21 @@ Two things follow, both deliberate:
   refuses.
 - `concurrency: "auto"` cannot be combined with a rate, because the worker count
   is decided on the backend and sortie cannot divide by a number it does not know.
+
+### per_backend makes rate each backend's
+
+```yaml
+executor: {type: constant-rate, rate: 60, duration: 8h, per_backend: true}
+```
+
+With `per_backend: true`, `rate` (and each stage's rate) is what every backend
+generates rather than the pool's total, so the load scales with the pool
+instead of being spread over it. It is written for a DNS pool of one engine
+per node: 60 rps per node stays 60 rps per node however many nodes the name
+resolves to. The divisibility rule then concerns `rate / concurrency` alone,
+and the report labels the rate `rps per backend`. On a distributor pool it is
+what every target receives anyway, since the distributor forwards one request
+unchanged to each.
 
 ### staircase stages are separate runs
 
@@ -496,6 +535,66 @@ The chart runs a plan as a Job, or as a CronJob with `cronJob.enabled=true`.
 The plan is held in a ConfigMap and mounted read-only, so changing a run does
 not mean republishing anything. The Job's exit code is the verdict: a breached
 threshold fails it, and a malformed plan fails it differently.
+
+### One loader per node
+
+To load every node's proxy from that node -- a service-mesh soak -- run the
+engine as a DaemonSet and let the plan find its pods:
+
+```console
+helm install nightly oci://quay.io/sortie/chart-sortie --version <chart version> \
+  --namespace loadtest --values values.yaml --set-file plan=plan.yaml
+```
+
+```yaml
+# values.yaml
+engine:
+  enabled: true
+  kind: DaemonSet                       # the Service becomes headless
+  priorityClassName: loadgen            # a class you create; see below
+  tolerations: [{operator: Exists}]
+  podAnnotations: {mesh.example.com/inject: "true"}
+  resources:
+    requests: {cpu: 500m, memory: 256Mi}
+podAnnotations: {mesh.example.com/inject: "true"}   # the sortie pod itself
+```
+
+```yaml
+# plan.yaml
+version: v1
+pools:
+  - name: nodes
+    dns: nightly-sortie-engine.loadtest.svc.cluster.local:8443
+scenarios:
+  - name: soak
+    pool: nodes
+    target: http://orders.shop.svc.cluster.local:8080/
+    executor:
+      type: constant-rate
+      rate: 60
+      duration: 8h
+      per_backend: true
+      open_loop: true
+    thresholds:
+      - "counter:benchmark.http_5xx == 0"
+```
+
+The engine is the pod that opens the connections, so it is the one a mesh has
+to inject; `engine.podAnnotations` and `engine.podLabels` are for that, and the
+same pair at the top level is for the sortie pod, which a mesh treats like any
+other.
+
+A DaemonSet pod cannot move, so when its node fills up it is evicted rather
+than rescheduled and the run loses that node. `engine.priorityClassName` names
+a PriorityClass above the workloads under test, which makes one of them the
+eviction victim instead. The class is cluster-scoped and not the chart's to
+own, so create it yourself.
+
+The name is resolved once, at the start of the run, so the backends are the
+engine pods that are ready at that moment. To keep a run from starting against
+a DaemonSet that is still rolling out, install the engine alone first
+(`--set job.enabled=false`) and add the plan with an upgrade, or run the plan
+as a CronJob.
 
 The Job and the engine come up together, so sortie waits up to 30 seconds for
 each backend to accept connections before the run starts; a backend that is

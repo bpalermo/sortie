@@ -3,7 +3,9 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -23,10 +25,18 @@ type ExecutionReport struct {
 	Scenario string
 	Pool     string
 	Rate     uint32
-	Duration time.Duration
-	RampTime time.Duration
-	Started  time.Time
-	Elapsed  time.Duration
+	// PerBackend says Rate is each backend's rather than the pool's total.
+	PerBackend bool
+	Duration   time.Duration
+	RampTime   time.Duration
+	Started    time.Time
+	Elapsed    time.Duration
+
+	// Backends are the addresses the execution was dispatched to, in order --
+	// set whether or not the dispatch succeeded, so a failed run still says
+	// where it was going. Dns is the name they came from, for a dns pool.
+	Backends []string
+	Dns      string
 
 	Set      *result.Set
 	Outcomes []result.Outcome
@@ -56,9 +66,27 @@ type Runner struct {
 	// behind a distributor report nothing until they finish.
 	ProgressInterval time.Duration
 
+	// Resolver looks up the dns pools' names when the run starts. nil means
+	// net.DefaultResolver.
+	Resolver plan.Resolver
+
+	// ResolveTimeout bounds how long Run waits for a dns pool's name to answer
+	// with at least one address before giving up. Zero means resolveTimeout.
+	ResolveTimeout time.Duration
+
 	// Serializes the backends' progress callbacks into the Observer.
 	observerMu sync.Mutex
 }
+
+// resolveTimeout is how long a dns pool's name may answer with nothing before
+// the run fails, for the same reason nh.Dial waits for a backend: the engines
+// often start with the run that uses them -- the chart's DaemonSet comes up
+// beside its Job -- and a headless Service lists a pod only once it is ready.
+// Nothing after this long is an error.
+const resolveTimeout = 30 * time.Second
+
+// resolvePoll is how often an empty answer is asked again.
+const resolvePoll = time.Second
 
 // Observer receives progress callbacks. The Runner never calls it from two
 // goroutines at once: the backends' progress arrives concurrently and is
@@ -77,19 +105,28 @@ type Observer interface {
 // contend for the same Nighthawk instances, which accept a single execution at
 // a time, and two scenarios on different pools would still distort each
 // other's latency measurements if they share a target.
+//
+// The dns pools are resolved first, once, before the first execution, so every
+// scenario in the run drives the same backends; a failure there is returned
+// with no report, since nothing ran.
 func (r *Runner) Run(ctx context.Context) (*Report, error) {
+	p, err := r.resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	report := &Report{Pass: true}
 
-	for _, scenario := range r.Plan.GetScenarios() {
+	for _, scenario := range p.GetScenarios() {
 		executions, err := compile.Expand(scenario)
 		if err != nil {
 			return nil, err
 		}
-		thresholds, err := threshold.ParseAll(plan.EffectiveThresholds(r.Plan, scenario))
+		thresholds, err := threshold.ParseAll(plan.EffectiveThresholds(p, scenario))
 		if err != nil {
 			return nil, fmt.Errorf("scenario %q: %w", scenario.GetName(), err)
 		}
-		pool := plan.PoolFor(r.Plan, scenario)
+		pool := plan.PoolFor(p, scenario)
 
 		for _, e := range executions {
 			er := r.runExecution(ctx, e, pool, thresholds)
@@ -108,6 +145,50 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 	return report, nil
 }
 
+// resolve returns the plan with its dns pools resolved, waiting up to
+// ResolveTimeout for a name that answers with nothing. Every other failure --
+// a name that does not exist, a resolver error -- is returned at once; so is
+// an empty answer once the wait is over, as the same ResolveError.
+func (r *Runner) resolve(ctx context.Context) (*plan.Plan, error) {
+	resolver := r.Resolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	timeout := r.ResolveTimeout
+	if timeout <= 0 {
+		timeout = resolveTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		p, err := plan.Resolve(ctx, r.Plan, resolver)
+		if err == nil {
+			return p, nil
+		}
+		// A lookup that errored is final; only an answer that is empty for
+		// now is worth asking again, and only while there is time.
+		var re *plan.ResolveError
+		if !errors.As(err, &re) || !emptyAnswer(re) || !time.Now().Before(deadline) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(resolvePoll):
+		}
+	}
+}
+
+// emptyAnswer reports whether a ResolveError is a name that exists but has no
+// address yet. A Kubernetes headless Service with no ready pod answers either
+// with no record or with NXDOMAIN, so both count.
+func emptyAnswer(re *plan.ResolveError) bool {
+	var dnsErr *net.DNSError
+	if errors.As(re.Err, &dnsErr) {
+		return dnsErr.IsNotFound
+	}
+	return errors.Is(re.Err, plan.ErrNoAddress)
+}
+
 func (r *Runner) runExecution(
 	ctx context.Context,
 	e compile.Execution,
@@ -115,19 +196,22 @@ func (r *Runner) runExecution(
 	thresholds []threshold.Threshold,
 ) ExecutionReport {
 	er := ExecutionReport{
-		Label:    e.Label,
-		Scenario: e.Scenario.Name,
-		Pool:     pool.Name,
-		Rate:     e.Rate,
-		Duration: e.Duration,
-		RampTime: e.RampTime,
-		Started:  time.Now(),
+		Label:      e.Label,
+		Scenario:   e.Scenario.Name,
+		Pool:       pool.Name,
+		Rate:       e.Rate,
+		PerBackend: e.PerBackend,
+		Duration:   e.Duration,
+		RampTime:   e.RampTime,
+		Started:    time.Now(),
+		Dns:        pool.Dns,
 	}
 
 	backends := pool.Services
 	if pool.Distributor != "" {
 		backends = pool.Targets
 	}
+	er.Backends = backends
 	if r.Observer != nil {
 		r.Observer.ExecutionStarted(e, backends)
 	}

@@ -8,6 +8,12 @@ metadata:
     app.kubernetes.io/component: engine
 spec:
   type: ClusterIP
+  {{- if eq (include "sortie.engineKind" .) "DaemonSet" }}
+  # Headless: DNS answers with one address per ready engine pod, which is
+  # what a plan's `dns:` pool resolves into its backends. A ClusterIP would
+  # be one address reaching one pod at random, the opposite of one per node.
+  clusterIP: None
+  {{- end }}
   selector:
     {{- include "sortie.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: engine

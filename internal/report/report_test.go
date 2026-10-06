@@ -271,3 +271,56 @@ func TestReportersHandleAFailedExecution(t *testing.T) {
 type errFake struct{}
 
 func (errFake) Error() string { return "boom" }
+
+// A dns pool's backends were decided when the run started, so the report is
+// the only record of which nodes a run drove: both renderings list them with
+// the name they came from, and say the rate was per backend.
+func TestReportsListTheBackendsADnsPoolResolvedTo(t *testing.T) {
+	r := reportWith(t, time.Millisecond)
+	r.Executions[0].Dns = "nightly-sortie-engine.aether-test.svc.cluster.local:8443"
+	r.Executions[0].Backends = []string{"10.0.1.9:8443", "10.0.2.5:8443"}
+	r.Executions[0].PerBackend = true
+
+	var text bytes.Buffer
+	if err := report.Text(&text, r); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"100 rps per backend for 10s",
+		"nightly-sortie-engine.aether-test.svc.cluster.local:8443 resolved to 10.0.1.9:8443, 10.0.2.5:8443",
+	} {
+		if !strings.Contains(text.String(), want) {
+			t.Errorf("text report is missing %q:\n%s", want, text.String())
+		}
+	}
+
+	var jsonBuf bytes.Buffer
+	if err := report.JSON(&jsonBuf, r); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Executions []struct {
+			Dns        string   `json:"dns"`
+			Backends   []string `json:"backends"`
+			PerBackend bool     `json:"per_backend"`
+		} `json:"executions"`
+	}
+	if err := json.Unmarshal(jsonBuf.Bytes(), &got); err != nil {
+		t.Fatalf("JSON report does not parse: %v\n%s", err, jsonBuf.String())
+	}
+	e := got.Executions[0]
+	if e.Dns != r.Executions[0].Dns || !e.PerBackend || strings.Join(e.Backends, " ") != "10.0.1.9:8443 10.0.2.5:8443" {
+		t.Errorf("execution = %+v", e)
+	}
+}
+
+// Without a dns pool nothing changes: no resolution line, plain rps.
+func TestReportsSayNothingAboutDnsForAServicesPool(t *testing.T) {
+	var text bytes.Buffer
+	if err := report.Text(&text, reportWith(t, time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text.String(), "resolved to") || strings.Contains(text.String(), "per backend") {
+		t.Errorf("a services pool has nothing to resolve:\n%s", text.String())
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +16,15 @@ import (
 	"github.com/bpalermo/sortie/internal/plan"
 	"github.com/bpalermo/sortie/internal/report"
 	"github.com/bpalermo/sortie/internal/run"
+)
+
+// resolver looks dns pools up when a run starts, and resolveTimeout bounds
+// the wait for a name that answers with nothing (zero: the runner's default).
+// Package variables so the tests can substitute a fake and neither need a
+// network nor wait out the grace period.
+var (
+	resolver       plan.Resolver = net.DefaultResolver
+	resolveTimeout time.Duration
 )
 
 func newRunCmd() *cobra.Command {
@@ -71,9 +81,19 @@ func runPlan(parent context.Context, path string, asJSON bool, out string, progr
 		}
 	}()
 
-	runner := &run.Runner{Plan: p, Observer: report.Progress{W: stderr}, ProgressInterval: progress}
+	runner := &run.Runner{
+		Plan: p, Observer: report.Progress{W: stderr}, ProgressInterval: progress,
+		Resolver: resolver, ResolveTimeout: resolveTimeout,
+	}
 	r, runErr := runner.Run(ctx)
 	if r == nil {
+		// A dns pool that resolved to nothing failed before any load: the
+		// plan names something the environment does not have, which is the
+		// caller's problem, not the run's result.
+		var re *plan.ResolveError
+		if errors.As(runErr, &re) {
+			return &usageError{runErr}
+		}
 		return runErr
 	}
 

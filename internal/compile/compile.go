@@ -39,20 +39,26 @@ type Execution struct {
 	// Stage is the 1-based stage index, or 0 for a single-execution scenario.
 	Stage int
 
-	// Rate is the aggregate requests per second this execution targets across
-	// the whole pool, before it is divided among backends.
+	// Rate is the requests per second this execution targets: the aggregate
+	// across the whole pool, before it is divided among backends, or -- with
+	// PerBackend -- the rate of each backend.
 	Rate uint32
+
+	// PerBackend is the executor's per_backend: Rate is every backend's rate
+	// rather than the pool's total.
+	PerBackend bool
 
 	Duration time.Duration
 	RampTime time.Duration
 
 	// Options is the compiled request, with requests_per_second still set to
-	// the aggregate Rate. Divide returns the per-backend copies.
+	// Rate. Divide returns the per-backend copies.
 	Options *client.CommandLineOptions
 }
 
 // Expand turns a scenario into the executions it runs as.
 func Expand(s *plan.Scenario) ([]Execution, error) {
+	perBackend := s.Executor.GetPerBackend()
 	switch s.Executor.Type {
 	case plan.ConstantRate:
 		opts, err := options(s, s.Executor.Rate, s.Executor.Duration.AsDuration(), 0, s.Name)
@@ -60,7 +66,7 @@ func Expand(s *plan.Scenario) ([]Execution, error) {
 			return nil, err
 		}
 		return []Execution{{
-			Scenario: s, Label: s.Name, Rate: s.Executor.Rate,
+			Scenario: s, Label: s.Name, Rate: s.Executor.Rate, PerBackend: perBackend,
 			Duration: s.Executor.Duration.AsDuration(), Options: opts,
 		}}, nil
 
@@ -71,7 +77,7 @@ func Expand(s *plan.Scenario) ([]Execution, error) {
 			return nil, err
 		}
 		return []Execution{{
-			Scenario: s, Label: s.Name, Rate: s.Executor.Rate,
+			Scenario: s, Label: s.Name, Rate: s.Executor.Rate, PerBackend: perBackend,
 			Duration: s.Executor.Duration.AsDuration(), RampTime: ramp, Options: opts,
 		}}, nil
 
@@ -84,7 +90,7 @@ func Expand(s *plan.Scenario) ([]Execution, error) {
 				return nil, err
 			}
 			out = append(out, Execution{
-				Scenario: s, Label: label, Stage: i + 1, Rate: st.Rate,
+				Scenario: s, Label: label, Stage: i + 1, Rate: st.Rate, PerBackend: perBackend,
 				Duration: st.Duration.AsDuration(), Options: opts,
 			})
 		}
@@ -100,6 +106,13 @@ func Expand(s *plan.Scenario) ([]Execution, error) {
 // `compile` prints what `run` would send and `validate` refuses what `run`
 // would refuse. Computing the options separately in each command is how the
 // two drifted apart before.
+//
+// A dns pool has no backends until `run` resolves its name (plan.Resolve); the
+// runner does that before it gets here. Unresolved -- as validate and compile
+// see it -- the pool is treated as one backend: the rules that do not depend
+// on the backend count still apply, and the options returned are what one
+// backend receives, which with per_backend is what every backend receives.
+// Unresolved reports that case, so a caller can say so.
 func ForPool(e Execution, pool *plan.Pool) ([]string, []*client.CommandLineOptions, error) {
 	if pool.Distributor != "" {
 		opts, err := uniformShare(e, len(pool.Targets))
@@ -111,11 +124,24 @@ func ForPool(e Execution, pool *plan.Pool) ([]string, []*client.CommandLineOptio
 		// the caller must not divide it again.
 		return pool.Targets, []*client.CommandLineOptions{opts}, nil
 	}
+	if Unresolved(pool) {
+		opts, err := Divide(e, 1)
+		if err != nil {
+			return nil, nil, err
+		}
+		return []string{pool.Dns}, opts, nil
+	}
 	perBackend, err := Divide(e, len(pool.Services))
 	if err != nil {
 		return nil, nil, err
 	}
 	return pool.Services, perBackend, nil
+}
+
+// Unresolved reports whether pool is a dns pool whose name has not been
+// resolved into services yet.
+func Unresolved(pool *plan.Pool) bool {
+	return pool.GetDns() != "" && len(pool.GetServices()) == 0
 }
 
 // uniformShare computes the one CommandLineOptions sent when every backend must
@@ -126,6 +152,9 @@ func ForPool(e Execution, pool *plan.Pool) ([]string, []*client.CommandLineOptio
 // exactly by targets x workers. The alternative would be for a plan's rate to
 // mean something different on the distributor path than on the direct one,
 // which is worse than refusing the plan.
+//
+// With per_backend the one options object is exactly what the plan means:
+// every target receives the rate, so only the workers divide it.
 func uniformShare(e Execution, targets int) (*client.CommandLineOptions, error) {
 	if targets <= 0 {
 		return nil, fmt.Errorf("execution %q: pool has no targets", e.Label)
@@ -133,6 +162,16 @@ func uniformShare(e Execution, targets int) (*client.CommandLineOptions, error) 
 	workers, err := workersPerBackend(e.Scenario)
 	if err != nil {
 		return nil, fmt.Errorf("execution %q: %w", e.Label, err)
+	}
+
+	if e.PerBackend {
+		share, err := perBackendShare(e, workers)
+		if err != nil {
+			return nil, err
+		}
+		clone := cloneOptions(e.Options)
+		clone.RequestsPerSecond = wrapperspb.UInt32(backendRate(e, share, workers))
+		return clone, nil
 	}
 
 	divisor := uint32(targets) * uint32(workers)
@@ -160,6 +199,10 @@ func uniformShare(e Execution, targets int) (*client.CommandLineOptions, error) 
 // because Nighthawk takes an integer --rps per worker. That is reported as an
 // error rather than rounded: a load generator that silently produces a
 // different rate than the plan asked for is worse than one that refuses.
+//
+// With per_backend there is nothing to split: every backend gets the rate,
+// divided by its workers alone, and the backend count only sets how many
+// copies there are.
 func Divide(e Execution, backends int) ([]*client.CommandLineOptions, error) {
 	if backends <= 0 {
 		return nil, fmt.Errorf("execution %q: pool has no backends", e.Label)
@@ -169,37 +212,61 @@ func Divide(e Execution, backends int) ([]*client.CommandLineOptions, error) {
 		return nil, fmt.Errorf("execution %q: %w", e.Label, err)
 	}
 
-	if e.Rate%uint32(workers) != 0 {
-		return nil, fmt.Errorf(
-			"execution %q: rate %d is not divisible by %d workers per backend; "+
-				"use a rate that is a multiple of %d, or set a different concurrency",
-			e.Label, e.Rate, workers, workers)
-	}
-	perBackendTotal := e.Rate / uint32(workers)
+	// share is backend i's per-worker --rps.
+	var share func(i int) uint32
+	if e.PerBackend {
+		each, err := perBackendShare(e, workers)
+		if err != nil {
+			return nil, err
+		}
+		share = func(int) uint32 { return each }
+	} else {
+		if e.Rate%uint32(workers) != 0 {
+			return nil, fmt.Errorf(
+				"execution %q: rate %d is not divisible by %d workers per backend; "+
+					"use a rate that is a multiple of %d, or set a different concurrency",
+				e.Label, e.Rate, workers, workers)
+		}
+		perBackendTotal := e.Rate / uint32(workers)
 
-	if uint32(backends) > perBackendTotal {
-		return nil, fmt.Errorf(
-			"execution %q: rate %d over %d backends x %d workers leaves less than 1 rps per worker",
-			e.Label, e.Rate, backends, workers)
-	}
+		if uint32(backends) > perBackendTotal {
+			return nil, fmt.Errorf(
+				"execution %q: rate %d over %d backends x %d workers leaves less than 1 rps per worker",
+				e.Label, e.Rate, backends, workers)
+		}
 
-	base := perBackendTotal / uint32(backends)
-	remainder := perBackendTotal % uint32(backends)
+		base := perBackendTotal / uint32(backends)
+		remainder := perBackendTotal % uint32(backends)
+		share = func(i int) uint32 {
+			if uint32(i) < remainder {
+				return base + 1
+			}
+			return base
+		}
+	}
 
 	out := make([]*client.CommandLineOptions, 0, backends)
 	for i := range backends {
-		share := base
-		if uint32(i) < remainder {
-			share++
-		}
 		clone := cloneOptions(e.Options)
-		clone.RequestsPerSecond = wrapperspb.UInt32(backendRate(e, share, workers))
+		clone.RequestsPerSecond = wrapperspb.UInt32(backendRate(e, share(i), workers))
 		if backends > 1 {
 			clone.ExecutionId = wrapperspb.String(fmt.Sprintf("%s#%d", e.Label, i))
 		}
 		out = append(out, clone)
 	}
 	return out, nil
+}
+
+// perBackendShare is each worker's share of a per_backend rate: the rate over
+// the backend's workers, which has to be exact for the same reason as always.
+func perBackendShare(e Execution, workers int) (uint32, error) {
+	if e.Rate%uint32(workers) != 0 {
+		return 0, fmt.Errorf(
+			"execution %q: per-backend rate %d is not divisible by %d workers; "+
+				"use a rate that is a multiple of %d, or set a different concurrency",
+			e.Label, e.Rate, workers, workers)
+	}
+	return e.Rate / uint32(workers), nil
 }
 
 // backendRate turns a backend's per-worker share into the --rps it is sent.

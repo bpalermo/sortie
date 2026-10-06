@@ -4,6 +4,7 @@ go_library(
     name = "plan",
     srcs = [
         "defaults.go",
+        "dns.go",
         "plan.go",
         "validate.go",
     ],
@@ -22,6 +23,9 @@ go_library(
 go_test(
     name = "plan_test",
     size = "small",
-    srcs = ["plan_test.go"],
+    srcs = [
+        "dns_test.go",
+        "plan_test.go",
+    ],
     embed = [":plan"],
 )
