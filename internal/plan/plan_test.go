@@ -564,6 +564,29 @@ scenarios:
 scenarios:
   - {name: foo, stats: {statsd: {address: "10.0.0.1:8125"}}}
   - {name: Foo, stats: {prefix: sortie, statsd: {address: "10.0.0.1:8125"}}}`, "same prefix (sortie.foo)"},
+		"targets that differ only in case": {`
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+scenarios:
+  - name: mix
+    targets:
+      - {name: US-East, url: "http://127.0.0.1:1/a"}
+      - {name: us-east, url: "http://127.0.0.1:1/b"}`, "same prefix (sortie.mix.us_east)"},
+		"a target and a scenario of that name": {`
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+scenarios:
+  - name: mix
+    targets: [{name: a, url: "http://127.0.0.1:1/a"}]
+  - name: mix/a`, "same prefix (sortie.mix.a)"},
+		"a statsd port out of range": {`
+stats:
+  statsd: {address: "10.0.0.1:99999"}
+scenarios: [{name: a}]`, "not in 1..65535"},
+		"a statsd port of zero": {`
+stats:
+  statsd: {address: "10.0.0.1:0"}
+scenarios: [{name: a}]`, "not in 1..65535"},
 		"a dotted prefix that meets another": {`
 scenarios:
   - {name: b, stats: {prefix: x.a, statsd: {address: "10.0.0.1:8125"}}}

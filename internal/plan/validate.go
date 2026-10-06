@@ -500,9 +500,14 @@ func validateStats(st *Stats) error {
 	if st.GetStatsd() == nil {
 		return nil
 	}
-	host, _, err := net.SplitHostPort(st.GetStatsd().GetAddress())
+	host, port, err := net.SplitHostPort(st.GetStatsd().GetAddress())
 	if err != nil {
 		return fmt.Errorf("statsd.address: %w", err)
+	}
+	// SplitHostPort only separates the two; the range is checked here so that
+	// validate and compile, which builds a socket address from it, agree.
+	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+		return fmt.Errorf("statsd.address: port %q is not in 1..65535", port)
 	}
 	if net.ParseIP(host) == nil {
 		return fmt.Errorf("statsd.address: %q is not an IP address; the engine's statsd sink "+
@@ -579,12 +584,23 @@ func validateStatsPrefixes(p *Plan) error {
 		if executor == nil {
 			executor = p.GetDefaults().GetExecutor()
 		}
-		// The labels compile.Expand gives this scenario's executions.
-		labels := []string{s.GetName()}
-		if executor.GetType() == Staircase {
-			labels = labels[:0]
+		// Every label compile.Expand gives this scenario's executions: one per
+		// weighted target (its own or inherited from defaults), times one per
+		// staircase stage. Each must have a prefix no other execution in the
+		// plan has, in this scenario or another.
+		subject := s
+		if s.GetTarget() == "" && len(s.GetTargets()) == 0 && len(p.GetDefaults().GetTargets()) > 0 {
+			subject = proto.Clone(s).(*Scenario)
+			subject.Targets = p.GetDefaults().GetTargets()
+		}
+		var labels []string
+		for _, variant := range Variants(subject) {
+			if executor.GetType() != Staircase {
+				labels = append(labels, variant.GetName())
+				continue
+			}
 			for i := range executor.GetStages() {
-				labels = append(labels, fmt.Sprintf("%s/stage-%d", s.GetName(), i+1))
+				labels = append(labels, fmt.Sprintf("%s/stage-%d", variant.GetName(), i+1))
 			}
 		}
 		if len(StatsLabel(s.GetName())) == 0 {
@@ -594,11 +610,12 @@ func validateStatsPrefixes(p *Plan) error {
 		for _, label := range labels {
 			// The prefix as emitted: see compile.StatsPrefix.
 			prefix := StatsPrefix(st.GetPrefix(), label)
-			if other, dup := seen[prefix]; dup && other != s.GetName() {
-				return fmt.Errorf("scenarios %q and %q would emit their metrics under the same prefix (%s); "+
-					"rename one, or give them different stats.prefix values", other, s.GetName(), prefix)
+			if other, dup := seen[prefix]; dup {
+				return fmt.Errorf("executions %q and %q would emit their metrics under the same prefix (%s); "+
+					"rename a scenario or a target, or give the scenarios different stats.prefix values",
+					other, label, prefix)
 			}
-			seen[prefix] = s.GetName()
+			seen[prefix] = label
 		}
 	}
 	return nil
