@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-	"strings"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	metricsv3 "github.com/envoyproxy/go-control-plane/envoy/config/metrics/v3"
