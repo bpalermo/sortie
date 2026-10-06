@@ -16,8 +16,9 @@ func applyDefaults(p *Plan) {
 	d := p.GetDefaults()
 	// stats has a third level: the plan's own block is the default for every
 	// scenario, under defaults.stats. A scenario's block replaces either
-	// wholesale, so a plan that reports every scenario to statsd and one
-	// scenario that names an OTLP endpoint sends that scenario to OTLP only.
+	// wholesale, so a plan that reports every scenario to one statsd server
+	// and one scenario that names another sends that scenario to the other
+	// only, under its own prefix and flush interval.
 	for _, s := range p.GetScenarios() {
 		if s.GetStats() == nil {
 			switch {

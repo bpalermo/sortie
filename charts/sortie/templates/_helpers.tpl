@@ -203,12 +203,18 @@ The format of the report file, checked.
 {{- if not (isAbs .Values.report.path) -}}
 {{- fail (printf "report.path must be an absolute file path, got %q" .Values.report.path) -}}
 {{- end -}}
-{{- /* The volume is mounted at the file's directory. At / it would replace
-the whole image, the sortie binary included; at /etc/sortie it would replace
-the plan. */ -}}
-{{- $dir := dir (clean .Values.report.path) -}}
-{{- if or (eq $dir "/") (eq $dir "/etc/sortie") (hasPrefix "/etc/sortie/" $dir) -}}
-{{- fail (printf "report.path %q would mount the report volume at %s, over the image or the plan; put the file in a directory of its own, such as /var/run/sortie" .Values.report.path $dir) -}}
+{{- /* The volume is mounted at the file's directory, so that directory must
+not be one the image needs: / is the whole image, /sortie is the binary the
+container runs, /etc holds the plan's mount, and /etc/sortie is the plan. */ -}}
+{{- $path := clean .Values.report.path -}}
+{{- $dir := dir $path -}}
+{{- range $reserved := list "/sortie" "/etc/sortie" -}}
+{{- if or (eq $path $reserved) (eq $dir $reserved) (hasPrefix (printf "%s/" $reserved) $dir) -}}
+{{- fail (printf "report.path %q is at or under %s, which the container needs; put the file in a directory of its own, such as /var/run/sortie" $.Values.report.path $reserved) -}}
+{{- end -}}
+{{- end -}}
+{{- if or (eq $dir "/") (eq $dir "/etc") -}}
+{{- fail (printf "report.path %q would mount the report volume at %s, over the image; put the file in a directory of its own, such as /var/run/sortie" .Values.report.path $dir) -}}
 {{- end -}}
 {{- $format -}}
 {{- end -}}

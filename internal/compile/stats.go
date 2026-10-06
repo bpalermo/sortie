@@ -26,29 +26,15 @@ const (
 
 	StatsdSink = "envoy.stat_sinks.statsd"
 
-	// DefaultStatsPrefix is the first component of every metric name when a
-	// stats block sets no prefix.
-	DefaultStatsPrefix = "sortie"
+	// DefaultStatsPrefix is plan.DefaultStatsPrefix.
+	DefaultStatsPrefix = plan.DefaultStatsPrefix
 )
 
-// The label's part is plan.StatsLabel, which plan validation also uses to
-// refuse two scenarios whose metrics would land under one prefix.
-//
-// StatsPrefix is the prefix the sinks of an execution emit their metrics
-// under: the stats block's prefix (or DefaultStatsPrefix), then the
-// execution's label with each `/`-separated segment lowercased and reduced to
-// [a-z0-9_], joined with dots. Envoy stats names allow [a-zA-Z0-9_.-]; the dot
-// is kept for the separator only, so a label can never add a level of its own.
-//
-//	StatsPrefix("", "smoke")          == "sortie.smoke"
-//	StatsPrefix("", "smoke/stage-2")  == "sortie.smoke.stage_2"
-//	StatsPrefix("soak", "Checkout/eu") == "soak.checkout.eu"
-func StatsPrefix(prefix, label string) string {
-	if prefix == "" {
-		prefix = DefaultStatsPrefix
-	}
-	return strings.Join(append([]string{prefix}, plan.StatsLabel(label)...), ".")
-}
+// StatsPrefix is plan.StatsPrefix: the prefix an execution's statsd sink
+// emits under. It lives in the plan package so that plan validation, which
+// refuses two executions that would share one, computes exactly what is
+// compiled here.
+func StatsPrefix(prefix, label string) string { return plan.StatsPrefix(prefix, label) }
 
 // applyStats adds a stats block's sinks to the options, after the sinks a
 // template may carry, and sets the flush interval when the block names one.

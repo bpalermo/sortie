@@ -115,7 +115,7 @@ args:
 # volume has to be writable by it (podSecurityContext.fsGroup).
 report:
   # Absolute path of the report file, in a directory of its own: the volume is
-  # mounted at that directory, so / and /etc/sortie are refused. Empty: the
+  # mounted at that directory, so /, /etc, /sortie and /etc/sortie are refused. Empty: the
   # report goes to the pod's log only.
   path: ""
   # json or text.

@@ -482,6 +482,13 @@ func validateStats(st *Stats) error {
 			return fmt.Errorf("sinks[%d]: %s cannot run in the engine: it aborts on its first flush. "+
 				"Send statsd to the collector's statsd receiver instead", i, openTelemetrySink)
 		}
+		// sortie wraps every Envoy sink in the adapter itself. One written
+		// out here would carry a sink this check cannot see into, the
+		// OpenTelemetry one included, so it is not accepted at all.
+		if sink.GetName() == envoyStatsSinkAdapter {
+			return fmt.Errorf("sinks[%d]: name the Envoy sink itself, not %s: sortie adds the adapter",
+				i, envoyStatsSinkAdapter)
+		}
 	}
 	if st.GetStatsd() == nil {
 		return nil
@@ -497,7 +504,14 @@ func validateStats(st *Stats) error {
 	return nil
 }
 
-const openTelemetrySink = "envoy.stat_sinks.open_telemetry"
+const (
+	openTelemetrySink     = "envoy.stat_sinks.open_telemetry"
+	envoyStatsSinkAdapter = "nighthawk.envoy_stats_sink_adapter"
+
+	// DefaultStatsPrefix is the first component of every metric name when a
+	// stats block sets no prefix.
+	DefaultStatsPrefix = "sortie"
+)
 
 // StatsLabel is an execution label as it appears in a metric prefix: each
 // `/`-separated segment lowercased and reduced to [a-z0-9_] (every other run
@@ -528,11 +542,15 @@ func StatsLabel(label string) []string {
 	return out
 }
 
-// validateStatsPrefixes refuses a plan in which two scenarios with live
-// metrics would emit under one prefix. Names are unique as written, but the
-// prefix is built from their sanitized form, where `Foo` and `foo` are the
-// same and `///` is nothing at all: their counters and timers would be summed
-// by the statsd server with nothing to tell them apart.
+// validateStatsPrefixes refuses a plan in which two executions with a statsd
+// sink would emit under one prefix. Names are unique as written, but a prefix
+// is built from an execution's sanitized label, where `Foo` and `foo` are the
+// same, `///` is nothing at all, and stage 1 of a staircase named `foo` is
+// the constant scenario named `foo/stage-1`: their counters and timers would
+// be summed by the statsd server with nothing to tell them apart.
+//
+// Only the statsd sink is concerned. It is the one whose prefix sortie
+// writes; a sink passed through stats.sinks names its metrics itself.
 func validateStatsPrefixes(p *Plan) error {
 	seen := map[string]string{}
 	for _, s := range p.GetScenarios() {
@@ -543,21 +561,48 @@ func validateStatsPrefixes(p *Plan) error {
 		if st == nil {
 			st = p.GetStats()
 		}
-		if st == nil {
+		if st.GetStatsd() == nil {
 			continue
 		}
-		label := StatsLabel(s.GetName())
-		if len(label) == 0 {
+		executor := s.GetExecutor()
+		if executor == nil {
+			executor = p.GetDefaults().GetExecutor()
+		}
+		// The labels compile.Expand gives this scenario's executions.
+		labels := []string{s.GetName()}
+		if executor.GetType() == Staircase {
+			labels = labels[:0]
+			for i := range executor.GetStages() {
+				labels = append(labels, fmt.Sprintf("%s/stage-%d", s.GetName(), i+1))
+			}
+		}
+		if len(StatsLabel(s.GetName())) == 0 {
 			return fmt.Errorf("scenario %q: its name has no letter, digit or underscore to name its metrics by; "+
-				"rename it, or drop its stats block", s.GetName())
+				"rename it, or drop its statsd sink", s.GetName())
 		}
-		key := st.GetPrefix() + "\x00" + strings.Join(label, ".")
-		if other, dup := seen[key]; dup {
-			return fmt.Errorf("scenarios %q and %q would emit their metrics under the same prefix (%s); "+
-				"rename one, or give them different stats.prefix values",
-				other, s.GetName(), strings.Join(label, "."))
+		for _, label := range labels {
+			// The prefix as emitted: see compile.StatsPrefix.
+			prefix := StatsPrefix(st.GetPrefix(), label)
+			if other, dup := seen[prefix]; dup && other != s.GetName() {
+				return fmt.Errorf("scenarios %q and %q would emit their metrics under the same prefix (%s); "+
+					"rename one, or give them different stats.prefix values", other, s.GetName(), prefix)
+			}
+			seen[prefix] = s.GetName()
 		}
-		seen[key] = s.GetName()
 	}
 	return nil
+}
+
+// StatsPrefix is the prefix an execution's statsd sink emits its metrics
+// under: the stats block's prefix (or DefaultStatsPrefix), then StatsLabel of
+// the execution's label, joined with dots.
+//
+//	StatsPrefix("", "smoke")           == "sortie.smoke"
+//	StatsPrefix("", "smoke/stage-2")   == "sortie.smoke.stage_2"
+//	StatsPrefix("soak", "Checkout/eu") == "soak.checkout.eu"
+func StatsPrefix(prefix, label string) string {
+	if prefix == "" {
+		prefix = DefaultStatsPrefix
+	}
+	return strings.Join(append([]string{prefix}, StatsLabel(label)...), ".")
 }

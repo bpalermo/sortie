@@ -541,10 +541,41 @@ scenarios: [{name: "///"}]`, "no letter, digit or underscore"},
 			t.Errorf("%s: err = %v, want one containing %q", name, err, c.want)
 		}
 	}
-	// Without live metrics the same names are fine, and so are colliding
-	// names under different prefixes.
+	for name, c := range map[string]struct{ body, want string }{
+		"the adapter written out": {`
+stats:
+  sinks: [{name: nighthawk.envoy_stats_sink_adapter}]
+scenarios: [{name: a}]`, "sortie adds the adapter"},
+		"a stage label and a scenario of that name": {`
+stats:
+  statsd: {address: "10.0.0.1:8125"}
+scenarios:
+  - name: foo
+    executor: {type: staircase, stages: [{rate: 10, duration: 1s}]}
+  - name: foo/stage-1`, "same prefix (sortie.foo.stage_1)"},
+		"the default prefix and the same one spelled out": {`
+scenarios:
+  - {name: foo, stats: {statsd: {address: "10.0.0.1:8125"}}}
+  - {name: Foo, stats: {prefix: sortie, statsd: {address: "10.0.0.1:8125"}}}`, "same prefix (sortie.foo)"},
+		"a dotted prefix that meets another": {`
+scenarios:
+  - {name: b, stats: {prefix: x.a, statsd: {address: "10.0.0.1:8125"}}}
+  - {name: a/b, stats: {prefix: x, statsd: {address: "10.0.0.1:8125"}}}`, "same prefix (x.a.b)"},
+	} {
+		_, err := Parse([]byte(head + c.body + "\n"))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want one containing %q", name, err, c.want)
+		}
+	}
+	// Without a statsd sink the same names are fine -- a passthrough sink
+	// names its own metrics -- and so are colliding names under different
+	// prefixes.
 	for name, body := range map[string]string{
 		"no stats": `
+scenarios: [{name: Foo}, {name: foo}]`,
+		"only passthrough sinks": `
+stats:
+  sinks: [{name: envoy.stat_sinks.dog_statsd}]
 scenarios: [{name: Foo}, {name: foo}]`,
 		"different prefixes": `
 scenarios:

@@ -479,11 +479,14 @@ Three limits, each deliberate:
 `stats.sinks` takes any other Envoy stats sink linked into the engine, written
 as it would be in an Envoy bootstrap. It is passed through as written, so the
 prefix scheme above does not apply to it. The OpenTelemetry sink is refused
-there too.
+there too, and so is the engine's own adapter: name the Envoy sink and sortie
+wraps it.
 
-Because the prefix is built from the sanitized name, two scenarios with live
-metrics whose names differ only in case or punctuation would share one. Such a
-plan is refused; rename one, or give them different `prefix` values.
+Because the statsd prefix is built from sanitized labels, two scenarios can
+land on one: names that differ only in case or punctuation, or a scenario
+named `ramp/stage-1` beside a staircase named `ramp`. A plan in which two
+statsd-reporting executions would share a prefix is refused; rename one, or
+give them different `prefix` values.
 
 ## Thresholds
 
@@ -728,7 +731,8 @@ podSecurityContext: {runAsNonRoot: true, fsGroup: 65532}
 
 The next run on the same volume and path overwrites the file. The volume is
 mounted at the file's directory, so give the file a directory of its own: a
-path directly under `/` or under `/etc/sortie` is refused.
+path directly under `/` or `/etc`, or at or under `/sortie` or `/etc/sortie`,
+is refused.
 
 The Job and the engine come up together, so sortie waits up to 30 seconds for
 each backend to accept connections before the run starts; a backend that is
