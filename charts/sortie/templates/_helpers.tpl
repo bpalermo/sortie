@@ -76,7 +76,7 @@ spec:
   serviceAccountName: {{ include "sortie.serviceAccountName" . }}
   automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
   {{- with .Values.engine.priorityClassName }}
-  priorityClassName: {{ . }}
+  priorityClassName: {{ . | quote }}
   {{- end }}
   securityContext:
     {{- toYaml .Values.podSecurityContext | nindent 4 }}
@@ -200,7 +200,7 @@ spec:
   restartPolicy: Never
   serviceAccountName: {{ include "sortie.serviceAccountName" . }}
   {{- with .Values.priorityClassName }}
-  priorityClassName: {{ . }}
+  priorityClassName: {{ . | quote }}
   {{- end }}
   # sortie makes outbound gRPC calls and never touches the Kubernetes API, so a
   # mounted bearer token is a credential a compromised load generator could use
