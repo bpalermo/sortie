@@ -439,6 +439,111 @@ func TestLiveMetricsReachAStatsdSink(t *testing.T) {
 	}
 }
 
+// Weighted targets with live metrics: three executions at once on one backend,
+// each with its own stats sink and its own flush worker inside the engine,
+// each emitting under its own prefix. This is the per-target dashboard a soak
+// reads, and the case in which several flush workers are alive in one engine.
+const weightedStatsPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+stats:
+  flush_interval: 1s
+  statsd:
+    address: "%s"
+defaults:
+  pool: local
+  protocol: http1
+  concurrency: "1"
+  connections: 2
+scenarios:
+  - name: mix
+    executor:
+      type: constant-rate
+      rate: 60
+      duration: 4s
+    targets:
+      - {name: a, url: "http://127.0.0.1:%d/a", weight: 3}
+      - {name: b, url: "http://127.0.0.1:%d/b", weight: 2}
+      - {name: c, url: "http://127.0.0.1:%d/c", weight: 1}
+    thresholds:
+      - "counter:benchmark.http_5xx == 0"
+`
+
+func TestWeightedTargetsEachEmitTheirOwnLiveMetrics(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tmp := t.TempDir()
+
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { udp.Close() })
+	var mu sync.Mutex
+	var lines []string
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, _, err := udp.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			lines = append(lines, strings.Split(strings.TrimSpace(string(buf[:n])), "\n")...)
+			mu.Unlock()
+		}
+	}()
+
+	configPath := filepath.Join(tmp, "test_server.yaml")
+	if err := os.WriteFile(configPath, []byte(testServerConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adminPath := filepath.Join(tmp, "admin_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_test_server"),
+		"--config-path", configPath, "--admin-address-path", adminPath,
+		"--disable-hot-restart", "--concurrency", "1")
+	targetPort := listenerPort(t, waitForAddress(t, adminPath))
+
+	servicePath := filepath.Join(tmp, "service_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath,
+		"--max-concurrent-executions", "4")
+	serviceAddr := waitForAddress(t, servicePath)
+	assertHealthy(t, ctx, serviceAddr)
+
+	planPath := filepath.Join(tmp, "plan.yaml")
+	plan := fmt.Sprintf(weightedStatsPlanTemplate, serviceAddr, udp.LocalAddr().String(), targetPort, targetPort, targetPort)
+	if err := os.WriteFile(planPath, []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath)
+	out, err := cmd.CombinedOutput()
+	t.Logf("sortie run:\n%s", out)
+	if err != nil {
+		t.Fatalf("sortie run failed: %v", err)
+	}
+	if !strings.Contains(string(out), "PASS  3/3 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict")
+	}
+
+	mu.Lock()
+	got := append([]string(nil), lines...)
+	mu.Unlock()
+	for _, target := range []string{"a", "b", "c"} {
+		counter := regexp.MustCompile(`^sortie\.mix\.` + target + `\..*benchmark\.http_2xx:\d+\|c`)
+		seen := false
+		for _, l := range got {
+			seen = seen || counter.MatchString(l)
+		}
+		if !seen {
+			t.Errorf("no http_2xx counter under sortie.mix.%s reached the statsd socket", target)
+		}
+	}
+}
+
 // The test server with the upgrade allowed and the websocket-echo filter in
 // front of the test-server one: a WebSocket echo endpoint at any path.
 const wsTestServerConfig = `admin:
