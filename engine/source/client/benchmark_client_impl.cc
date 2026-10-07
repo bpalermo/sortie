@@ -115,6 +115,61 @@ BenchmarkClientHttpImpl::BenchmarkClientHttpImpl(
   statistic_.latency_grpc_ok_statistic->setId("benchmark_http_client.latency_grpc_ok");
 }
 
+void BenchmarkClientHttpImpl::finish() {
+  if (finished_) {
+    return;
+  }
+  finished_ = true;
+  if (requests_outstanding_ > 0 && !abandon_outstanding_ && timeout_ > 0s) {
+    ENVOY_LOG(debug, "Waiting up to {} s for {} outstanding request(s).", timeout_.count(),
+              requests_outstanding_);
+    const Envoy::MonotonicTime wait_start = api_.timeSource().monotonicTime();
+    finish_timer_ = dispatcher_.createTimer([this]() {
+      finish_timed_out_ = true;
+      dispatcher_.exit();
+    });
+    finish_timer_->enableTimer(timeout_);
+    waiting_in_finish_ = true;
+    // A loop, because the dispatcher may return for an exit that was asked of it before this
+    // wait began, e.g. by a sequencer that stopped without the dispatcher having run.
+    while (requests_outstanding_ > 0 && !finish_timed_out_ && !abandon_outstanding_) {
+      dispatcher_.run(Envoy::Event::Dispatcher::RunType::RunUntilExit);
+    }
+    waiting_in_finish_ = false;
+    finish_timer_.reset();
+    finish_waited_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+        api_.timeSource().monotonicTime() - wait_start);
+  }
+  if (requests_outstanding_ > 0) {
+    // Nothing is cancelled or reset here: the requests stay with the pool, and terminate() deals
+    // with them. They are only accounted for, before the worker snapshots its counters.
+    benchmark_client_counters_.http_inflight_lost_.add(requests_outstanding_);
+    ENVOY_LOG(info,
+              "{} request(s) were still outstanding when the execution ended{} (counted in "
+              "benchmark.http_inflight_lost).",
+              requests_outstanding_,
+              finish_timed_out_ ? fmt::format(" and after waiting {} s for them", timeout_.count())
+                                : "");
+  }
+}
+
+void BenchmarkClientHttpImpl::abandonOutstandingWork() {
+  abandon_outstanding_ = true;
+  if (waiting_in_finish_) {
+    dispatcher_.exit();
+  }
+}
+
+void BenchmarkClientHttpImpl::onRequestDone() {
+  // Guarded: tests call the completion callbacks directly, for requests that were never issued.
+  if (requests_outstanding_ > 0) {
+    requests_outstanding_--;
+  }
+  if (waiting_in_finish_ && requests_outstanding_ == 0) {
+    dispatcher_.exit();
+  }
+}
+
 void BenchmarkClientHttpImpl::terminate() {
   std::optional<Envoy::Upstream::HttpPoolData> pool_data = pool();
   if (pool_data.has_value() && pool_data.value().hasActiveConnections()) {
@@ -133,7 +188,10 @@ void BenchmarkClientHttpImpl::terminate() {
       ENVOY_LOG(info, "Wait for the connection pool drain timed out, proceeding to hard shutdown.");
       dispatcher_.exit();
     });
-    drain_timer_->enableTimer(timeout_);
+    // finish() has waited for the same requests under the same cap; what it used is not waited
+    // for a second time. After a finish() that timed out this fires at once.
+    drain_timer_->enableTimer(std::max<std::chrono::milliseconds>(
+        0ms, std::chrono::duration_cast<std::chrono::milliseconds>(timeout_) - finish_waited_));
     // Actively drain the pool. Without this, completed requests leave ready keep-alive
     // connections behind, and the pool never becomes idle (all of the pool's client lists must
     // be empty for that), so the idle callback above would never fire and we would always
@@ -215,6 +273,7 @@ bool BenchmarkClientHttpImpl::tryStartRequest(CompletionCallback caller_completi
       *statistic_.origin_latency_statistic, request->header(), request->body(),
       shouldMeasureLatencies(), content_length, generator_, tracer_, latency_response_header_name_);
   requests_initiated_++;
+  requests_outstanding_++;
   pool_data.value().newStream(*stream_decoder, *stream_decoder,
                               {/*can_send_early_data_=*/false,
                                /*can_use_http3_=*/true});
@@ -271,6 +330,7 @@ void BenchmarkClientHttpImpl::onComplete(bool success,
                                          const Envoy::Http::ResponseHeaderMap& headers,
                                          GrpcStatusOpt grpc_status) {
   requests_completed_++;
+  onRequestDone();
   if (!success) {
     benchmark_client_counters_.stream_resets_.inc();
     if (grpc_) {
@@ -341,6 +401,7 @@ void BenchmarkClientHttpImpl::onPoolFailure(Envoy::Http::ConnectionPool::PoolFai
   default:
     PANIC("not reached");
   }
+  onRequestDone();
 }
 
 void BenchmarkClientHttpImpl::exportLatency(const uint32_t response_code, const uint64_t latency_ns,

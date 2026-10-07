@@ -243,6 +243,10 @@ public:
     EXPECT_EQ(2, sequencer.statistics().size());
     const auto execution_duration = time_system_.monotonicTime() - simulation_start_;
     EXPECT_EQ(sequencer.executionDuration(), execution_duration);
+    // The clock moves on after the sequencer has stopped, as it does while a benchmark client
+    // waits for its last responses in finish(). That is not execution time.
+    time_system_.setMonotonicTime(time_system_.monotonicTime() + 30s);
+    EXPECT_EQ(sequencer.executionDuration(), execution_duration);
   }
 };
 

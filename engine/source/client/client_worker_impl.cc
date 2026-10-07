@@ -68,8 +68,14 @@ void ClientWorkerImpl::work() {
   benchmark_client_->prepare();
   benchmark_client_->setShouldMeasureLatencies(phase_->shouldMeasureLatencies());
   phase_->run();
-  // Let the client wrap up work that must still be reported (e.g. drain streaming echoes)
-  // before the counters are snapshotted below.
+  // An execution that a failure predicate ended has nothing left to wait for; a cancelled one has
+  // told the client so already, see requestExecutionCancellation(). The counter is the
+  // sequencer's own, which is how the process tells a failed execution apart as well.
+  if (worker_number_scope_->counterFromString("sequencer.failed_terminations").value() > 0) {
+    benchmark_client_->abandonOutstandingWork();
+  }
+  // Let the client wrap up work that must still be reported (e.g. wait for the responses to the
+  // last requests, drain streaming echoes) before the counters are snapshotted below.
   benchmark_client_->finish();
 
   // Save a final snapshot of the worker-specific counter accumulations before
@@ -100,8 +106,12 @@ void ClientWorkerImpl::requestExecutionCancellation() {
   // We just bump a counter, which is watched by a static termination predicate.
   // A useful side effect is that this counter will propagate to the output, which leaves
   // a note about that execution was subject to cancellation.
-  dispatcher_->post(
-      [this]() { worker_number_scope_->counterFromString("graceful_stop_requested").inc(); });
+  // The client is told as well, on its own thread: a cancellation must not be held up by the
+  // wait for outstanding responses in finish(), whether that wait is still to come or underway.
+  dispatcher_->post([this]() {
+    worker_number_scope_->counterFromString("graceful_stop_requested").inc();
+    benchmark_client_->abandonOutstandingWork();
+  });
 }
 
 void ClientWorkerImpl::snapshotStatistics(SnapshotDetail detail, std::function<bool()> still_wanted,

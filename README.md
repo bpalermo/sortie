@@ -673,14 +673,31 @@ non-2xx response.
 | `benchmark.pool_failure_local_connection_failure`, `benchmark.pool_failure_remote_connection_failure` | the same, by which side failed |
 | `benchmark.pool_failure_timeout` | never got a connection, because connecting timed out |
 | `benchmark.pool_overflow` | was refused by the client's own pool; in open loop this is saturation |
+| `benchmark.http_inflight_lost` | was sent, or was queued for a connection, and had no outcome when the run was over: see below |
 
 For plain HTTP and unary gRPC requests the two phase counters sum to
 `stream_resets`, and so do the reason counters. The streaming modes
 (`bidi-stream`, WebSocket) count a reset of one of their long-lived streams in
 `stream_resets` alone.
 `pool_failure_timeout` is outside `pool_connection_failure`, which never
-included it. A zero-failure soak names every class, which costs nothing: a
-counter that never incremented reads as zero.
+included it.
+
+A run does not end the instant its duration does. The requests that are in
+flight at that moment -- sent and unanswered, or still queued for a connection
+-- are waited for, for up to the scenario's `timeout`, and are counted and
+timed as what they turn out to be. That wait is not part of the reported
+execution duration, so it changes no rate. A request that is still without an
+outcome when the `timeout` has passed is counted in
+`benchmark.http_inflight_lost`, and in nothing else: it was not reset, and it
+has no status. With that counter no request that was issued is missing from
+the report. A run that is cancelled, or that a failure predicate ends, does
+not wait: its in-flight requests are counted as lost at once. A run that a
+termination predicate ends does wait, so its counters can pass the predicate's
+threshold by the requests that were in flight. The engine does not fail a run
+for `http_inflight_lost`; a threshold does, if the plan has one.
+
+A zero-failure soak names every class, which costs nothing: a counter that
+never incremented reads as zero.
 
 ```yaml
 thresholds:
@@ -691,6 +708,7 @@ thresholds:
   - "counter:benchmark.pool_connection_failure == 0"
   - "counter:benchmark.pool_failure_timeout == 0"
   - "counter:benchmark.pool_overflow == 0"
+  - "counter:benchmark.http_inflight_lost == 0"
 ```
 
 Leave `pool_overflow` out and an open-loop run in which the client refused
@@ -707,8 +725,9 @@ Three things are not failure classes, and why:
   connection counters, `upstream_cx_destroy_remote`. So
   `stream_resets_incomplete_body` is exactly the real mid-body cut.
 - **A response timeout.** The engine has no per-request one: a request waits
-  for its response until the run and its drain end. `timeout` on a scenario
-  bounds connecting and that final drain.
+  for its response until the run ends and for `timeout` after that, and is
+  then in `http_inflight_lost`. `timeout` on a scenario bounds connecting and
+  that final wait.
 - **A DNS failure.** The target is resolved once, when an execution starts. A
   name that does not resolve fails the execution with an error, before any
   request.

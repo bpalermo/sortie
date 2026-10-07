@@ -13,6 +13,7 @@ public:
 
   MOCK_METHOD(void, prepare, (), (override));
   MOCK_METHOD(void, finish, (), (override));
+  MOCK_METHOD(void, abandonOutstandingWork, (), (override));
   MOCK_METHOD(void, terminate, (), (override));
   MOCK_METHOD(void, setShouldMeasureLatencies, (bool), (override));
   MOCK_METHOD(StatisticPtrMap, statistics, (), (const, override));

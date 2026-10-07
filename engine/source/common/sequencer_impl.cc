@@ -77,6 +77,7 @@ void SequencerImpl::stop(bool failed) {
   spin_timer_.reset();
   dispatcher_.exit();
   unblockAndUpdateStatisticIfNeeded(time_source_.monotonicTime());
+  stopped_after_ = rate_limiter_->elapsed();
   const auto ran_for = std::chrono::duration_cast<std::chrono::milliseconds>(executionDuration());
   ENVOY_LOG(info,
             "Stopping after {} ms. Initiated: {} / Completed: {}. "

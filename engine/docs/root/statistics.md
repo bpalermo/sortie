@@ -23,6 +23,7 @@ http_4xx | Counter | Total number of response with code 4xx
 http_5xx | Counter | Total number of response with code 5xx	
 http_xxx | Counter | Total number of response with code <100 or >=600
 stream_resets | Counter | Total number of stream reset	
+http_inflight_lost | Counter | Total number of requests that were issued and were still without an outcome when the execution ended and `--timeout` had passed after that (at once for a cancelled or failed execution). They are in no other counter
 pool_overflow | Counter | Total number of times connection pool overflowed	
 pool_connection_failure | Counter | Total number of times pool connection failed	
 benchmark_http_client.latency_1xx | HdrStatistic | Latency (in Nanosecond) histogram of request with code 1xx	
