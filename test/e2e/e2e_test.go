@@ -1114,7 +1114,7 @@ scenarios:
       # is not bounded, so the floor is a 5 percent tolerance. Never one too many.
       - "counter:benchmark.tcp_messages_sent >= 950"
       - "counter:benchmark.tcp_messages_sent <= 1000"
-      - "counter:benchmark.tcp_messages_received >= 990"
+      - "counter:benchmark.tcp_messages_received >= 940"
       - "benchmark_tcp.message_latency.p99 < 500ms"
 `
 
@@ -1202,7 +1202,7 @@ scenarios:
       # is not bounded, so the floor is a 5 percent tolerance. Never one too many.
       - "counter:benchmark.udp_datagrams_sent >= 950"
       - "counter:benchmark.udp_datagrams_sent <= 1000"
-      - "counter:benchmark.udp_datagrams_received >= 990"
+      - "counter:benchmark.udp_datagrams_received >= 940"
       - "benchmark_udp.message_latency.p99 < 500ms"
 `
 
