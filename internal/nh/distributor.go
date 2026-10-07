@@ -136,10 +136,19 @@ func DistributePartial(
 			if detail := er.GetErrorDetail(); detail != nil && detail.GetCode() != 0 {
 				failed = append(failed, TargetError{Target: name, Err: errors.New(detail.GetMessage())})
 			}
-			if out := er.GetOutput(); len(out.GetResults()) > 0 || er.GetErrorDetail().GetCode() == 0 {
-				names = append(names, name)
-				outputs = append(outputs, out)
+			out := er.GetOutput()
+			if len(out.GetResults()) == 0 {
+				// Answered, with nothing to judge. Without an error of its
+				// own that is still a failed target: silently leaving it out
+				// would let the others' thresholds pass a pool one member of
+				// which reported nothing.
+				if er.GetErrorDetail().GetCode() == 0 {
+					failed = append(failed, TargetError{Target: name, Err: errors.New("returned no results")})
+				}
+				continue
 			}
+			names = append(names, name)
+			outputs = append(outputs, out)
 		}
 	}
 	// The pool that ran has to be the pool the plan described. Counting results

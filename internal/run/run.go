@@ -452,6 +452,11 @@ func (r *Runner) dispatch(
 			// what it did.
 			if out := resp.GetOutput(); len(out.GetResults()) > 0 {
 				outputs[i] = out
+			} else if err == nil {
+				// No error and nothing to judge: a failed backend all the
+				// same. Left out silently, the other backends' thresholds
+				// could pass a pool one member of which reported nothing.
+				errs[i] = errors.New("returned no results")
 			}
 		}()
 	}

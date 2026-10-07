@@ -35,6 +35,10 @@ type fakeDistributor struct {
 	// answerAs names the services the fake reports results for, which need not
 	// match the targets it was asked about -- that is the point of the tests.
 	answerAs func(requested []string) []string
+
+	// emptyFor names a service the fake answers for with a response that has
+	// no error and no results.
+	emptyFor string
 }
 
 func (f *fakeDistributor) DistributedRequestStream(
@@ -69,12 +73,7 @@ func (f *fakeDistributor) DistributedRequestStream(
 					},
 				}},
 				DistributedResponseType: &distributorpb.DistributedServiceResponse_ExecutionResponse{
-					ExecutionResponse: &client.ExecutionResponse{
-						Output: &client.Output{Results: []*client.Result{{
-							Name:              "global",
-							ExecutionDuration: durationpb.New(time.Second),
-						}}},
-					},
+					ExecutionResponse: f.responseFor(name),
 				},
 			})
 		}
@@ -92,6 +91,18 @@ func splitHostPort(addr string) (string, uint32) {
 	var port uint32
 	_, _ = fmt.Sscanf(portText, "%d", &port)
 	return host, port
+}
+
+func (f *fakeDistributor) responseFor(name string) *client.ExecutionResponse {
+	if name == f.emptyFor {
+		return &client.ExecutionResponse{}
+	}
+	return &client.ExecutionResponse{
+		Output: &client.Output{Results: []*client.Result{{
+			Name:              "global",
+			ExecutionDuration: durationpb.New(time.Second),
+		}}},
+	}
 }
 
 func startFakeDistributor(t *testing.T, answerAs func([]string) []string) *fakeDistributor {
@@ -289,5 +300,31 @@ func TestDistributePartialKeepsTheTargetsThatAnswered(t *testing.T) {
 	// Distribute, the all-or-nothing form, still refuses the same run.
 	if _, err := distribute(t, fake, targets); err == nil || !strings.Contains(err.Error(), "10.0.0.13:8443") {
 		t.Errorf("Distribute err = %v, want it to name the silent target", err)
+	}
+}
+
+// A target that answers with no error and no results is a failed target: left
+// in as a success, or left out silently, it would let the others' thresholds
+// pass a pool one member of which reported nothing.
+func TestDistributePartialFailsATargetThatReturnsNothing(t *testing.T) {
+	targets := []string{"10.0.0.11:8443", "10.0.0.12:8443"}
+	fake := startFakeDistributor(t, func(requested []string) []string { return requested })
+	fake.emptyFor = "10.0.0.12:8443"
+
+	ctx := context.Background()
+	conn, err := nh.Dial(ctx, fake.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	names, outputs, failed, err := nh.DistributePartial(ctx, conn, &client.CommandLineOptions{}, targets)
+	if err != nil {
+		t.Fatalf("DistributePartial: %v", err)
+	}
+	if len(names) != 1 || names[0] != "10.0.0.11:8443" || len(outputs) != 1 || outputs[0] == nil {
+		t.Errorf("names = %v with %d outputs, want only the target that returned results", names, len(outputs))
+	}
+	if len(failed) != 1 || failed[0].Target != "10.0.0.12:8443" || !strings.Contains(failed[0].Err.Error(), "no results") {
+		t.Errorf("failed = %+v, want the empty target named", failed)
 	}
 }

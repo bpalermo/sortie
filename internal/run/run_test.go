@@ -756,3 +756,37 @@ scenarios:
 		t.Errorf("a cancelled execution was judged: pass=%v outcomes=%+v", e.Pass, e.Outcomes)
 	}
 }
+
+// A backend that answers without an error and without results is a failed
+// backend, not one to leave out quietly while the others' thresholds pass.
+func TestRunFailsABackendThatReturnsNothing(t *testing.T) {
+	good := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		return okResponse(1000, 10*time.Millisecond, 10*time.Second)
+	})
+	empty := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		return &client.ExecutionResponse{}
+	})
+	p := planFor(t, `
+scenarios:
+  - name: soak
+    executor: {type: constant-rate, rate: 100, duration: 10s}
+    thresholds:
+      - "latency_2xx.p95 < 50ms"
+`, good.addr, empty.addr)
+
+	report, err := (&run.Runner{Plan: p}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	e := report.Executions[0]
+	if e.Pass || report.Pass {
+		t.Error("the execution passed although one backend returned nothing")
+	}
+	if len(e.BackendErrors) != 1 || e.BackendErrors[0].Addr != empty.addr ||
+		!strings.Contains(e.BackendErrors[0].Err.Error(), "no results") {
+		t.Errorf("backend errors = %+v, want the empty backend named", e.BackendErrors)
+	}
+	if e.Set == nil || len(e.Set.Backends) != 1 {
+		t.Errorf("the good backend's results were not kept: %+v", e.Set)
+	}
+}
