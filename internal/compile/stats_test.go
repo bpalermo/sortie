@@ -335,6 +335,8 @@ func TestBackendSegmentsAreUniqueAfterSanitizing(t *testing.T) {
 		"ipv6 alike, ports differ": {"[2001:db8::1]:8443", "[2001:db8:1::]:8444"},
 		"ipv6 alike, same port":    {"[2001:db8::1]:8443", "[2001:db8:1::]:8443"},
 		"three alike and one not":  {"[2001:db8::1]:8443", "[2001:db8:1::]:8443", "[2001:db8::1]:8443", "10.0.0.1:8443"},
+		// The third is already named what the first's suffixed name would be.
+		"a suffix that is taken": {"a-b:1", "a.b:1", "a-b-1-b0:2"},
 	} {
 		got := backendSegments(addrs)
 		if len(got) != len(addrs) {

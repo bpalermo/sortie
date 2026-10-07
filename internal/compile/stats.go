@@ -162,8 +162,9 @@ func restat(o *client.CommandLineOptions, e Execution, backend string) error {
 // `2001_db8_1`. So uniqueness is judged on the sanitized names, in two steps.
 // Backends whose host alone is not unique get host and port, which tells
 // engines on one machine apart. Any still alike after that get their position
-// in the pool appended, which is unique by construction and stable because a
-// pool's order is: listed pools keep the plan's order and dns pools are sorted.
+// in the pool appended, checked against every name already in use, which is
+// stable because a pool's order is: listed pools keep the plan's order and dns
+// pools are sorted.
 func backendSegments(addrs []string) []string {
 	sanitize := func(s string) string { return strings.Join(plan.StatsLabel(s), "_") }
 	count := func(names []string) map[string]int {
@@ -189,10 +190,26 @@ func backendSegments(addrs []string) []string {
 		}
 	}
 	seen = count(out)
-	for i := range out {
-		if seen[out[i]] > 1 || out[i] == "" {
-			out[i] = fmt.Sprintf("%s_b%d", out[i], i)
+	// Names that are already unique are kept and reserved. The rest get their
+	// position appended, and a candidate is checked against every name in
+	// use -- a backend may happen to be called what another's suffixed name
+	// would be -- and lengthened until it is free.
+	used := map[string]bool{}
+	for _, name := range out {
+		if seen[name] == 1 && name != "" {
+			used[name] = true
 		}
+	}
+	for i, name := range out {
+		if seen[name] == 1 && name != "" {
+			continue
+		}
+		candidate := fmt.Sprintf("%s_b%d", name, i)
+		for used[candidate] {
+			candidate += "_"
+		}
+		used[candidate] = true
+		out[i] = candidate
 	}
 	return out
 }
