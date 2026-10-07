@@ -158,9 +158,13 @@ on one worker sending 60 rps, `SPIN` used 970 millicores, `POLL` 390, `SLEEP`
 150 and `WAIT` 26.
 
 `WAIT` is the one a low-rate soak wants. It blocks until the rate limiter says
-the next request is due, so its cost follows the rate rather than the worker
-count, and an engine under a CPU limit is not throttled into reporting its own
-scheduling delay as the target's latency. The schema has no field for it; it
+the next request is due, so an idle worker costs about a hundredth of a core
+instead of a whole one, and an engine under a CPU limit is not throttled into
+reporting its own scheduling delay as the target's latency. The cost still
+grows with the number of workers: each one wakes at least every 5 ms to see
+whether the run should end, which is where the measured 11 millicores per idle
+worker come from. `WAIT` lowers that floor a great deal; it does not remove
+it. The schema has no field for it; it
 goes through the template:
 
 ```yaml
