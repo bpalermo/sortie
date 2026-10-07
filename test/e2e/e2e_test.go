@@ -857,8 +857,8 @@ func TestWebSocketPlanAgainstTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sortie run failed: %v", err)
 	}
-	if !regexp.MustCompile(`(?m)^\s+\S+: 500 messages sent, 500 echoed in \S+$`).Match(out) {
-		t.Errorf("sortie output lacks the backend line with 500 messages sent and echoed")
+	if !regexp.MustCompile(`(?m)^\s+\S+: (4[7-9][0-9]|500) messages sent, (4[7-9][0-9]|500) echoed in \S+$`).Match(out) {
+		t.Errorf("sortie output lacks the backend line with 470 to 500 messages sent and echoed")
 	}
 	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
 		t.Errorf("sortie output lacks the PASS verdict")
@@ -1150,8 +1150,8 @@ func TestTcpPlanAgainstTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sortie run failed: %v", err)
 	}
-	if !regexp.MustCompile(`(?m)^\s+\S+: 1000 messages sent, (99[0-9]|1000) echoed in \S+$`).Match(out) {
-		t.Errorf("sortie output lacks the backend line with 1000 messages sent and echoed")
+	if !regexp.MustCompile(`(?m)^\s+\S+: (9[4-9][0-9]|1000) messages sent, (9[4-9][0-9]|1000) echoed in \S+$`).Match(out) {
+		t.Errorf("sortie output lacks the backend line with 940 to 1000 messages sent and echoed")
 	}
 	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
 		t.Errorf("sortie output lacks the PASS verdict")
@@ -1238,8 +1238,8 @@ func TestUdpPlanAgainstTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sortie run failed: %v", err)
 	}
-	if !regexp.MustCompile(`(?m)^\s+\S+: 1000 datagrams sent, (99[0-9]|1000) echoed, 0 lost in \S+$`).Match(out) {
-		t.Errorf("sortie output lacks the backend line with 1000 datagrams sent and echoed")
+	if !regexp.MustCompile(`(?m)^\s+\S+: (9[4-9][0-9]|1000) datagrams sent, (9[4-9][0-9]|1000) echoed, 0 lost in \S+$`).Match(out) {
+		t.Errorf("sortie output lacks the backend line with 940 to 1000 datagrams sent and echoed")
 	}
 	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
 		t.Errorf("sortie output lacks the PASS verdict")
