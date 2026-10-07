@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	metricsv3 "github.com/envoyproxy/go-control-plane/envoy/config/metrics/v3"
@@ -38,7 +39,7 @@ func StatsPrefix(prefix, label string) string { return plan.StatsPrefix(prefix, 
 // applyStats adds a stats block's sinks to the options, after the sinks a
 // template may carry, and sets the flush interval when the block names one.
 func applyStats(o *client.CommandLineOptions, st *plan.Stats, label string) error {
-	sinks, err := statsSinks(st, label)
+	sinks, err := statsSinks(st, label, "")
 	if err != nil {
 		return err
 	}
@@ -53,8 +54,15 @@ func applyStats(o *client.CommandLineOptions, st *plan.Stats, label string) erro
 
 // statsSinks compiles a stats block into the engine's stats_sinks for an
 // execution labelled label.
-func statsSinks(st *plan.Stats, label string) ([]*metricsv3.StatsSink, error) {
+//
+// backend, when set, is appended to the prefix as its last component, so that
+// each backend of a pool emits its own series: `sortie.<label>.<backend>`.
+// The series of one execution then sum, over backends, to the report's totals.
+func statsSinks(st *plan.Stats, label, backend string) ([]*metricsv3.StatsSink, error) {
 	prefix := StatsPrefix(st.GetPrefix(), label)
+	if backend != "" {
+		prefix += "." + backend
+	}
 	var out []*metricsv3.StatsSink
 
 	if sd := st.GetStatsd(); sd != nil {
@@ -127,4 +135,48 @@ func socketAddress(hostPort string) (*corev3.Address, error) {
 		Address:       host,
 		PortSpecifier: &corev3.SocketAddress_PortValue{PortValue: uint32(port)},
 	}}}, nil
+}
+
+// restat replaces the sinks applyStats gave an execution's options with the
+// same sinks under a prefix that names the backend. The stats block's sinks
+// are the last ones in the list -- a template's come first -- and there are as
+// many as the block compiles to, which is how they are found.
+func restat(o *client.CommandLineOptions, e Execution, backend string) error {
+	sinks, err := statsSinks(e.stats, e.Label, backend)
+	if err != nil {
+		return fmt.Errorf("execution %q: %w", e.Label, err)
+	}
+	if len(o.StatsSinks) < len(sinks) {
+		return fmt.Errorf("execution %q: its options carry %d stats sinks, fewer than the %d its stats block compiles to",
+			e.Label, len(o.StatsSinks), len(sinks))
+	}
+	kept := o.StatsSinks[:len(o.StatsSinks)-len(sinks)]
+	o.StatsSinks = append(append([]*metricsv3.StatsSink(nil), kept...), sinks...)
+	return nil
+}
+
+// backendSegments names each backend of a pool for a metric prefix: its host,
+// sanitized like any other label (`10.0.0.11:8443` is `10_0_0_11`), or host
+// and port when two backends share a host, as engines on one machine do. One
+// segment per address, in order.
+func backendSegments(addrs []string) []string {
+	hosts := make([]string, len(addrs))
+	seen := map[string]int{}
+	for i, a := range addrs {
+		host, _, err := net.SplitHostPort(a)
+		if err != nil {
+			host = a
+		}
+		hosts[i] = host
+		seen[host]++
+	}
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		name := hosts[i]
+		if seen[hosts[i]] > 1 {
+			name = a
+		}
+		out[i] = strings.Join(plan.StatsLabel(name), "_")
+	}
+	return out
 }

@@ -64,7 +64,10 @@ message Plan {
 // effective prefix is `<prefix>.<label>`, where label is the execution's label
 // with each `/`-separated segment lowercased and reduced to [a-z0-9_]
 // (`smoke` -> `sortie.smoke`; staircase stage 2 of `smoke` ->
-// `sortie.smoke.stage_2`). See compile.StatsPrefix.
+// `sortie.smoke.stage_2`). See compile.StatsPrefix. When the execution is
+// dispatched, each backend's sinks get the backend as one more component --
+// its host, sanitized the same way, or host and port when backends share a
+// host -- so every engine of a pool emits its own series.
 message Stats {
   option (buf.validate.message).cel = {
     id: "stats.needs_a_sink"

@@ -47,6 +47,10 @@ type Execution struct {
 	// Target is the weighted target this execution drives, nil otherwise.
 	Target *plan.Target
 
+	// stats is the scenario's effective stats block, kept so ForPool can give
+	// each backend's sinks a prefix that names the backend.
+	stats *plan.Stats
+
 	// Rate is the requests per second this execution targets: the aggregate
 	// across the whole pool, before it is divided among backends, or -- with
 	// PerBackend -- the rate of each backend.
@@ -66,6 +70,20 @@ type Execution struct {
 
 // Expand turns a scenario into the executions it runs as.
 func Expand(s *plan.Scenario) ([]Execution, error) {
+	execs, err := expand(s)
+	if err != nil {
+		return nil, err
+	}
+	// The stats sinks in each execution's options are the scenario's, without
+	// a backend in their prefix: the backends are not known here. ForPool
+	// rebuilds them per backend from this.
+	for i := range execs {
+		execs[i].stats = s.GetStats()
+	}
+	return execs, nil
+}
+
+func expand(s *plan.Scenario) ([]Execution, error) {
 	if len(s.GetTargets()) == 0 {
 		return expandOne(s)
 	}
@@ -187,6 +205,18 @@ func ForPool(e Execution, pool *plan.Pool) ([]string, []*client.CommandLineOptio
 	perBackend, err := Divide(e, len(pool.Services))
 	if err != nil {
 		return nil, nil, err
+	}
+	// Every backend runs the same execution, and without this every backend
+	// would emit its live metrics under the same names: a statsd server
+	// would then hold one series fed by all of them, reading as one
+	// backend's worth. Each backend's sinks get the backend in their prefix.
+	if e.stats != nil {
+		segments := backendSegments(pool.Services)
+		for i, opts := range perBackend {
+			if err := restat(opts, e, segments[i]); err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 	return pool.Services, perBackend, nil
 }
