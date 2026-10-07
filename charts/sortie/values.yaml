@@ -145,6 +145,13 @@ report:
   format: json
   # The pod volume to write it to, without a name. Required with path.
   volume: {}
+  # A file name, such as results.jsonl. With one, sortie also appends each
+  # execution's result to that file beside the report as the execution
+  # finishes (--results-stream): one JSON object per line, the objects of the
+  # JSON report's "executions". It is what is left of a long run whose pod
+  # died before the report was written. Appended to, never truncated: a run on
+  # the same volume adds its lines after the last one's. Needs path.
+  stream: ""
 
 # Run on a schedule instead of once. A load test that runs once is a gate; one
 # that runs on a schedule is a canary.

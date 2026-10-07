@@ -77,7 +77,7 @@ moves the pin and everything that has to move with it (see `AGENTS.md`).
 
 | Command | What it does |
 | --- | --- |
-| `sortie run <plan.yaml>` | Run the plan and report a verdict. `--json` for CI, `-o FILE` to write the report to a file (stdout then gets the text summary), `--progress 5s` to narrate each backend's run on stderr. |
+| `sortie run <plan.yaml>` | Run the plan and report a verdict. `--json` for CI, `-o FILE` to write the report to a file (stdout then gets the text summary), `--results-stream FILE` to append each execution's result to a file as it finishes, `--progress 5s` to narrate each backend's run on stderr. |
 | `sortie validate <plan.yaml>` | Check the plan without running anything. |
 | `sortie compile <plan.yaml>` | Print the `CommandLineOptions` it would send to each backend. |
 
@@ -223,12 +223,16 @@ unchanged to each.
 Nighthawk cannot change the rate of a run already in flight — the `UpdateRequest`
 RPC exists in `api/client/service.proto` but the service rejects it. Each stage
 is therefore its own execution: connections are re-established at every
-boundary, and each stage is reported and judged separately. A stage that
-fails does not stop the ones after it, with one exception: when a stage is
-refused because an engine is at its execution cap (see Weighted targets), the
-scenario's remaining stages are not attempted. They are listed in the report
-as `SKIP` (`"not_run": true` in the JSON) with the stage that was refused, and
-the plan's other scenarios still run.
+boundary, and each stage is reported and judged separately. A staircase of
+hundreds of stages is a run of hours, so each stage's verdict is printed, and
+with `--results-stream` recorded, when the stage ends rather than when the
+run does: see [a verdict as each execution finishes](#a-verdict-as-each-execution-finishes).
+
+A stage that fails does not stop the ones after it, with one exception: when
+a stage is refused because an engine is at its execution cap (see Weighted
+targets), the scenario's remaining stages are not attempted. They are listed
+in the report as `SKIP` (`"not_run": true` in the JSON) with the stage that
+was refused, and the plan's other scenarios still run.
 
 ## Weighted targets
 
@@ -826,6 +830,52 @@ is the one a threshold on that statistic was judged against. They are per
 backend only, for the reason given above: a pool-wide percentile cannot be had
 from the backends' own.
 
+### a verdict as each execution finishes
+
+The report is written when the run ends. A run of hours should not have to
+end, or end well, before a stage that failed in its first hour is known, so
+every execution leaves two records the moment it finishes.
+
+One is a line on stderr, beside the `running` line that announced it, with or
+without `--progress`:
+
+```
+  running steps/stage-40 (400 rps for 1m0s) on 10.0.0.1:8443, 10.0.0.2:8443
+  PASS steps/stage-40 (scenario steps, 1m0.412s)
+  running steps/stage-41 (410 rps for 1m0s) on 10.0.0.1:8443, 10.0.0.2:8443
+  FAIL steps/stage-41 (scenario steps, 1m0.398s): latency_2xx.p95 < 50ms actual 12ms, 81ms
+```
+
+`PASS` or `FAIL`, the label, the scenario and the elapsed time; a failure adds
+what failed it, separated by `; `: the execution's own error, each backend
+that did not finish cleanly, and each threshold that did not hold with the
+values observed (one per backend for a latency threshold, in the pool's
+order). Thresholds that held are left to the report. It is always one line,
+so `grep '^  FAIL '` over a pod's log finds every failed stage so far.
+
+The other is `--results-stream FILE`: each finished execution is appended to
+the file as one line of JSON ([JSON Lines](https://jsonlines.org)). A line is
+exactly the object that execution is in `executions` of the `--json` report --
+same keys, same values, `started_at` and `ended_at` included -- so whatever
+reads the report's executions reads the stream's lines, and the stream of a
+run that finished holds the report's executions in order:
+
+```
+{"label":"steps/stage-41","scenario":"steps","pool":"nodes","rate":410,"duration_ms":60000,"elapsed_ms":60398,"started_at":"2026-10-07T12:40:07.118Z","ended_at":"2026-10-07T12:41:07.516Z","pass":false,"backends":["10.0.0.1:8443","10.0.0.2:8443"],"thresholds":[{"expr":"latency_2xx.p95 \u003c 50ms","scope":"per-backend","pass":false,"actual":"12ms, 81ms"}],"totals":{...},"results":[...]}
+```
+
+Each line is written whole, in one write, and synced to disk as its execution
+finishes, so a reader following the file can parse every line that ends in a
+newline, and what was written survives the pod. The targets of a weighted
+scenario finish together and are written together, in plan order. The file is appended to,
+never truncated: a run that is retried, or the next run given the same file,
+adds its lines after the ones already there, and `started_at` tells them
+apart. Delete or rename the file between runs to keep one run in it. A line
+that cannot be written is reported on stderr and the run carries on; a file
+that cannot be opened is refused before any load, as is `-`: stdout carries
+the report. The stream does not replace the report, which is still written at
+the end, and it has no overall `pass`: that is known only then.
+
 ### percentiles resolve to the next histogram bucket
 
 Nighthawk returns an HdrHistogram's own buckets, not round percentiles. A
@@ -1015,10 +1065,17 @@ report:
 podSecurityContext: {runAsNonRoot: true, fsGroup: 65532}
 ```
 
-The next run on the same volume and path overwrites the file. The volume is
-mounted at the file's directory, so give the file a directory of its own: a
-path directly under `/` or `/etc`, or at or under `/sortie` or `/etc/sortie`,
-is refused.
+`report.stream` with a file name, say `results.jsonl`, adds
+`--results-stream`: each execution's result is appended to that file, beside
+the report on the same volume, as the execution finishes (see
+[a verdict as each execution finishes](#a-verdict-as-each-execution-finishes)).
+For a run of hours it is the part of the report that exists if the pod does
+not live to write the rest.
+
+The next run on the same volume and path overwrites the report, and appends
+to the stream. The volume is mounted at the file's directory, so give the
+file a directory of its own: a path directly under `/` or `/etc`, or at or
+under `/sortie` or `/etc/sortie`, is refused.
 
 The Job and the engine come up together, so sortie waits up to 30 seconds for
 each backend to accept connections before the run starts; a backend that is

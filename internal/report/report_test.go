@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	client "github.com/bpalermo/sortie/engine/api/client"
 
+	"github.com/bpalermo/sortie/internal/compile"
 	"github.com/bpalermo/sortie/internal/report"
 	"github.com/bpalermo/sortie/internal/result"
 	"github.com/bpalermo/sortie/internal/run"
@@ -615,6 +617,166 @@ func TestReportsOmitATimeNobodyRecorded(t *testing.T) {
 	}
 	if strings.Contains(text.String(), "started") {
 		t.Errorf("the text report gives a start time it does not have:\n%s", text.String())
+	}
+}
+
+// Whatever the progress interval, each execution's verdict is one line when
+// it finishes. A pass is short; a failure names everything that failed it.
+func TestProgressPrintsAVerdictLineAsAnExecutionFinishes(t *testing.T) {
+	passed := reportWith(t, 10*time.Millisecond, "latency_2xx.p95 < 50ms").Executions[0]
+	passed.Label, passed.Scenario = "steps/stage-1", "steps"
+
+	failed := reportWith(t, 900*time.Millisecond, "latency_2xx.p95 < 50ms", "counter:benchmark.http_2xx > 0").Executions[0]
+	failed.Label, failed.Scenario = "steps/stage-2", "steps"
+	failed.BackendErrors = []run.BackendError{{Addr: "10.0.0.2:8443", Err: errors.New("went away")}}
+
+	// Several backends' errors joined are one to a line; the verdict is not.
+	broken := run.ExecutionReport{
+		Label: "steps/stage-3", Scenario: "steps", Elapsed: 1500 * time.Millisecond,
+		Err: errors.Join(errors.New("backend a: refused"), errors.New("backend b: refused")),
+	}
+
+	var buf bytes.Buffer
+	p := report.Progress{W: &buf}
+	p.ExecutionFinished(passed)
+	p.ExecutionFinished(failed)
+	p.ExecutionFinished(broken)
+
+	want := "  PASS steps/stage-1 (scenario steps, 11s)\n" +
+		"  FAIL steps/stage-2 (scenario steps, 11s): 10.0.0.2:8443: error: went away; latency_2xx.p95 < 50ms actual 900ms\n" +
+		"  FAIL steps/stage-3 (scenario steps, 1.5s): error: backend a: refused; backend b: refused\n"
+	if got := buf.String(); got != want {
+		t.Errorf("verdict lines:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// manyExecutions is a report with every kind of execution in it: passed,
+// failed on a threshold with a backend lost, and never run.
+func manyExecutions(t *testing.T) *run.Report {
+	t.Helper()
+	start := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	passed := reportWith(t, 10*time.Millisecond, "latency_2xx.p95 < 50ms").Executions[0]
+	passed.Started = start
+	failed := reportWith(t, 900*time.Millisecond, "latency_2xx.p95 < 50ms").Executions[0]
+	failed.Label, failed.Started = "smoke/2", start.Add(time.Minute)
+	failed.Backends = []string{"127.0.0.1:8443", "10.0.0.2:8443"}
+	failed.BackendErrors = []run.BackendError{{Addr: "10.0.0.2:8443", Err: errors.New("went away")}}
+	broken := run.ExecutionReport{
+		Label: "smoke/3", Scenario: "smoke", Pool: "local", Rate: 10, Duration: time.Second,
+		Started: start.Add(2 * time.Minute), Elapsed: time.Second, Err: errFake{},
+	}
+	return &run.Report{Executions: []run.ExecutionReport{passed, failed, broken}}
+}
+
+// The stream has one schema, and it is the report's: line n is, key for key
+// and value for value, executions[n] of the JSON report of the same run. Each
+// line is whole -- one object, one newline -- so a reader following the file
+// can parse every line it has.
+func TestStreamLinesAreTheReportsExecutions(t *testing.T) {
+	r := manyExecutions(t)
+
+	var stream bytes.Buffer
+	s := report.Stream{W: &stream, Failed: func(label string, err error) { t.Errorf("%s: %v", label, err) }}
+	for _, e := range r.Executions {
+		s.ExecutionFinished(e)
+	}
+	var full bytes.Buffer
+	if err := report.JSON(&full, r); err != nil {
+		t.Fatal(err)
+	}
+	var want struct {
+		Executions []map[string]any `json:"executions"`
+	}
+	if err := json.Unmarshal(full.Bytes(), &want); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.HasSuffix(stream.String(), "\n") {
+		t.Fatalf("the last line is not terminated:\n%s", stream.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(stream.String(), "\n"), "\n")
+	if len(lines) != len(want.Executions) {
+		t.Fatalf("got %d lines for %d executions:\n%s", len(lines), len(want.Executions), stream.String())
+	}
+	for i, line := range lines {
+		var got map[string]any
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatalf("line %d does not parse: %v\n%s", i+1, err, line)
+		}
+		if !reflect.DeepEqual(got, want.Executions[i]) {
+			t.Errorf("line %d is not executions[%d] of the report:\n%s\nwant:\n%v", i+1, i, line, want.Executions[i])
+		}
+		if got["started_at"] == nil || got["ended_at"] == nil {
+			t.Errorf("line %d does not say when it ran:\n%s", i+1, line)
+		}
+	}
+}
+
+// failAfter is a writer that takes n writes whole and refuses the rest.
+type failAfter struct {
+	n      int
+	writes [][]byte
+}
+
+func (f *failAfter) Write(b []byte) (int, error) {
+	if len(f.writes) >= f.n {
+		return 0, errors.New("disk full")
+	}
+	f.writes = append(f.writes, append([]byte(nil), b...))
+	return len(b), nil
+}
+
+// A line that cannot be written is reported, by name, and is nobody's reason
+// to stop: the stream neither panics nor gives up on the lines after it. And
+// a line reaches the writer in one Write, newline and all, which is what
+// keeps a half-written object out of a file that is being followed.
+func TestStreamReportsAWriteThatFailedAndCarriesOn(t *testing.T) {
+	r := manyExecutions(t)
+	w := &failAfter{n: 1}
+	var failed []string
+	s := report.Stream{W: w, Failed: func(label string, err error) {
+		failed = append(failed, label+": "+err.Error())
+	}}
+	for _, e := range r.Executions {
+		s.ExecutionFinished(e)
+	}
+
+	if len(w.writes) != 1 || !bytes.HasSuffix(w.writes[0], []byte("}\n")) || bytes.Count(w.writes[0], []byte("\n")) != 1 {
+		t.Errorf("the first line was not one whole write: %q", w.writes)
+	}
+	if want := []string{"smoke/2: disk full", "smoke/3: disk full"}; !reflect.DeepEqual(failed, want) {
+		t.Errorf("failures reported = %q, want %q", failed, want)
+	}
+	// With nobody to tell, a failed write is still not a panic.
+	report.Stream{W: &failAfter{}}.ExecutionFinished(r.Executions[0])
+}
+
+// recorder is an observer that notes what it was told.
+type recorder struct{ calls *[]string }
+
+func (r recorder) ExecutionStarted(e compile.Execution, _ []string) {
+	*r.calls = append(*r.calls, "started "+e.Label)
+}
+
+func (r recorder) ExecutionProgress(e compile.Execution, _ string, _ time.Duration, _ *client.Output) {
+	*r.calls = append(*r.calls, "progress "+e.Label)
+}
+
+func (r recorder) ExecutionFinished(e run.ExecutionReport) {
+	*r.calls = append(*r.calls, "finished "+e.Label)
+}
+
+func TestObserversPassEveryCallbackToEachMember(t *testing.T) {
+	var a, b []string
+	obs := report.Observers{recorder{&a}, recorder{&b}}
+	e := compile.Execution{Label: "x"}
+	obs.ExecutionStarted(e, nil)
+	obs.ExecutionProgress(e, "backend", time.Second, nil)
+	obs.ExecutionFinished(run.ExecutionReport{Label: "x"})
+
+	want := []string{"started x", "progress x", "finished x"}
+	if !reflect.DeepEqual(a, want) || !reflect.DeepEqual(b, want) {
+		t.Errorf("members were told %q and %q, want %q each", a, b, want)
 	}
 }
 

@@ -9,8 +9,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +32,8 @@ type fakeBackend struct {
 	client.UnimplementedNighthawkServiceServer
 	p95      time.Duration
 	requests uint64
+	// calls counts the executions it was asked for.
+	calls atomic.Int64
 }
 
 func (f *fakeBackend) ExecutionStream(stream client.NighthawkService_ExecutionStreamServer) error {
@@ -40,6 +44,7 @@ func (f *fakeBackend) ExecutionStream(stream client.NighthawkService_ExecutionSt
 			}
 			return err
 		}
+		f.calls.Add(1)
 		if err := stream.Send(&client.ExecutionResponse{
 			Output: &client.Output{Results: []*client.Result{{
 				Name:              "global",
@@ -302,5 +307,145 @@ scenarios:
 	}
 	if !strings.Contains(stderr, `pool "nodes": resolving engine.sortie-test.invalid:8443`) {
 		t.Errorf("the error should name the pool and the name:\n%s", stderr)
+	}
+}
+
+// writeStaircase writes a two-stage plan against the backend, with a
+// threshold, and returns its path.
+func writeStaircase(t *testing.T, backend string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "plan.yaml")
+	body := fmt.Sprintf(`
+version: v1
+pools:
+  - name: local
+    services: ["%s"]
+scenarios:
+  - name: steps
+    pool: local
+    target: http://127.0.0.1:1/
+    executor:
+      type: staircase
+      stages:
+        - {rate: 10, duration: 1s}
+        - {rate: 20, duration: 1s}
+    thresholds: ["latency_2xx.p95 < 50ms"]
+`, backend)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A stage's verdict is on stderr when the stage ends, with no --progress
+// asked for, and the results stream holds one line per stage that is that
+// stage's object in the JSON report.
+func TestRunStreamsEachExecutionAsItFinishes(t *testing.T) {
+	plan := writeStaircase(t, startBackend(t, 900*time.Millisecond))
+	dir := t.TempDir()
+	out, stream := filepath.Join(dir, "report.json"), filepath.Join(dir, "results.jsonl")
+	// The stream is appended to: what a run that died left there is kept.
+	if err := os.WriteFile(stream, []byte("{\"label\":\"earlier\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runCLI("run", "--json", "-o", out, "--results-stream", stream, plan)
+	if code != exitFailed {
+		t.Fatalf("exit = %d, want %d\nstdout:\n%s\nstderr:\n%s", code, exitFailed, stdout, stderr)
+	}
+	for _, label := range []string{"steps/stage-1", "steps/stage-2"} {
+		want := "  FAIL " + label + " (scenario steps, "
+		if !strings.Contains(stderr, want) || !strings.Contains(stderr, "latency_2xx.p95 < 50ms actual 900ms") {
+			t.Errorf("stderr lacks the verdict line %q with its failed threshold:\n%s", want, stderr)
+		}
+	}
+
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var full struct {
+		Executions []map[string]any `json:"executions"`
+	}
+	if err := json.Unmarshal(raw, &full); err != nil {
+		t.Fatalf("the report does not parse: %v\n%s", err, raw)
+	}
+	streamed, err := os.ReadFile(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(streamed), "\n"), "\n")
+	if len(lines) != 3 || lines[0] != `{"label":"earlier"}` {
+		t.Fatalf("want the earlier line and one per stage, got:\n%s", streamed)
+	}
+	for i, line := range lines[1:] {
+		var got map[string]any
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatalf("stream line does not parse: %v\n%s", err, line)
+		}
+		if !reflect.DeepEqual(got, full.Executions[i]) {
+			t.Errorf("stream line %d is not executions[%d] of the report:\n%s\nwant:\n%v", i+1, i, line, full.Executions[i])
+		}
+		for _, key := range []string{"started_at", "ended_at"} {
+			at, _ := got[key].(string)
+			if _, err := time.Parse(time.RFC3339Nano, at); err != nil || !strings.HasSuffix(at, "Z") {
+				t.Errorf("%s = %q, want an RFC 3339 time in UTC", key, at)
+			}
+		}
+	}
+}
+
+// A stream that cannot be written is said so, once per line, and the run and
+// its verdict are what they would have been without it.
+func TestRunCarriesOnWhenTheStreamCannotBeWritten(t *testing.T) {
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("no /dev/full to fail writes with")
+	}
+	plan := writeStaircase(t, startBackend(t, 5*time.Millisecond))
+
+	code, stdout, stderr := runCLI("run", "--results-stream", "/dev/full", plan)
+	if code != exitOK {
+		t.Fatalf("exit = %d, want %d: a failed stream must not fail the run\nstderr:\n%s", code, exitOK, stderr)
+	}
+	if !strings.Contains(stdout, "PASS  2/2 executions passed") {
+		t.Errorf("the report is not the full one:\n%s", stdout)
+	}
+	for _, label := range []string{"steps/stage-1", "steps/stage-2"} {
+		if !strings.Contains(stderr, "sortie: results stream: "+label+" was not written: ") {
+			t.Errorf("stderr does not report the lost line for %s:\n%s", label, stderr)
+		}
+	}
+}
+
+// What cannot be honoured is refused before any load: stdout, which is the
+// report's; the report's own file; a file that cannot be opened.
+func TestRunRefusesAStreamItCannotKeep(t *testing.T) {
+	backend := &fakeBackend{p95: 5 * time.Millisecond, requests: 100}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	client.RegisterNighthawkServiceServer(server, backend)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	plan := writePlan(t, listener.Addr().String(), "")
+	dir := t.TempDir()
+
+	for name, args := range map[string][]string{
+		"stdout":          {"--results-stream", "-"},
+		"the report file": {"-o", filepath.Join(dir, "r.json"), "--results-stream", filepath.Join(dir, ".", "r.json")},
+		"no such dir":     {"--results-stream", filepath.Join(dir, "missing", "results.jsonl")},
+	} {
+		code, _, stderr := runCLI(append(append([]string{"run"}, args...), plan)...)
+		if code != exitBadUsage {
+			t.Errorf("%s: exit = %d, want %d\nstderr:\n%s", name, code, exitBadUsage, stderr)
+		}
+		if !strings.Contains(stderr, "--results-stream") {
+			t.Errorf("%s: the error does not name the flag:\n%s", name, stderr)
+		}
+	}
+	if n := backend.calls.Load(); n != 0 {
+		t.Errorf("the backend was driven %d times by runs that should not have started", n)
 	}
 }

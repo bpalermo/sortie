@@ -493,7 +493,98 @@ func (p Progress) ExecutionProgress(e compile.Execution, backend string, elapsed
 	fmt.Fprintf(p.W, "    %s  %s  %s  %s\n", e.Label, backend, elapsed.Truncate(100*time.Millisecond), snapshotSummary(out))
 }
 
-func (p Progress) ExecutionFinished(r run.ExecutionReport) {}
+// ExecutionFinished prints the execution's verdict, whatever the progress
+// interval: a run of hundreds of stages is hours long, and a stage that
+// failed in the first of them should be in the log then, not in a report
+// that is written when the last one ends -- or never, if the run dies first.
+func (p Progress) ExecutionFinished(r run.ExecutionReport) {
+	fmt.Fprintf(p.W, "  %s\n", verdictLine(r))
+}
+
+// verdictLine is one finished execution on one line: the verdict, the label
+// and scenario, how long it took and, for a failure, everything that failed
+// it -- the execution's own error, each backend that did not finish cleanly,
+// and each threshold that did not hold with the values observed. Thresholds
+// that held are left to the report.
+func verdictLine(r run.ExecutionReport) string {
+	verdict := "FAIL"
+	if r.Pass {
+		verdict = "PASS"
+	}
+	line := fmt.Sprintf("%s %s (scenario %s, %s)", verdict, r.Label, r.Scenario, r.Elapsed.Round(time.Millisecond))
+
+	var why []string
+	if r.Err != nil {
+		why = append(why, fmt.Sprintf("error: %v", r.Err))
+	}
+	for _, be := range r.BackendErrors {
+		why = append(why, fmt.Sprintf("%s: error: %v", be.Addr, be.Err))
+	}
+	for _, o := range r.Outcomes {
+		if !o.Pass {
+			why = append(why, fmt.Sprintf("%s actual %s", o.Threshold.Raw, o.Detail()))
+		}
+	}
+	if len(why) == 0 {
+		return line
+	}
+	// One line whatever the errors hold: several backends' errors joined are
+	// one to a line, and a verdict that wraps is not found by a grep for it.
+	return line + ": " + oneLine.Replace(strings.Join(why, "; "))
+}
+
+var oneLine = strings.NewReplacer("\r\n", "; ", "\n", "; ", "\r", " ")
+
+// Stream is a run.Observer that writes every execution as it finishes, as one
+// line of JSON: JSON Lines, each line the object the execution will be in the
+// final report's "executions", built by the same code. It is the record of a
+// long run that exists before the run is over.
+//
+// A line goes out in a single Write, newline included, so a reader following
+// the file sees whole lines or, at worst, a last one still without its
+// newline. A line that cannot be written is passed to Failed and the run goes
+// on: the stream is a copy, and losing it is not a reason to lose the run.
+type Stream struct {
+	W io.Writer
+	// Failed, when set, is told of each line that could not be written.
+	Failed func(label string, err error)
+}
+
+func (s Stream) ExecutionStarted(compile.Execution, []string) {}
+
+func (s Stream) ExecutionProgress(compile.Execution, string, time.Duration, *client.Output) {}
+
+func (s Stream) ExecutionFinished(r run.ExecutionReport) {
+	line, err := json.Marshal(newJSONExecution(r))
+	if err == nil {
+		_, err = s.W.Write(append(line, '\n'))
+	}
+	if err != nil && s.Failed != nil {
+		s.Failed(r.Label, err)
+	}
+}
+
+// Observers is a run.Observer that passes every callback to each of its
+// members, in order.
+type Observers []run.Observer
+
+func (obs Observers) ExecutionStarted(e compile.Execution, backends []string) {
+	for _, o := range obs {
+		o.ExecutionStarted(e, backends)
+	}
+}
+
+func (obs Observers) ExecutionProgress(e compile.Execution, backend string, elapsed time.Duration, out *client.Output) {
+	for _, o := range obs {
+		o.ExecutionProgress(e, backend, elapsed, out)
+	}
+}
+
+func (obs Observers) ExecutionFinished(r run.ExecutionReport) {
+	for _, o := range obs {
+		o.ExecutionFinished(r)
+	}
+}
 
 // snapshotSummary is one line from an interim Output: responses by class, the
 // failure counters that explain a missing class, and the latency so far of
