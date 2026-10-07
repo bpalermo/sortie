@@ -7,11 +7,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -94,6 +99,81 @@ func SetCancelGraceForTest(d time.Duration) (restore func()) {
 	return func() { cancelGrace = old }
 }
 
+// MaxConcurrentExecutionsTrailer is the trailing metadata a service sets on a
+// stream whose start it refused for running as many executions as it allows
+// (ServiceImpl::MaxConcurrentExecutionsTrailer in the engine); its value is
+// that maximum.
+const MaxConcurrentExecutionsTrailer = "nighthawk-max-concurrent-executions"
+
+// BusyError is a start the service refused because it is already running as
+// many executions as it allows. Nothing was started. It unwraps to the stream's
+// status, whose code is ResourceExhausted.
+//
+// The code alone does not identify it -- gRPC reports a message over the size
+// limit with the same one -- so Execute returns a BusyError only for a
+// ResourceExhausted that carries the service's trailer.
+type BusyError struct {
+	// Max is how many executions the service runs at once, 0 when it did not
+	// say so legibly.
+	Max int
+	Err error
+}
+
+func (e *BusyError) Error() string {
+	if e.Max > 0 {
+		return fmt.Sprintf("the service refused the start: it is at its cap of %d concurrent executions (%v)", e.Max, e.Err)
+	}
+	return fmt.Sprintf("the service refused the start: it is at its cap of concurrent executions (%v)", e.Err)
+}
+
+func (e *BusyError) Unwrap() error { return e.Err }
+
+// busy returns err as a BusyError when the stream that ended with it was
+// refused at the service's execution cap, and nil otherwise. The trailer is
+// readable once Recv has returned an error, which is where err comes from.
+func busy(stream grpc.ClientStream, err error) *BusyError {
+	if status.Code(err) != codes.ResourceExhausted {
+		return nil
+	}
+	values := stream.Trailer().Get(MaxConcurrentExecutionsTrailer)
+	if len(values) == 0 {
+		return nil
+	}
+	limit, convErr := strconv.Atoi(values[0])
+	if convErr != nil || limit < 0 {
+		limit = 0
+	}
+	return &BusyError{Max: limit, Err: err}
+}
+
+// The service's two refusals at its execution cap, as worded in the engine's
+// ServiceImpl::ExecutionStream. With a cap above one the message gives the
+// number running, which at a refusal is the cap.
+var busyMessage = regexp.MustCompile(`Busy: (\d+) executions are running, the maximum this service allows`)
+
+const busySingleMessage = "Only a single benchmark session is allowed at a time."
+
+// busyFromStatus is busy for a refusal that arrives second hand, as the
+// google.rpc.Status a distributor hands back for one of its targets: the
+// code it copied from the service's stream and the service's message. The
+// trailer that marks the refusal on a direct stream does not travel that way,
+// so here it is the code together with the service's own wording that
+// identifies it, and the wording that gives the cap.
+func busyFromStatus(code int32, message string) *BusyError {
+	if codes.Code(code) != codes.ResourceExhausted {
+		return nil
+	}
+	limit := 0
+	if m := busyMessage.FindStringSubmatch(message); m != nil {
+		limit, _ = strconv.Atoi(m[1])
+	} else if strings.Contains(message, busySingleMessage) {
+		limit = 1
+	} else {
+		return nil
+	}
+	return &BusyError{Max: limit, Err: status.Error(codes.ResourceExhausted, message)}
+}
+
 // Progress asks the service for interim responses while a run is in flight
 // and receives them: every Interval the service writes a snapshot of the run
 // so far and Fn gets it. A snapshot carries the live counters and each
@@ -109,6 +189,8 @@ type Progress struct {
 
 // Execute runs one benchmark against a single nighthawk_service and returns
 // its final response; progress, when not nil, asks for interim ones on the way.
+// A start the service refused because it is at its execution cap is returned
+// as a *BusyError.
 func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLineOptions, progress *Progress) (*client.ExecutionResponse, error) {
 	stub := client.NewNighthawkServiceClient(conn)
 	streamCtx, closeStream := context.WithCancel(context.WithoutCancel(ctx))
@@ -126,6 +208,18 @@ func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLin
 		CommandSpecificOptions: &client.ExecutionRequest_StartRequest{StartRequest: start},
 	}
 	if err := stream.Send(req); err != nil {
+		// A stream the service has already ended fails a Send with io.EOF and
+		// keeps its status for Recv. That status may be the refusal of a
+		// service at its execution cap, which the caller must be able to tell
+		// from any other failed start.
+		if err == io.EOF {
+			if _, recvErr := stream.Recv(); recvErr != nil && recvErr != io.EOF {
+				if refused := busy(stream, recvErr); refused != nil {
+					return nil, refused
+				}
+				err = recvErr
+			}
+		}
 		return nil, fmt.Errorf("sending start request: %w", err)
 	}
 
@@ -181,6 +275,9 @@ func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLin
 	if err != nil {
 		if err == io.EOF {
 			return nil, fmt.Errorf("service closed the stream without returning a response")
+		}
+		if refused := busy(stream, err); refused != nil {
+			return nil, refused
 		}
 		return nil, fmt.Errorf("awaiting execution response: %w", err)
 	}

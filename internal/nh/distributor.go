@@ -68,6 +68,9 @@ func Distribute(
 // reported an error but still returned what it counted is in both. So one
 // target going away does not cost the run every other target's results.
 //
+// A target the distributor reports as refused at its execution cap is named
+// with a *BusyError.
+//
 // The error return is for what leaves nothing to trust: the request could not
 // be sent, or what came back does not match the pool -- a target answered
 // twice, or something answered that was never targeted.
@@ -129,6 +132,12 @@ func DistributePartial(
 			name := formatAddress(sr.GetService())
 			answered = append(answered, name)
 			if e := sr.GetError(); e != nil && e.GetCode() != 0 {
+				// A target at its execution cap is the same *BusyError a
+				// direct backend gives, so the runner treats both alike.
+				if refused := busyFromStatus(e.GetCode(), e.GetMessage()); refused != nil {
+					failed = append(failed, TargetError{Target: name, Err: refused})
+					continue
+				}
 				failed = append(failed, TargetError{Target: name, Err: errors.New(e.GetMessage())})
 				continue
 			}

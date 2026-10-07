@@ -55,6 +55,14 @@ public:
     stub_ = std::make_unique<nighthawk::client::NighthawkService::Stub>(channel_);
   }
 
+  // The cap a refused stream names in its trailing metadata, or an empty string when it names
+  // none. Valid once the stream has finished.
+  static std::string maxConcurrentExecutionsTrailer(const grpc::ClientContext& context) {
+    const auto& trailers = context.GetServerTrailingMetadata();
+    const auto it = trailers.find(ServiceImpl::MaxConcurrentExecutionsTrailer);
+    return it == trailers.end() ? std::string() : std::string(it->second.data(), it->second.size());
+  }
+
   void singleStreamBackToBackExecution(grpc::ClientContext& context,
                                        nighthawk::client::NighthawkService::Stub&) {
     auto r = stub_->ExecutionStream(&context);
@@ -271,6 +279,27 @@ TEST_P(ServiceTest, CancelStopsARunningExecution) {
   EXPECT_TRUE(status.ok());
 }
 
+// A cancellation sent right behind the start -- before the service has built the run -- is
+// not lost: the run ends at once instead of going on for its whole duration. That is what a
+// client does when a sibling execution it started alongside this one was refused.
+TEST_P(ServiceTest, CancelRightBehindTheStartIsNotLost) {
+  auto options = request_.mutable_start_request()->mutable_options();
+  options->mutable_duration()->set_seconds(60);
+  (*options->mutable_failure_predicates())["benchmark.nonexistent"] = 0;
+  auto r = stub_->ExecutionStream(&context_);
+  nighthawk::client::ExecutionRequest cancel;
+  cancel.mutable_cancellation_request();
+  EXPECT_TRUE(r->Write(request_, {}));
+  EXPECT_TRUE(r->Write(cancel, {}));
+  EXPECT_TRUE(r->WritesDone());
+  const auto started = std::chrono::steady_clock::now(); // NO_CHECK_FORMAT(real_time)
+  EXPECT_TRUE(r->Read(&response_));
+  const auto waited = std::chrono::steady_clock::now() - started; // NO_CHECK_FORMAT(real_time)
+  EXPECT_LT(waited, std::chrono::seconds(30)) << "the cancellation was dropped";
+  EXPECT_FALSE(r->Read(&response_));
+  EXPECT_TRUE(r->Finish().ok());
+}
+
 // Only the stream that started an execution can cancel it. Another client's
 // stream sending a cancellation is answered normally and changes nothing: a
 // start request on it afterwards is still refused as busy, and the owner's
@@ -307,6 +336,10 @@ TEST_P(ServiceTest, CancelFromAnotherStreamIsIgnored) {
     const auto status = other->Finish();
     const auto waited = std::chrono::steady_clock::now() - started; // NO_CHECK_FORMAT(real_time)
     EXPECT_FALSE(status.ok());
+    // The request was fine and the service is full: RESOURCE_EXHAUSTED, with the cap in a
+    // trailer so that a client can tell this from any other exhaustion.
+    EXPECT_EQ(grpc::StatusCode::RESOURCE_EXHAUSTED, status.error_code());
+    EXPECT_EQ("1", maxConcurrentExecutionsTrailer(other_context));
     EXPECT_THAT(status.error_message(), HasSubstr("Only a single benchmark session"));
     EXPECT_LT(waited, std::chrono::seconds(10)) << "busy was reported only after the run";
   }
@@ -342,6 +375,10 @@ TEST_P(ServiceTest, SecondStartOnTheSameStreamIsRefused) {
   const auto status = r->Finish();
   EXPECT_FALSE(status.ok());
   EXPECT_THAT(status.error_message(), HasSubstr("already has an execution running"));
+  // A client misusing its own stream, not a full service: not the code, or the trailer, of a
+  // service at its cap.
+  EXPECT_EQ(grpc::StatusCode::INTERNAL, status.error_code());
+  EXPECT_EQ("", maxConcurrentExecutionsTrailer(context_));
 }
 
 class ConcurrentServiceTest : public ServiceTest {
@@ -375,6 +412,8 @@ TEST_P(ConcurrentServiceTest, TwoExecutionsRunAtOnceAndEachStreamCancelsItsOwn) 
     EXPECT_FALSE(c->Read(&response));
     const auto status = c->Finish();
     EXPECT_FALSE(status.ok());
+    EXPECT_EQ(grpc::StatusCode::RESOURCE_EXHAUSTED, status.error_code());
+    EXPECT_EQ("2", maxConcurrentExecutionsTrailer(context_c));
     EXPECT_THAT(status.error_message(), HasSubstr("Busy: 2 executions are running"));
   }
   nighthawk::client::ExecutionRequest cancel;
@@ -404,6 +443,7 @@ TEST_P(ConcurrentServiceTest, TwoExecutionsRunAtOnceAndEachStreamCancelsItsOwn) 
       EXPECT_FALSE(e->Read(&response_e));
       const auto status = e->Finish();
       EXPECT_FALSE(status.ok());
+      EXPECT_EQ(grpc::StatusCode::RESOURCE_EXHAUSTED, status.error_code());
       EXPECT_THAT(status.error_message(), HasSubstr("Busy: 2 executions are running"));
     }
     EXPECT_TRUE(d->Write(cancel, {}));

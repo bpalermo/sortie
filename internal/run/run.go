@@ -55,8 +55,87 @@ type ExecutionReport struct {
 
 	// Err is set when the execution itself failed, as opposed to failing a
 	// threshold: nothing could be dispatched, or no backend returned anything.
+	// A *CapError is a stage stopped at an engine's execution cap, and a
+	// *NotRunError a later stage that was therefore never attempted.
 	Err error
 }
+
+// NotRun reports whether the execution was never attempted (see NotRunError).
+func (e ExecutionReport) NotRun() bool {
+	var notRun *NotRunError
+	return errors.As(e.Err, &notRun)
+}
+
+// CapError is a stage that was stopped because a backend refused one of its
+// starts: the engine there was already running as many executions as it
+// allows. It is the Err of every execution of the stage, the ones that had
+// started and were stopped included.
+type CapError struct {
+	// Backend is the backend that refused, the first one if several did.
+	Backend string
+	// Max is how many executions that engine runs at once, 0 when it did not
+	// say.
+	Max int
+	// Needed is how many executions the stage starts on every backend at
+	// once: one per target of a weighted scenario, otherwise one.
+	Needed int
+	// Distributed says the pool is driven through a distributor, which
+	// forwards no cancellation: the executions that had started were
+	// abandoned, not stopped, and run on its targets to their duration.
+	Distributed bool
+	// Err is the refusal itself.
+	Err error
+}
+
+func (e *CapError) Error() string {
+	limit := "its cap of concurrent executions"
+	if e.Max > 0 {
+		limit = fmt.Sprintf("its cap of %d concurrent executions", e.Max)
+	}
+	needs := "this execution needs one free slot on every backend"
+	if e.Needed > 1 {
+		needs = fmt.Sprintf("this scenario starts %d at once on every backend, one per target", e.Needed)
+	}
+	left := "nothing was left running, the executions that had started were stopped"
+	if e.Distributed {
+		left = "the executions that had started were abandoned but not stopped, since a distributor " +
+			"forwards no cancellation, and they run on its targets to their duration"
+	}
+	// Waiting helps only a stage that fits an idle engine. One that starts
+	// more at once than the cap allows is refused however long it waits.
+	remedy := "Raise the engine's --max-concurrent-executions (engine.maxConcurrentExecutions in the chart) " +
+		"or wait for the runs holding its slots to end"
+	if e.Max > 0 && e.Needed > e.Max {
+		remedy = fmt.Sprintf("Raise the engine's --max-concurrent-executions (engine.maxConcurrentExecutions "+
+			"in the chart) to at least %d: this stage does not fit the cap even on an idle engine", e.Needed)
+	}
+	return fmt.Sprintf("backend %s refused a start because the engine is at %s, and %s; %s. %s (%v)",
+		e.Backend, limit, needs, left, remedy, e.Err)
+}
+
+func (e *CapError) Unwrap() error { return e.Err }
+
+// NotRunError is the Err of an execution that was never attempted: an earlier
+// stage of its scenario was refused at an engine's execution cap, and the
+// stages after a refused one are not run. Its report has no Started and no
+// Elapsed. It unwraps to the CapError that stopped the scenario.
+type NotRunError struct {
+	// Refused is the stage that was refused: its label, or its group's for
+	// a stage of several targets.
+	Refused string
+	Cap     *CapError
+}
+
+func (e *NotRunError) Error() string {
+	limit := "its cap of concurrent executions"
+	if e.Cap.Max > 0 {
+		limit = fmt.Sprintf("its cap of %d concurrent executions", e.Cap.Max)
+	}
+	return fmt.Sprintf("not run: %s was refused because the engine on backend %s was at %s, "+
+		"and the stages after a refused one are not attempted", e.Refused, e.Cap.Backend, limit)
+}
+
+func (e *NotRunError) Unwrap() error { return e.Cap }
 
 // BackendError is one backend's failure within an execution.
 type BackendError struct {
@@ -119,6 +198,10 @@ const resolvePoll = time.Second
 // goroutines at once: the backends' progress arrives concurrently and is
 // serialized before it reaches ExecutionProgress, so an observer needs no
 // locking of its own.
+//
+// ExecutionFinished is called once for every execution of the plan, in plan
+// order within a scenario. One that was never attempted (ExecutionReport.NotRun)
+// gets it too, with no ExecutionStarted before it.
 type Observer interface {
 	ExecutionStarted(e compile.Execution, backends []string)
 	// ExecutionProgress carries one backend's interim snapshot; elapsed is the
@@ -166,6 +249,24 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 				}
 			}
 			reports := r.runGroup(ctx, executions[i:j], pool, thresholds)
+			// A stage refused at an engine's execution cap ends its scenario:
+			// the engine has no room for it, and a staircase that resumed at
+			// whichever stage happened to find the slots free would not be
+			// the staircase that was planned. The remaining stages are
+			// reported, as not run, so the report still lists every stage and
+			// an observer hears of each one. Only this failure does it: a
+			// stage that failed any other way says nothing about the next,
+			// and a staircase survives it.
+			if atCap := refusedAtCap(reports); atCap != nil {
+				refused := executions[i].Label
+				if executions[i].Group != "" {
+					refused = executions[i].Group
+				}
+				for _, e := range executions[j:] {
+					reports = append(reports, notRun(e, pool, &NotRunError{Refused: refused, Cap: atCap}))
+				}
+				j = len(executions)
+			}
 			i = j
 			for _, er := range reports {
 				if !er.Pass {
@@ -186,6 +287,40 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 		}
 	}
 	return report, nil
+}
+
+// refusedAtCap returns the CapError a group's executions were stopped with,
+// nil when they were not.
+func refusedAtCap(reports []ExecutionReport) *CapError {
+	for _, er := range reports {
+		var atCap *CapError
+		if errors.As(er.Err, &atCap) {
+			return atCap
+		}
+	}
+	return nil
+}
+
+// notRun is the report of an execution that was never attempted. It says
+// what was planned and where, and has no start time and no elapsed time:
+// nothing happened.
+func notRun(e compile.Execution, pool *plan.Pool, err *NotRunError) ExecutionReport {
+	backends := pool.Services
+	if pool.Distributor != "" {
+		backends = pool.Targets
+	}
+	return ExecutionReport{
+		Label:      e.Label,
+		Scenario:   e.Scenario.Name,
+		Pool:       pool.Name,
+		Rate:       e.Rate,
+		PerBackend: e.PerBackend,
+		Duration:   e.Duration,
+		RampTime:   e.RampTime,
+		Backends:   backends,
+		Dns:        pool.Dns,
+		Err:        err,
+	}
 }
 
 // resolve returns the plan with its dns pools resolved. Each name is looked
@@ -278,26 +413,82 @@ func emptyAnswer(re *plan.ResolveError) bool {
 
 // runGroup runs the executions concurrently, one goroutine each, and returns
 // their reports in the same order. A single execution runs inline.
+//
+// The group is everything that starts together: the executions of a weighted
+// scenario's targets (or the one execution of any other), on every backend of
+// the pool. A backend refusing one of those starts because its engine is at
+// its execution cap stops them all, on every backend: see refused.
 func (r *Runner) runGroup(
 	ctx context.Context,
 	group []compile.Execution,
 	pool *plan.Pool,
 	thresholds []threshold.Threshold,
 ) []ExecutionReport {
+	stage, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+	// refused is what a backend at its cap triggers. Backends are otherwise
+	// independent -- one that is lost mid-run does not cost the others their
+	// results (see dispatch) -- and this is deliberately the one exception:
+	//
+	//   - It happens at the start, before there is a run worth keeping. A
+	//     node lost eight hours into a soak leaves seven other nodes' worth
+	//     of results; a refused start leaves nothing but the choice between
+	//     failing now and failing after the full duration.
+	//   - What would go on running is not the scenario. With the last slots
+	//     shared out by a race, each backend runs whichever targets happened
+	//     to get in -- a different subset on each -- so the load on the
+	//     targets is neither the planned mix nor the planned rate.
+	//   - It is the same on every backend or it is not the plan: stopping
+	//     only the refusing backend's executions would leave the others
+	//     driving for the whole duration a run that has already failed.
+	//
+	// Only the first refusal is recorded; the cause of a context is set once.
+	refused := func(backend string, err *nh.BusyError) {
+		stop(&CapError{
+			Backend: backend, Max: err.Max, Needed: len(group),
+			Distributed: pool.Distributor != "", Err: err,
+		})
+	}
+
 	reports := make([]ExecutionReport, len(group))
 	if len(group) == 1 {
-		reports[0] = r.runExecution(ctx, group[0], pool, thresholds)
-		return reports
+		reports[0] = r.runExecution(stage, group[0], pool, thresholds, refused)
+	} else {
+		var wg sync.WaitGroup
+		for i, e := range group {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				reports[i] = r.runExecution(stage, e, pool, thresholds, refused)
+			}()
+		}
+		wg.Wait()
 	}
-	var wg sync.WaitGroup
-	for i, e := range group {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			reports[i] = r.runExecution(ctx, e, pool, thresholds)
-		}()
+
+	// An execution that had already returned when a sibling was refused --
+	// one whose backends all failed at once, say -- was reported, and maybe
+	// judged, as a run of its own. The stage was stopped at the cap for all
+	// of them: once they have all joined, each says so and none is judged.
+	var atCap *CapError
+	if errors.As(context.Cause(stage), &atCap) {
+		for i := range reports {
+			if errors.Is(reports[i].Err, atCap) {
+				continue
+			}
+			var refusals []BackendError
+			for _, f := range reports[i].BackendErrors {
+				var busy *nh.BusyError
+				if errors.As(f.Err, &busy) {
+					refusals = append(refusals, f)
+				}
+			}
+			reports[i].BackendErrors = refusals
+			reports[i].Err = atCap
+			reports[i].Pass = false
+			reports[i].Set = nil
+			reports[i].Outcomes = nil
+		}
 	}
-	wg.Wait()
 	return reports
 }
 
@@ -306,6 +497,7 @@ func (r *Runner) runExecution(
 	e compile.Execution,
 	pool *plan.Pool,
 	thresholds []threshold.Threshold,
+	refused func(backend string, err *nh.BusyError),
 ) ExecutionReport {
 	er := ExecutionReport{
 		Label:      e.Label,
@@ -331,13 +523,32 @@ func (r *Runner) runExecution(
 		r.observerMu.Unlock()
 	}
 
-	addrs, outputs, failed, err := r.dispatch(ctx, e, pool)
+	addrs, outputs, failed, err := r.dispatch(ctx, e, pool, refused)
 	er.Elapsed = time.Since(er.Started)
 	if err != nil {
 		er.Err = err
 		return er
 	}
 	er.BackendErrors = failed
+
+	// The stage was stopped because an engine was at its cap (see runGroup):
+	// this execution was either refused or stopped for a sibling that was.
+	// Say so, once, as the execution's error. Of the backends, only the ones
+	// that refused are worth naming -- every other entry is this stop itself,
+	// reported back as a cancellation -- and nothing is judged, as for any
+	// other run that did not finish.
+	var atCap *CapError
+	if errors.As(context.Cause(ctx), &atCap) {
+		er.BackendErrors = nil
+		for _, f := range failed {
+			var busy *nh.BusyError
+			if errors.As(f.Err, &busy) {
+				er.BackendErrors = append(er.BackendErrors, f)
+			}
+		}
+		er.Err = atCap
+		return er
+	}
 
 	// A run the caller cancelled is not judged. Its backends return what they
 	// had counted along with the cancellation, and partial counts held up to
@@ -474,12 +685,15 @@ func addDuration(a, b time.Duration) time.Duration {
 // backends that failed. Backends are independent: one that cannot be reached,
 // or goes away halfway, does not stop the others -- with one engine per node,
 // a node rebooting mid-soak must not void the run on every other node. Only
-// the caller's context ends them all. The error return is for a plan that
-// could not be dispatched at all.
+// the caller's context ends them all, and that context is the stage's: a
+// backend that refuses the start because its engine is at its execution cap
+// is passed to refused, which ends it (see runGroup). The error return is for
+// a plan that could not be dispatched at all.
 func (r *Runner) dispatch(
 	ctx context.Context,
 	e compile.Execution,
 	pool *plan.Pool,
+	refused func(backend string, err *nh.BusyError),
 ) ([]string, []*client.Output, []BackendError, error) {
 	addrs, perBackend, err := compile.ForPool(e, pool)
 	if err != nil {
@@ -533,6 +747,13 @@ func (r *Runner) dispatch(
 		}
 		var failed []BackendError
 		for _, b := range bad {
+			// As for a direct backend: a target at its execution cap ends
+			// the stage. All that can be done for the others here is to
+			// abandon their RPCs (see nh.Distribute on cancellation).
+			var busy *nh.BusyError
+			if errors.As(b.Err, &busy) {
+				refused(b.Target, busy)
+			}
 			failed = append(failed, BackendError{Addr: b.Target, Err: silent(b.Err)})
 		}
 		return targets, outputs, append(failed, overdue(e, runBound, targets, outputs, failed)...), nil
@@ -569,6 +790,12 @@ func (r *Runner) dispatch(
 				}
 			}
 			resp, err := nh.Execute(ctx, conn, perBackend[i], progress)
+			// The one failure that is not this backend's alone: its engine
+			// is at its execution cap, so the stage cannot run as planned.
+			var busy *nh.BusyError
+			if errors.As(err, &busy) {
+				refused(addr, busy)
+			}
 			errs[i] = silent(err)
 			// An engine that reports a failure still returns what it counted
 			// (a run stopped by a failure predicate the plan asked for, say).

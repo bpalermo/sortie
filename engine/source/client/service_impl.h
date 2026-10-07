@@ -15,6 +15,7 @@
 #include <string>
 
 #include "absl/base/thread_annotations.h"
+#include "absl/types/optional.h"
 
 #include "source/common/common/logger.h"
 #include "source/common/common/thread.h"
@@ -37,6 +38,13 @@ class ServiceImpl final : public nighthawk::client::NighthawkService::Service,
                           public Envoy::Logger::Loggable<Envoy::Logger::Id::main> {
 
 public:
+  /**
+   * The trailing metadata key set on a stream whose start was refused because the service is
+   * running as many executions as it allows; its value is that maximum. Together with the
+   * RESOURCE_EXHAUSTED status it is how a client tells "at the cap" from any other failure.
+   */
+  static constexpr char MaxConcurrentExecutionsTrailer[] = "nighthawk-max-concurrent-executions";
+
   /**
    * Constructs a new ServiceImpl instance.
    *
@@ -93,6 +101,10 @@ private:
     // Set once the run has released its slot and is about to write its final
     // response: from then on the stream may start its next execution.
     bool done ABSL_GUARDED_BY(lock){false};
+    // Set by a cancellation that arrived before the Process existed -- a client that gives
+    // up right after starting, while the run is still being set up. The running thread
+    // honours it the moment it publishes the Process, so the cancellation is not lost.
+    bool cancel_requested ABSL_GUARDED_BY(lock){false};
     std::future<void> future;
   };
 
@@ -100,7 +112,8 @@ private:
                               std::shared_ptr<Execution> execution);
   void writeResponse(Stream* stream, const nighthawk::client::ExecutionResponse& response);
   grpc::Status finishGrpcStream(Execution* execution, const bool success,
-                                absl::string_view description = "");
+                                absl::string_view description = "",
+                                grpc::StatusCode failure_code = grpc::StatusCode::INTERNAL);
 
   Envoy::Thread::MutexBasicLockable log_lock_;
   std::unique_ptr<Envoy::Logger::Context> logging_context_;

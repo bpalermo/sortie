@@ -136,6 +136,12 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   {
     Envoy::Thread::LockGuard guard(execution->lock);
     execution->process = process.get();
+    if (execution->cancel_requested) {
+      // Asked for while the Process was being built. A Process cancelled before it runs
+      // does not start its workers, and run() returns at once.
+      ENVOY_LOG(info, "Cancelling the execution before it starts, on the client's request.");
+      process->requestExecutionCancellation();
+    }
   }
   // Unpublished on every way out of this scope -- a normal return, or one of
   // the exceptions Process::run() rethrows -- and before `process` itself is
@@ -280,7 +286,8 @@ void ServiceImpl::writeResponse(Stream* stream,
 }
 
 grpc::Status ServiceImpl::finishGrpcStream(Execution* execution, const bool success,
-                                           absl::string_view description) {
+                                           absl::string_view description,
+                                           const grpc::StatusCode failure_code) {
   // The stream that started an execution may get here while it is still in
   // flight, in the error paths: let it wrap up and put its response on the
   // stream before finishing the stream. A stream that started nothing has
@@ -288,8 +295,7 @@ grpc::Status ServiceImpl::finishGrpcStream(Execution* execution, const bool succ
   if (execution != nullptr && execution->future.valid()) {
     execution->future.wait();
   }
-  return success ? grpc::Status::OK
-                 : grpc::Status(grpc::StatusCode::INTERNAL, std::string(description));
+  return success ? grpc::Status::OK : grpc::Status(failure_code, std::string(description));
 }
 
 // TODO(oschaaf): implement a way to update rps config on the fly.
@@ -297,7 +303,7 @@ grpc::Status ServiceImpl::finishGrpcStream(Execution* execution, const bool succ
 // TODO(oschaaf): should we merge incoming request options with defaults?
 // TODO(oschaaf): aggregate the client's logs and forward them in the grpc response.
 grpc::Status ServiceImpl::ExecutionStream(
-    grpc::ServerContext* /*context*/,
+    grpc::ServerContext* context,
     grpc::ServerReaderWriter<nighthawk::client::ExecutionResponse,
                              nighthawk::client::ExecutionRequest>* stream) {
   nighthawk::client::ExecutionRequest request;
@@ -322,20 +328,42 @@ grpc::Status ServiceImpl::ExecutionStream(
         // before this stream reuses the variable.
         execution->future.wait();
       }
+      // Set when the service is at its cap, to the number running: the refusal is logged and
+      // answered once the lock is released.
+      absl::optional<uint32_t> refused_at;
       {
         // Counted here, on the stream thread, so two streams starting at once
         // cannot both be accepted into the last slot.
         Envoy::Thread::LockGuard guard(active_lock_);
         if (active_executions_ >= max_concurrent_executions_) {
-          return finishGrpcStream(
-              nullptr, false,
-              max_concurrent_executions_ == 1
-                  ? "Only a single benchmark session is allowed at a time."
-                  : fmt::format("Busy: {} executions are running, the maximum this service "
-                                "allows (--max-concurrent-executions).",
-                                active_executions_));
+          refused_at = active_executions_;
+        } else {
+          active_executions_++;
         }
-        active_executions_++;
+      }
+      if (refused_at.has_value()) {
+        // Nothing was started, so there is no response to carry an error_detail: the refusal
+        // is the stream's status. RESOURCE_EXHAUSTED tells a client that the request was fine
+        // and the service is full; the trailer tells it this is the execution cap and not some
+        // other exhaustion (gRPC itself uses the code for an oversized message), and what the
+        // cap is.
+        ENVOY_LOG(warn,
+                  "Refusing to start an execution: {} running, and this service allows {} at "
+                  "once (--max-concurrent-executions).",
+                  *refused_at, max_concurrent_executions_);
+        // The wording of both messages is read by clients that get the refusal second hand,
+        // through a distributor, which passes on the code and the message and not the trailer:
+        // "Busy: N executions are running, the maximum this service allows" gives the cap.
+        context->AddTrailingMetadata(MaxConcurrentExecutionsTrailer,
+                                     std::to_string(max_concurrent_executions_));
+        return finishGrpcStream(
+            nullptr, false,
+            max_concurrent_executions_ == 1
+                ? "Only a single benchmark session is allowed at a time."
+                : fmt::format("Busy: {} executions are running, the maximum this service "
+                              "allows (--max-concurrent-executions).",
+                              *refused_at),
+            grpc::StatusCode::RESOURCE_EXHAUSTED);
       }
       // Everything between taking the slot and the run's thread existing can throw -- the
       // allocation as well as the thread -- and nothing has been started that would release
@@ -369,8 +397,16 @@ grpc::Status ServiceImpl::ExecutionStream(
         ENVOY_LOG(info, "Cancellation requested by a stream that started no execution; ignored.");
       } else {
         Envoy::Thread::LockGuard guard(execution->lock);
-        if (execution->process == nullptr) {
+        if (execution->done) {
           ENVOY_LOG(info, "Cancellation requested with no active execution; nothing to cancel.");
+        } else if (execution->process == nullptr) {
+          // Started, and its Process not built yet -- or just torn down, with the response
+          // about to be written, where the note is harmless. Left for the running thread:
+          // dropped here, the run would go on for its whole duration with a client that had
+          // already given up on it.
+          ENVOY_LOG(info, "Cancellation requested for an execution that is still starting; "
+                          "it is cancelled as soon as it can be.");
+          execution->cancel_requested = true;
         } else {
           ENVOY_LOG(info, "Cancelling the active execution on the client's request.");
           execution->process->requestExecutionCancellation();
