@@ -87,7 +87,10 @@ const cancelGrace = 30 * time.Second
 
 // Progress asks the service for interim responses while a run is in flight
 // and receives them: every Interval the service writes a snapshot of the run
-// so far (live counters, a copy of the latency statistics) and Fn gets it.
+// so far and Fn gets it. A snapshot carries the live counters and each
+// statistic's summary -- count, mean, pstdev, min, max -- and no percentiles:
+// those need StartRequest.progress_statistics, which has the engine copy every
+// worker's histograms per snapshot and is not asked for here.
 // Snapshots are advisory; the final response is what a run is judged on.
 type Progress struct {
 	Interval time.Duration

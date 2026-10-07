@@ -227,8 +227,14 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sortie run failed: %v", err)
 	}
-	if n := len(regexp.MustCompile(`(?m)^\s+\S+:\d+  \d+(\.\d+)?s  .*http_2xx \d+`).FindAll(out, -1)); n < 3 {
-		t.Errorf("expected at least three progress lines with an http_2xx count, found %d", n)
+	// Each line names its execution (the scenario, "e2e") before the backend,
+	// and gives the latency as mean and max: a snapshot carries no percentiles
+	// unless asked to, so a p99 here would mean the engine copied histograms.
+	if n := len(regexp.MustCompile(`(?m)^\s+e2e  \S+:\d+  \d+(\.\d+)?s  .*http_2xx \d+  .*mean \S+  max \S+$`).FindAll(out, -1)); n < 3 {
+		t.Errorf("expected at least three progress lines with an http_2xx count and a latency, found %d", n)
+	}
+	if regexp.MustCompile(`(?m)^\s+e2e  \S+:\d+  .*p99 `).Match(out) {
+		t.Error("a progress line carries a p99: snapshots are copying histograms by default")
 	}
 	// Anchored on the count, so that 1000 requests (the rate forwarded to each
 	// worker rather than divided) cannot satisfy it. Not exact: a request still

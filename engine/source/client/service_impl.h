@@ -109,6 +109,10 @@ private:
   nighthawk::client::Verbosity::VerbosityOptions service_verbosity_{
       nighthawk::client::Verbosity::INFO};
   static nighthawk::client::Verbosity::VerbosityOptions currentVerbosity();
+  // Hands the allocator's free memory back to the OS. Called where this service has just
+  // freed a lot of it: after a progress snapshot that copied histograms, and when an
+  // execution's Process is gone.
+  static void releaseFreeMemory();
   // How many executions are running right now, across all streams. Taken when
   // a start is accepted -- on the stream's thread, before the run's thread
   // exists, so a second start racing the first is counted correctly -- and

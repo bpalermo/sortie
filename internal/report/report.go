@@ -334,15 +334,24 @@ func (p Progress) ExecutionStarted(e compile.Execution, backends []string) {
 	fmt.Fprintf(p.W, "  running %s (%s) on %s\n", e.Label, shape, strings.Join(backends, ", "))
 }
 
+// ExecutionProgress prints one line per snapshot. The label comes first: the
+// targets of a weighted scenario run at once on the same backend, and a line
+// naming only the address would not say which of them it is about.
 func (p Progress) ExecutionProgress(e compile.Execution, backend string, elapsed time.Duration, out *client.Output) {
-	fmt.Fprintf(p.W, "    %s  %s  %s\n", backend, elapsed.Truncate(100*time.Millisecond), snapshotSummary(out))
+	fmt.Fprintf(p.W, "    %s  %s  %s  %s\n", e.Label, backend, elapsed.Truncate(100*time.Millisecond), snapshotSummary(out))
 }
 
 func (p Progress) ExecutionFinished(r run.ExecutionReport) {}
 
 // snapshotSummary is one line from an interim Output: responses by class, the
-// failure counters that explain a missing class, and the p99 of whichever
-// latency statistic the run records.
+// failure counters that explain a missing class, and the latency so far of
+// whichever statistic the run records.
+//
+// By default the engine's snapshots carry each statistic's summary and no
+// percentiles (a percentile needs a copy of every worker's histogram, which is
+// what made snapshots expensive), so the line gives the mean and the max. A
+// p99 is printed only when the snapshot has percentiles to read it from --
+// never estimated from the summary.
 func snapshotSummary(out *client.Output) string {
 	global, err := metric.GlobalResult(out)
 	if err != nil {
@@ -361,6 +370,11 @@ func snapshotSummary(out *client.Output) string {
 	for _, st := range global.GetStatistics() {
 		if st.GetId() != "benchmark_http_client.request_to_response" && st.GetId() != "benchmark_stream.message_latency" {
 			continue
+		}
+		// A statistic nothing was recorded into has a zero mean and max that
+		// are not measurements.
+		if st.GetCount() > 0 && st.GetMean() != nil && st.GetMax() != nil {
+			parts = append(parts, fmt.Sprintf("mean %s  max %s", st.GetMean().AsDuration(), st.GetMax().AsDuration()))
 		}
 		// Nighthawk reports its histogram's own buckets, so p99 is the first
 		// bucket at or above 0.99 -- the rule the threshold resolver applies.

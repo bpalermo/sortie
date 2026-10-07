@@ -4,6 +4,7 @@
 
 #include "engine/source/common/cached_time_source_impl.h"
 #include "engine/source/common/phase_impl.h"
+#include "engine/source/common/statistic_impl.h"
 #include "engine/source/common/termination_predicate_impl.h"
 #include "engine/source/common/utility.h"
 
@@ -103,12 +104,18 @@ void ClientWorkerImpl::requestExecutionCancellation() {
       [this]() { worker_number_scope_->counterFromString("graceful_stop_requested").inc(); });
 }
 
-void ClientWorkerImpl::snapshotStatistics(
-    std::function<void(std::vector<StatisticPtr>)> callback) {
-  dispatcher_->post([this, callback = std::move(callback)]() {
+void ClientWorkerImpl::snapshotStatistics(SnapshotDetail detail,
+                                          std::function<void(std::vector<StatisticPtr>)> callback) {
+  dispatcher_->post([this, detail, callback = std::move(callback)]() {
     std::vector<StatisticPtr> copies;
     for (const auto& statistic : statistics()) {
-      StatisticPtr copy = statistic.second->createNewInstanceOfSameType()->combine(*statistic.second);
+      // A summary reads the live statistic in place. This runs on the thread that generates
+      // the load, every progress interval: a copy would allocate and fill a histogram per
+      // statistic here, megabytes each, which is what Full asks for and Summary must not do.
+      StatisticPtr copy =
+          detail == SnapshotDetail::Full
+              ? statistic.second->createNewInstanceOfSameType()->combine(*statistic.second)
+              : StreamingStatistic::summaryOf(*statistic.second);
       copy->setId(statistic.first);
       copies.push_back(std::move(copy));
     }

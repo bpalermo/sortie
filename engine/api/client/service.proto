@@ -13,11 +13,18 @@ message StartRequest {
   CommandLineOptions options = 1;
   // When set, the service writes an interim ExecutionResponse this often while
   // the execution runs: `progress` set, and `output` a snapshot of the run so
-  // far (its live counters and a copy of the latency statistics, in one
-  // "global" result whose execution_duration is the time since the workers
-  // started). The final response has no `progress`. Unset, nothing is written
-  // before the final response, as before.
+  // far, in one "global" result whose execution_duration is the time since the
+  // workers started. A snapshot carries the live counters and, per statistic,
+  // its summary only: count, mean, pstdev, min and max, and no percentiles
+  // (see progress_statistics). The final response has no `progress`. Unset,
+  // nothing is written before the final response, as before.
   google.protobuf.Duration progress_interval = 2;
+  // Makes every snapshot carry the statistics in full, percentiles included,
+  // as the final response does. That costs a copy of every worker's
+  // histograms per snapshot -- megabytes each, made on the worker's own thread
+  // -- so it is off by default; without it a snapshot allocates no histogram
+  // at all. Ignored without progress_interval.
+  bool progress_statistics = 3;
 }
 
 // Marks an interim ExecutionResponse written while the execution runs.

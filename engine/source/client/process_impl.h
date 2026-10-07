@@ -117,7 +117,14 @@ public:
 
   bool requestExecutionCancellation() override;
 
-  std::optional<nighthawk::client::Output> snapshot() override;
+  std::optional<nighthawk::client::Output> snapshot(SnapshotDetail detail) override;
+
+  /**
+   * @return the number of snapshots whose per-snapshot state is still alive anywhere in this
+   * binary: being assembled, or held by a job a worker has not run yet. Zero whenever no
+   * snapshot is in flight -- the state of one must not outlive it -- which is what tests check.
+   */
+  static uint64_t liveSnapshots();
 
 private:
   // Use CreateProcessImpl to construct an instance of ProcessImpl.
@@ -144,9 +151,10 @@ private:
   std::vector<StatisticPtr>
   mergeWorkerStatistics(const std::vector<ClientWorkerPtr>& workers) const;
   // Merges per-worker copies of statistics (as snapshotStatistics hands them out) the way
-  // mergeWorkerStatistics merges the live ones; workers that did not answer are empty and skipped.
+  // mergeWorkerStatistics merges the live ones; workers that did not answer are empty and
+  // skipped. Consumes the copies, freeing each as soon as it has been merged.
   std::vector<StatisticPtr>
-  mergeStatistics(const std::vector<std::vector<StatisticPtr>>& per_worker) const;
+  mergeStatistics(std::vector<std::vector<StatisticPtr>>&& per_worker) const;
   /**
    * If there are sinks configured in bootstrap, populate stats_sinks with sinks
    * created through NighthawkStatsSinkFactory and add them to store_root_.

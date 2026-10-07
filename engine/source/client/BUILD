@@ -218,6 +218,7 @@ envoy_cc_library(
         "//engine/api/client:grpc_service_lib",
         "//engine/api/request_source:grpc_request_source_service_lib",
         "@envoy//source/common/common:thread_lib_with_external_headers",
+        "@envoy//source/common/memory:utils_lib_with_external_headers",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
     ],
 )

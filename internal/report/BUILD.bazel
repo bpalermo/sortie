@@ -23,6 +23,7 @@ go_test(
     embed = [":report"],
     deps = [
         "//engine/api/client:base_go_proto",
+        "//internal/compile",
         "//internal/result",
         "//internal/run",
         "//internal/threshold",
