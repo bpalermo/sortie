@@ -118,7 +118,10 @@ README's Limitations section; keep the two in sync.
 - Progress is opt-in: `StartRequest.progress_interval` makes the engine write
   interim responses (`progress` set, `output` a snapshot) that `nh.Execute`
   hands to a `Progress.Fn`; `run.Observer.ExecutionProgress` and `--progress`
-  surface them. Nothing on the distributor path.
+  surface them. A snapshot carries counters and statistic summaries, no
+  percentiles; `StartRequest.progress_statistics` asks for full statistics at
+  the price of a histogram copy per statistic per worker per snapshot, and
+  sortie does not set it. Nothing on the distributor path.
 - `Scenario.websocket` compiles to the engine's `websocket` options
   (`WebSocketStreamBenchmarkClientImpl`, the gRPC bidi-stream client's twin;
   framing in `engine/source/common/websocket.*`, shared with the test server's

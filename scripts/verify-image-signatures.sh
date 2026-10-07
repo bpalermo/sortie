@@ -20,7 +20,9 @@
 #   bazel run //bazel/cosign:verify_image -- --single <chart ref>
 #   COSIGN=/path/to/cosign scripts/verify-image-signatures.sh <ref>...
 #
-# Each ref is `<registry>/<repo>@sha256:<index digest>`: a digest, never a tag.
+# Each ref is `<registry>/<repo>@sha256:<digest>`: a digest, never a tag. It is
+# the digest of a multi-arch index, or with --single of one manifest, such as
+# a Helm chart's.
 #
 # ENVIRONMENT
 #   COSIGN                cosign binary (default `cosign` on PATH); must be v3+.

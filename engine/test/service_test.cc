@@ -477,12 +477,73 @@ TEST_P(ServiceTest, ProgressIsStreamedWhenRequested) {
                 0);
       ASSERT_FALSE(response.output().results().empty());
       EXPECT_EQ(response.output().results(0).name(), "global");
+      // Summaries by default: the statistics are there, without percentiles, since those
+      // would take a copy of every worker's histograms per snapshot.
+      EXPECT_GT(response.output().results(0).statistics_size(), 0);
+      for (const auto& statistic : response.output().results(0).statistics()) {
+        EXPECT_EQ(statistic.percentiles_size(), 0) << statistic.id();
+      }
     } else {
       final_seen = true;
+      // The final response is unaffected: statistics in full.
+      bool percentiles = false;
+      for (const auto& result : response.output().results()) {
+        for (const auto& statistic : result.statistics()) {
+          percentiles = percentiles || statistic.percentiles_size() > 0;
+        }
+      }
+      EXPECT_TRUE(percentiles);
     }
   }
   EXPECT_GE(interim, 2) << "expected about six interim responses in a 3 s run";
   EXPECT_TRUE(final_seen);
+  EXPECT_TRUE(r->Finish().ok());
+}
+
+// progress_statistics opts in to snapshots that carry the statistics in full.
+TEST_P(ServiceTest, ProgressCarriesFullStatisticsWhenAskedFor) {
+  auto options = request_.mutable_start_request()->mutable_options();
+  options->mutable_duration()->set_seconds(3);
+  options->mutable_requests_per_second()->set_value(20);
+  (*options->mutable_failure_predicates())["benchmark.nonexistent"] = 0;
+  request_.mutable_start_request()->mutable_progress_interval()->set_nanos(500000000);
+  request_.mutable_start_request()->set_progress_statistics(true);
+  auto r = stub_->ExecutionStream(&context_);
+  EXPECT_TRUE(r->Write(request_, {}));
+  EXPECT_TRUE(r->WritesDone());
+  int interim = 0;
+  bool percentiles = false;
+  nighthawk::client::ExecutionResponse response;
+  while (r->Read(&response)) {
+    if (!response.has_progress()) {
+      continue;
+    }
+    interim++;
+    ASSERT_FALSE(response.output().results().empty());
+    for (const auto& statistic : response.output().results(0).statistics()) {
+      if (statistic.count() > 0) {
+        EXPECT_GT(statistic.percentiles_size(), 0) << statistic.id();
+        percentiles = true;
+      }
+    }
+  }
+  EXPECT_GE(interim, 2);
+  EXPECT_TRUE(percentiles) << "no snapshot carried a statistic with samples";
+  EXPECT_TRUE(r->Finish().ok());
+}
+
+// progress_statistics alone asks for nothing: there is no progress to carry them.
+TEST_P(ServiceTest, ProgressStatisticsWithoutAnIntervalIsIgnored) {
+  auto options = request_.mutable_start_request()->mutable_options();
+  options->mutable_duration()->set_seconds(1);
+  (*options->mutable_failure_predicates())["benchmark.nonexistent"] = 0;
+  request_.mutable_start_request()->set_progress_statistics(true);
+  auto r = stub_->ExecutionStream(&context_);
+  EXPECT_TRUE(r->Write(request_, {}));
+  EXPECT_TRUE(r->WritesDone());
+  EXPECT_TRUE(r->Read(&response_));
+  EXPECT_FALSE(response_.has_progress());
+  EXPECT_FALSE(r->Read(&response_));
   EXPECT_TRUE(r->Finish().ok());
 }
 

@@ -170,11 +170,31 @@ StatisticPtr StreamingStatistic::combine(const Statistic& statistic) const {
   // For the the merge we are doing here we need to treat that as 0.
   auto a_mean = std::isnan(a.mean()) ? 0 : a.mean();
   auto b_mean = std::isnan(b.mean()) ? 0 : b.mean();
+  if (combined->count_ == 0) {
+    // Two empty statistics: the divisions below would leave NaN in both fields, and a NaN
+    // variance survives every later combine, so one idle worker would blank the pstdev of all.
+    return combined;
+  }
   combined->mean_ = ((a.count() * a_mean) + (b.count() * b_mean)) / combined->count_;
   combined->accumulated_variance_ =
       a.accumulated_variance_ + b.accumulated_variance_ +
       pow(a_mean - b_mean, 2) * a.count() * b.count() / combined->count();
   return combined;
+}
+
+StatisticPtr StreamingStatistic::summaryOf(const Statistic& statistic) {
+  auto summary = std::make_unique<StreamingStatistic>();
+  summary->id_ = statistic.id();
+  summary->count_ = statistic.count();
+  if (summary->count_ == 0) {
+    return summary;
+  }
+  summary->min_ = statistic.min();
+  summary->max_ = statistic.max();
+  summary->mean_ = statistic.mean();
+  const double pvariance = statistic.pvariance();
+  summary->accumulated_variance_ = std::isnan(pvariance) ? 0 : pvariance * summary->count_;
+  return summary;
 }
 
 absl::StatusOr<std::unique_ptr<std::istream>> StreamingStatistic::serializeNative() const {

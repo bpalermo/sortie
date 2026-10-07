@@ -317,6 +317,74 @@ TEST(StatisticTest, StreamingStatProtoOutputLargeValues) {
   EXPECT_EQ(proto.pstdev().nanos(), 0);
 }
 
+// A summary is what a progress snapshot takes of a live statistic in place of a copy: it
+// must say what the statistic says, and carry no percentiles (it has no histogram to offer).
+TEST(StatisticTest, SummaryOfAHistogramMatchesItAndHasNoPercentiles) {
+  HdrStatistic hdr;
+  hdr.setId("foo");
+  for (uint64_t value = 1000; value <= 100000; value += 1000) {
+    hdr.addValue(value);
+  }
+  const StatisticPtr summary = StreamingStatistic::summaryOf(hdr);
+  EXPECT_EQ(summary->id(), "foo");
+  EXPECT_EQ(summary->count(), hdr.count());
+  EXPECT_EQ(summary->min(), hdr.min());
+  EXPECT_EQ(summary->max(), hdr.max());
+  EXPECT_DOUBLE_EQ(summary->mean(), hdr.mean());
+  EXPECT_DOUBLE_EQ(summary->pstdev(), hdr.pstdev());
+
+  const nighthawk::client::Statistic proto =
+      summary->toProto(Statistic::SerializationDomain::DURATION);
+  EXPECT_EQ(proto.count(), 100);
+  EXPECT_EQ(proto.percentiles_size(), 0);
+  EXPECT_GT(hdr.toProto(Statistic::SerializationDomain::DURATION).percentiles_size(), 0);
+}
+
+// Summaries taken per worker merge into what a summary of the merged histograms would be.
+TEST(StatisticTest, SummariesCombineLikeTheStatisticsTheySummarise) {
+  HdrStatistic a;
+  HdrStatistic b;
+  for (uint64_t value = 1000; value <= 50000; value += 1000) {
+    a.addValue(value);
+  }
+  for (uint64_t value = 200000; value <= 900000; value += 100000) {
+    b.addValue(value);
+  }
+  const StatisticPtr merged_histograms = a.combine(b);
+  const StatisticPtr merged_summaries =
+      StreamingStatistic::summaryOf(a)->combine(*StreamingStatistic::summaryOf(b));
+  EXPECT_EQ(merged_summaries->count(), merged_histograms->count());
+  EXPECT_EQ(merged_summaries->min(), merged_histograms->min());
+  EXPECT_EQ(merged_summaries->max(), merged_histograms->max());
+  Helper::expectNear(merged_histograms->mean(), merged_summaries->mean(), 6);
+  Helper::expectNear(merged_histograms->pstdev(), merged_summaries->pstdev(), 6);
+}
+
+TEST(StatisticTest, SummaryOfAnEmptyStatisticIsEmpty) {
+  HdrStatistic hdr;
+  const StatisticPtr summary = StreamingStatistic::summaryOf(hdr);
+  EXPECT_EQ(summary->count(), 0);
+  const nighthawk::client::Statistic proto =
+      summary->toProto(Statistic::SerializationDomain::DURATION);
+  EXPECT_EQ(proto.count(), 0);
+  EXPECT_EQ(proto.min().nanos(), 0);
+  EXPECT_EQ(proto.max().nanos(), 0);
+}
+
+// Two empty statistics used to combine into one with a NaN variance, which every later
+// combine kept: a worker that had recorded nothing yet erased the pstdev of all of them.
+TEST(StatisticTest, StreamingStatisticCombineOfEmptiesDoesNotPoisonLaterCombines) {
+  StreamingStatistic empty_a;
+  StreamingStatistic empty_b;
+  StreamingStatistic values;
+  values.addValue(10);
+  values.addValue(30);
+  const StatisticPtr combined = empty_a.combine(empty_b)->combine(values);
+  EXPECT_EQ(combined->count(), 2);
+  EXPECT_DOUBLE_EQ(combined->mean(), 20.0);
+  EXPECT_DOUBLE_EQ(combined->pstdev(), 10.0);
+}
+
 TEST(StatisticTest, CircllhistStatisticProtoOutputLargeValues) {
   CircllhistStatistic statistic;
   uint64_t value = 100ul + 0xFFFFFFFF;
@@ -365,11 +433,11 @@ TEST(StatisticTest, CircllhistStatisticPercentilesProto) {
   }
 
   Envoy::MessageUtil util;
-  util.loadFromJson(
-      Envoy::Filesystem::fileSystemForTest()
-          .fileReadToEnd(TestEnvironment::runfilesPath("engine/test/test_data/circllhist_proto_json.gold"))
-          .value(),
-      parsed_json_proto, Envoy::ProtobufMessage::getStrictValidationVisitor());
+  util.loadFromJson(Envoy::Filesystem::fileSystemForTest()
+                        .fileReadToEnd(TestEnvironment::runfilesPath(
+                            "engine/test/test_data/circllhist_proto_json.gold"))
+                        .value(),
+                    parsed_json_proto, Envoy::ProtobufMessage::getStrictValidationVisitor());
   const std::string json = util.getJsonStringFromMessageOrError(
       statistic.toProto(Statistic::SerializationDomain::DURATION), true, true);
   const std::string golden_json =

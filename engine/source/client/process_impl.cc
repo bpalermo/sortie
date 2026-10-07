@@ -10,6 +10,7 @@
 
 #include <sys/file.h>
 
+#include <atomic>
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -832,39 +833,61 @@ ProcessImpl::mergeWorkerStatistics(const std::vector<ClientWorkerPtr>& workers) 
 }
 
 std::vector<StatisticPtr>
-ProcessImpl::mergeStatistics(const std::vector<std::vector<StatisticPtr>>& per_worker) const {
+ProcessImpl::mergeStatistics(std::vector<std::vector<StatisticPtr>>&& per_worker) const {
   std::vector<StatisticPtr> merged;
-  for (const auto& worker_statistics : per_worker) {
+  for (auto& worker_statistics : per_worker) {
     if (worker_statistics.empty()) {
       continue;
     }
     if (merged.empty()) {
-      for (const auto& statistic : worker_statistics) {
-        StatisticPtr fresh = statistic->createNewInstanceOfSameType();
-        fresh->setId(statistic->id());
-        merged.push_back(std::move(fresh));
-      }
+      // The first worker's are taken as they are rather than combined into fresh instances:
+      // for a histogram every combine is another histogram allocated, and these are already
+      // copies nobody else holds.
+      merged = std::move(worker_statistics);
+      continue;
     }
     for (size_t i = 0; i < worker_statistics.size() && i < merged.size(); i++) {
       StatisticPtr combined = merged[i]->combine(*worker_statistics[i]);
       combined->setId(merged[i]->id());
       merged[i] = std::move(combined);
+      // Done with this worker's copy; do not keep it until the whole merge is over.
+      worker_statistics[i].reset();
     }
   }
   return merged;
 }
 
-std::optional<nighthawk::client::Output> ProcessImpl::snapshot() {
-  // Shared with the workers' callbacks rather than on this stack: a worker whose dispatcher
-  // has exited never runs its job, and one that is slow may run it after the wait below
-  // gave up, so nothing the callbacks touch may have gone away by then.
-  struct Pending {
-    Envoy::Thread::MutexBasicLockable lock;
-    Envoy::Thread::CondVar answered;
-    std::vector<std::vector<StatisticPtr>> copies;
-    size_t outstanding{0};
-  };
-  auto pending = std::make_shared<Pending>();
+namespace {
+
+// See ProcessImpl::liveSnapshots().
+std::atomic<uint64_t> live_snapshots{0};
+
+// What one snapshot() shares with the jobs it posts to the workers. Shared rather than on
+// snapshot()'s stack because a slow worker may run its job after the wait gave up. Owned by
+// snapshot() alone: the jobs hold weak references and lock them when they run. A strong one
+// would be wrong for the worker whose dispatcher has already exited -- it never runs its
+// job, and never destroys it until the Process is torn down, so the snapshot's state would
+// outlive its response by the rest of the run. This lives exactly as long as snapshot() does.
+struct PendingSnapshot {
+  PendingSnapshot() { live_snapshots++; }
+  ~PendingSnapshot() { live_snapshots--; }
+
+  Envoy::Thread::MutexBasicLockable lock;
+  Envoy::Thread::CondVar answered;
+  std::vector<std::vector<StatisticPtr>> copies;
+  size_t outstanding{0};
+  // Set, under lock, when snapshot() has stopped waiting: a job that runs after that has
+  // nobody to hand its statistics to and drops them on the spot, instead of parking them
+  // here for as long as the last straggler keeps this alive.
+  bool abandoned{false};
+};
+
+} // namespace
+
+uint64_t ProcessImpl::liveSnapshots() { return live_snapshots; }
+
+std::optional<nighthawk::client::Output> ProcessImpl::snapshot(SnapshotDetail detail) {
+  auto pending = std::make_shared<PendingSnapshot>();
   std::chrono::nanoseconds elapsed;
   {
     Envoy::Thread::LockGuard guard(workers_lock_);
@@ -875,16 +898,34 @@ std::optional<nighthawk::client::Output> ProcessImpl::snapshot() {
     pending->copies.resize(workers_.size());
     pending->outstanding = workers_.size();
     for (size_t i = 0; i < workers_.size(); i++) {
-      workers_[i]->snapshotStatistics([pending, i](std::vector<StatisticPtr> copies) {
+      std::weak_ptr<PendingSnapshot> weak = pending;
+      const auto still_wanted = [weak]() {
+        const std::shared_ptr<PendingSnapshot> pending = weak.lock();
+        if (pending == nullptr) {
+          return false;
+        }
         Envoy::Thread::LockGuard guard(pending->lock);
-        pending->copies[i] = std::move(copies);
-        pending->outstanding--;
-        pending->answered.notifyOne();
-      });
+        return !pending->abandoned;
+      };
+      workers_[i]->snapshotStatistics(
+          detail, still_wanted, [weak, i](std::vector<StatisticPtr> copies) {
+            // Gone when snapshot() has already returned: nobody to hand these to.
+            const std::shared_ptr<PendingSnapshot> pending = weak.lock();
+            if (pending == nullptr) {
+              return;
+            }
+            Envoy::Thread::LockGuard guard(pending->lock);
+            if (pending->abandoned) {
+              return;
+            }
+            pending->copies[i] = std::move(copies);
+            pending->outstanding--;
+            pending->answered.notifyOne();
+          });
     }
   }
   // Bounded: progress keeps flowing with the counters and whatever statistics arrived.
-  std::vector<std::vector<StatisticPtr>> copies(pending->copies.size());
+  std::vector<std::vector<StatisticPtr>> copies;
   {
     Envoy::Thread::LockGuard guard(pending->lock);
     const Envoy::MonotonicTime deadline = time_system_.monotonicTime() + std::chrono::seconds(1);
@@ -895,17 +936,15 @@ std::optional<nighthawk::client::Output> ProcessImpl::snapshot() {
       }
       pending->answered.waitFor(pending->lock, deadline - now); // NO_CHECK_FORMAT(real_time)
     }
-    // Element by element, leaving the vector sized: a late callback then still has a slot.
-    for (size_t i = 0; i < copies.size(); i++) {
-      copies[i] = std::move(pending->copies[i]);
-      pending->copies[i].clear();
-    }
+    copies = std::move(pending->copies);
+    pending->abandoned = true;
   }
   // The store's counters are safe to read from any thread, as the final report relies on too.
   const std::map<std::string, uint64_t> counters = Utility().mapCountersFromStore(
       store_root_, [](absl::string_view, uint64_t value) { return value > 0; });
   OutputCollectorImpl collector(time_system_, options_);
-  collector.addResult("global", mergeStatistics(copies), counters, elapsed, std::nullopt, {});
+  collector.addResult("global", mergeStatistics(std::move(copies)), counters, elapsed, std::nullopt,
+                      {});
   return collector.toProto();
 }
 

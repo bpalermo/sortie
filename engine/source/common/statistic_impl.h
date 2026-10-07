@@ -99,6 +99,18 @@ public:
   absl::StatusOr<std::unique_ptr<std::istream>> serializeNative() const override;
   absl::Status deserializeNative(std::istream&) override;
 
+  /**
+   * The summary of any statistic -- its count, mean, variance, min and max, and its id -- as a
+   * StreamingStatistic, which is a few dozen bytes whatever the source is backed by. Reads the
+   * source and allocates nothing else, so it is what a snapshot of a run in flight takes
+   * instead of a copy of a histogram. Summaries combine exactly; percentiles are not carried,
+   * and could not be combined across workers if they were.
+   *
+   * @param statistic the statistic to summarise; only read.
+   * @return StatisticPtr the summary.
+   */
+  static StatisticPtr summaryOf(const Statistic& statistic);
+
 private:
   double mean_{0};
   double accumulated_variance_{0};

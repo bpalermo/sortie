@@ -662,10 +662,30 @@ TCP and UDP are all in.
   targets run to their configured duration, because nothing here hosts a
   distributor that forwards cancellations.
 - **Progress is opt-in, and advisory.** `sortie run --progress 5s` asks each
-  backend for a snapshot of its run that often -- live counters and a copy of
-  the latency statistics -- and prints a line per backend on stderr. The
-  verdict comes from the final response only. Backends behind a distributor
-  report nothing until they finish.
+  backend for a snapshot of its run that often and prints a line per execution
+  and backend on stderr: `<label>  <backend>  <elapsed>  http_2xx N ...  mean X
+  max Y`. A snapshot carries the live counters and, for each latency
+  statistic, its count, mean, standard deviation, min and max. It carries no
+  percentiles, so the line has no p99: a percentile needs a copy of every
+  worker's histograms (about 3 MiB each, 14 per worker), and those copies are
+  what once made a snapshot cost hundreds of megabytes that the engine did not
+  give back. A snapshot now allocates no histogram, and an engine's memory is
+  the same with `--progress` as without. The engine's API can still be asked
+  for full statistics per snapshot (`StartRequest.progress_statistics`), at
+  that price; sortie does not ask. The verdict comes from the final response
+  only. Backends behind a distributor report nothing until they finish.
+- **An engine's memory is its histograms.** Every worker of every execution
+  holds about 37 MiB of latency histograms for as long as it runs, and
+  assembling the final report copies them. Measured on one engine running 8
+  executions at once, one worker each, 64 rps in total against a local
+  target (an unoptimized x86-64 build): 123 MiB idle, 421 MiB while running,
+  with or without `--progress 1s`, and a peak of 722 MiB for the instant the
+  final reports are assembled. A user running 8 concurrent executions at 60
+  rps in total reported about 300 MiB steady and about 600 MiB at that peak.
+  Budget for the peak, not the steady state: a memory limit below it kills
+  the engine as the run ends. After a run the engine keeps part of that
+  resident (340-400 MiB in the measurement above) until the next one reuses
+  it.
 - **No scripting.** Nighthawk's `RequestSource` yields independent requests and
   never sees responses, so there is no session flow — no login, capture a token,
   reuse it. Scenarios are stateless load.

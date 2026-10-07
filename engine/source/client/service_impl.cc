@@ -3,10 +3,12 @@
 #include "engine/source/client/redaction.h"
 
 #include "source/common/common/cleanup.h"
+#include "source/common/memory/utils.h"
 #include "source/common/protobuf/utility.h"
 
 #include <grpc++/grpc++.h>
 
+#include <limits>
 #include <system_error>
 #include <thread>
 
@@ -44,6 +46,19 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   };
   // For the exception paths out of Process::run().
   Envoy::Cleanup release_on_exit(release);
+  // Declared before the Process, so it runs once that is destroyed: an execution's histograms
+  // and the copies its final report was assembled from are megabytes each, and would
+  // otherwise stay resident in an idle service (see releaseFreeMemory()).
+  // Only for an execution that got as far as having a Process: a request refused before
+  // that freed nothing, and releasing is process-wide work that would otherwise be something
+  // a stream of malformed starts could make the service do over and over, at the expense of
+  // the executions that are running.
+  bool process_created = false;
+  Envoy::Cleanup release_memory_on_exit([&process_created]() {
+    if (process_created) {
+      releaseFreeMemory();
+    }
+  });
   // The one way a final response leaves this function, early errors included.
   auto write_final = [this, stream, &release](const nighthawk::client::ExecutionResponse& r) {
     release();
@@ -107,6 +122,7 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
     return;
   }
   ProcessPtr process = std::move(*process_or_status);
+  process_created = true;
   {
     Envoy::Thread::LockGuard guard(execution->lock);
     execution->process = process.get();
@@ -126,6 +142,13 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   // and writes the snapshot as an interim response. Writes on a gRPC stream must not overlap,
   // so this thread is stopped and joined before the final response is written below (the
   // stream's own thread only ever reads).
+  //
+  // A snapshot carries summaries of the statistics unless the request asks for them in full.
+  // In full, every snapshot copies each worker's histograms, megabytes apiece; several
+  // executions snapshotting at once were measured to add hundreds of megabytes that way.
+  const SnapshotDetail progress_detail = request.start_request().progress_statistics()
+                                             ? SnapshotDetail::Full
+                                             : SnapshotDetail::Summary;
   Envoy::Thread::MutexBasicLockable progress_lock;
   Envoy::Thread::CondVar progress_stop;
   bool stop_progress = false;
@@ -138,19 +161,27 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
         if (stop_progress) {
           break;
         }
-        std::optional<nighthawk::client::Output> snapshot = process->snapshot();
+        std::optional<nighthawk::client::Output> snapshot = process->snapshot(progress_detail);
         if (!snapshot.has_value()) {
           continue;
         }
-        nighthawk::client::ExecutionResponse interim;
-        if (!snapshot->results().empty()) {
-          *interim.mutable_progress()->mutable_elapsed() =
-              snapshot->results(0).execution_duration();
-        } else {
-          interim.mutable_progress();
+        {
+          // Scoped, so the response is gone before the next wait rather than kept across it.
+          nighthawk::client::ExecutionResponse interim;
+          if (!snapshot->results().empty()) {
+            *interim.mutable_progress()->mutable_elapsed() =
+                snapshot->results(0).execution_duration();
+          } else {
+            interim.mutable_progress();
+          }
+          *interim.mutable_output() = std::move(*snapshot);
+          writeResponse(stream, interim);
         }
-        *interim.mutable_output() = std::move(*snapshot);
-        writeResponse(stream, interim);
+        if (progress_detail == SnapshotDetail::Full) {
+          // The histogram copies were freed when snapshot() returned, but only as far as the
+          // allocator: see releaseFreeMemory().
+          releaseFreeMemory();
+        }
       }
     });
   }
@@ -197,6 +228,19 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
     execution->process = nullptr;
   }
   write_final(response);
+}
+
+void ServiceImpl::releaseFreeMemory() {
+  // tcmalloc keeps the pages of freed memory mapped until it is told to release them, and
+  // nothing in this service tells it: measured, snapshots that copied histograms took a
+  // service running eight executions from 415 MiB to 998 MiB resident, where it stayed with
+  // 5 MiB in use by the application. The argument is how much to release, so: all of it.
+  //
+  // This returns whole free hugepages only. What a freed histogram leaves in a partly used
+  // hugepage stays resident (tcmalloc's subrelease is off by default), so this bounds the
+  // retention rather than ending it: the same eight executions, finished, left 557 MiB
+  // resident without this call and 340-400 MiB with it.
+  Envoy::Memory::Utils::releaseFreeMemory(std::numeric_limits<uint64_t>::max());
 }
 
 nighthawk::client::Verbosity::VerbosityOptions ServiceImpl::currentVerbosity() {

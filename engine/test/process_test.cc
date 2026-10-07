@@ -12,10 +12,10 @@
 
 #include "nighthawk/common/exception.h"
 
+#include "engine/test/test_common/environment.h"
 #include "source/common/common/assert.h"
 #include "source/common/common/statusor.h"
 #include "test/mocks/network/mocks.h"
-#include "engine/test/test_common/environment.h"
 #include "test/test_common/network_utility.h"
 #include "test/test_common/registry.h"
 #include "test/test_common/simulated_time_system.h"
@@ -450,6 +450,84 @@ TEST_P(ProcessTest, TestWithEncapsulation) {
                   "--concurrency 2 https://{}/",
                   loopback_address_, loopback_address_));
   EXPECT_TRUE(runProcess(RunExpectation::EXPECT_FAILURE).ok());
+}
+
+// What a snapshot of a run in flight carries, by detail, and that it leaves nothing behind.
+// Summary is the default of the service's progress: it must not carry percentiles, because
+// carrying them means copying every worker's histograms. Full is the opt-in that does.
+TEST_P(ProcessTest, SnapshotCarriesSummariesUnlessAskedForFullStatistics) {
+  // No upstream: requests fail to connect, which still completes them as far as the
+  // sequencer is concerned, so its statistics fill up. The predicate wipes the stock ones.
+  options_ = TestUtility::createOptionsImpl(fmt::format(
+      "foo --duration 4 --rps 50 --failure-predicate foo:0 --concurrency 2 -v error http://{}/",
+      loopback_address_));
+  TypedExtensionConfig typed_dns_resolver_config;
+  Envoy::Network::DnsResolverFactory& dns_resolver_factory =
+      Envoy::Network::createDefaultDnsResolverFactory(typed_dns_resolver_config);
+  absl::StatusOr<ProcessPtr> process_or_status = ProcessImpl::CreateProcessImpl(
+      *options_, dns_resolver_factory, std::move(typed_dns_resolver_config), time_system_);
+  ASSERT_TRUE(process_or_status.ok());
+  ProcessPtr process = std::move(process_or_status.value());
+
+  // No worker runs yet.
+  EXPECT_FALSE(process->snapshot(SnapshotDetail::Summary).has_value());
+
+  std::atomic<bool> stop{false};
+  int summaries = 0;
+  int fulls = 0;
+  bool summary_had_samples = false;
+  bool full_had_percentiles = false;
+  std::thread snapshotter([&]() {
+    while (!stop) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(150)); // NO_CHECK_FORMAT(real_time)
+      for (const SnapshotDetail detail : {SnapshotDetail::Summary, SnapshotDetail::Full}) {
+        const std::optional<nighthawk::client::Output> snapshot = process->snapshot(detail);
+        if (!snapshot.has_value()) {
+          continue;
+        }
+        // Nothing a snapshot shares with the worker jobs outlives it, whether or not the
+        // workers answered: the jobs hold it weakly. A job that is running at this instant
+        // has it locked for the few statements it takes to hand its copies over, hence the
+        // short wait; one that never runs holds nothing.
+        for (int i = 0; i < 400 && ProcessImpl::liveSnapshots() > 0; i++) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(5)); // NO_CHECK_FORMAT(real_time)
+        }
+        EXPECT_EQ(ProcessImpl::liveSnapshots(), 0);
+        ASSERT_EQ(snapshot->results_size(), 1);
+        EXPECT_EQ(snapshot->results(0).name(), "global");
+        if (snapshot->results(0).statistics_size() == 0) {
+          // No worker answered within the bounded wait -- the run was winding down, or the
+          // machine was busy. Counters only; a legitimate snapshot, with nothing to check.
+          continue;
+        }
+        for (const auto& statistic : snapshot->results(0).statistics()) {
+          EXPECT_FALSE(statistic.id().empty());
+          if (detail == SnapshotDetail::Summary) {
+            EXPECT_EQ(statistic.percentiles_size(), 0) << statistic.id();
+            summary_had_samples = summary_had_samples || statistic.count() > 0;
+          } else if (statistic.count() > 0) {
+            EXPECT_GT(statistic.percentiles_size(), 0) << statistic.id();
+            full_had_percentiles = true;
+          }
+        }
+        (detail == SnapshotDetail::Summary ? summaries : fulls)++;
+      }
+    }
+  });
+  OutputCollectorImpl collector(time_system_, *options_);
+  EXPECT_TRUE(process->run(collector));
+  stop = true;
+  snapshotter.join();
+  // The workers are done.
+  EXPECT_FALSE(process->snapshot(SnapshotDetail::Full).has_value());
+  process->shutdown();
+  process.reset();
+  EXPECT_EQ(ProcessImpl::liveSnapshots(), 0);
+
+  EXPECT_GE(summaries, 3);
+  EXPECT_GE(fulls, 3);
+  EXPECT_TRUE(summary_had_samples) << "no statistic recorded anything; the test proves nothing";
+  EXPECT_TRUE(full_had_percentiles);
 }
 
 // Regression test: ProcessImpl::shutdown() used to serialize per-worker drains, making

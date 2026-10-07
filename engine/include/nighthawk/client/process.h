@@ -2,6 +2,7 @@
 
 #include <optional>
 
+#include "nighthawk/client/client_worker.h"
 #include "nighthawk/client/output_collector.h"
 
 #include "engine/api/client/output.pb.h"
@@ -34,14 +35,16 @@ public:
   virtual bool requestExecutionCancellation() PURE;
 
   /**
-   * Snapshots the execution in flight: the live counters and a copy of every worker's
-   * statistics, as an Output with one "global" result whose execution_duration is the time
-   * since the workers started. Safe to call from any thread while run() is in progress.
+   * Snapshots the execution in flight: the live counters and the workers' statistics, as an
+   * Output with one "global" result whose execution_duration is the time since the workers
+   * started. Safe to call from any thread while run() is in progress.
    *
+   * @param detail what the statistics carry: their summaries, which cost nothing to speak of,
+   * or full copies with percentiles, which cost a histogram per statistic per worker.
    * @return the snapshot, or nullopt when no workers are running: before they start, after
    * they finish, or when the implementation cannot snapshot.
    */
-  virtual std::optional<nighthawk::client::Output> snapshot() PURE;
+  virtual std::optional<nighthawk::client::Output> snapshot(SnapshotDetail detail) PURE;
 };
 
 using ProcessPtr = std::unique_ptr<Process>;
