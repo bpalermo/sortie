@@ -852,8 +852,18 @@ checkout, `bazel run //bazel/cosign:verify_image -- quay.io/sortie/sortie@sha256
 verifies the index and every manifest under it with the cosign this repository
 pins, and is what the publish workflow runs.
 
-The chart pins the image by **digest**, injected at package time from the push
-target, so a chart can only ever reference the image built alongside it.
+A published chart pins both images by **digest**: the driver's, injected at
+package time from the push target, and the engine's, the index the same
+workflow run pushed and signed just before. So a chart can only ever reference
+the images built alongside it, and those are the ones whose signatures were
+verified. A chart built from a checkout names the engine by the commit's tag
+instead.
+
+The chart itself is signed the same way, as a single manifest:
+
+```console
+bazel run //bazel/cosign:verify_image -- --single quay.io/sortie/chart-sortie@sha256:...
+```
 
 Verification needs **cosign 3 or newer**. Signatures are sigstore bundles
 attached to the manifest they sign as OCI 1.1 referrers; there is no
