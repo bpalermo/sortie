@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,5 +73,28 @@ func TestProgressLineNamesTheExecution(t *testing.T) {
 		snapshot(latency(42, 2*time.Millisecond, 9*time.Millisecond)))
 	if got, want := buf.String(), "    mix/a  10.0.0.1:8443  2.3s  http_2xx 42  mean 2ms  max 9ms\n"; got != want {
 		t.Errorf("line = %q, want %q", got, want)
+	}
+}
+
+// Every client mode's latency reaches the line, not only HTTP's: a TCP or UDP
+// run records its own statistic and counts messages or datagrams.
+func TestSnapshotSummaryCoversEveryClientMode(t *testing.T) {
+	for id, counter := range map[string]string{
+		"benchmark_stream.message_latency": "benchmark.stream_messages_received",
+		"benchmark_tcp.message_latency":    "benchmark.tcp_messages_received",
+		"benchmark_udp.message_latency":    "benchmark.udp_datagrams_received",
+	} {
+		st := latency(7, 2*time.Millisecond, 9*time.Millisecond)
+		st.Id = id
+		out := &client.Output{Results: []*client.Result{{
+			Name:       "global",
+			Counters:   []*client.Counter{{Name: counter, Value: 7}},
+			Statistics: []*client.Statistic{st},
+		}}}
+		got := snapshotSummary(out)
+		want := strings.TrimPrefix(counter, "benchmark.") + " 7  mean 2ms  max 9ms"
+		if got != want {
+			t.Errorf("%s: summary = %q, want %q", id, got, want)
+		}
 	}
 }

@@ -352,6 +352,16 @@ func (p Progress) ExecutionFinished(r run.ExecutionReport) {}
 // what made snapshots expensive), so the line gives the mean and the max. A
 // p99 is printed only when the snapshot has percentiles to read it from --
 // never estimated from the summary.
+// progressLatency is the latency statistic each client mode records: HTTP and
+// unary gRPC, the stream modes (gRPC bidi, WebSocket), raw TCP and UDP. A run
+// records one of them.
+var progressLatency = map[string]bool{
+	"benchmark_http_client.request_to_response": true,
+	"benchmark_stream.message_latency":          true,
+	"benchmark_tcp.message_latency":             true,
+	"benchmark_udp.message_latency":             true,
+}
+
 func snapshotSummary(out *client.Output) string {
 	global, err := metric.GlobalResult(out)
 	if err != nil {
@@ -363,12 +373,16 @@ func snapshotSummary(out *client.Output) string {
 		case "benchmark.http_2xx", "benchmark.http_3xx", "benchmark.http_4xx", "benchmark.http_5xx",
 			"benchmark.pool_overflow", "benchmark.stream_resets", "benchmark.pool_connection_failure",
 			"benchmark.stream_resets_before_headers", "benchmark.stream_resets_incomplete_body",
-			"benchmark.pool_failure_timeout":
+			"benchmark.pool_failure_timeout",
+			// What the stream, TCP and UDP modes count in place of responses.
+			"benchmark.stream_messages_sent", "benchmark.stream_messages_received",
+			"benchmark.tcp_messages_sent", "benchmark.tcp_messages_received",
+			"benchmark.udp_datagrams_sent", "benchmark.udp_datagrams_received", "benchmark.udp_lost":
 			parts = append(parts, fmt.Sprintf("%s %d", strings.TrimPrefix(c.GetName(), "benchmark."), c.GetValue()))
 		}
 	}
 	for _, st := range global.GetStatistics() {
-		if st.GetId() != "benchmark_http_client.request_to_response" && st.GetId() != "benchmark_stream.message_latency" {
+		if !progressLatency[st.GetId()] {
 			continue
 		}
 		// A statistic nothing was recorded into has a zero mean and max that
