@@ -44,6 +44,24 @@ const (
 	Staircase = "staircase"
 )
 
+// Values of Stats.backend: what names an engine in its statsd metric names.
+const (
+	// StatsBackendAddress is the engine's host as the pool has it, sanitized.
+	// The default.
+	StatsBackendAddress = "address"
+
+	// StatsBackendName is the engine's own --backend-name, which sortie does
+	// not know: it writes StatsBackendToken and the engine expands it.
+	StatsBackendName = "name"
+
+	// StatsBackendToken is the placeholder the engine replaces with its name
+	// in a statsd sink's prefix. It is defined by the engine's API, in
+	// engine/api/stats_sink/envoy_stats_sink_adapter.proto; this must stay the
+	// string written there. StatsLabel cannot produce a percent sign, so no
+	// label and no address is ever mistaken for it.
+	StatsBackendToken = "%BACKEND%"
+)
+
 // The plan schema types, aliased so callers do not all have to import the
 // generated package directly.
 type (

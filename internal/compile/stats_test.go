@@ -303,6 +303,105 @@ func TestForPoolGivesEachBackendItsOwnStatsPrefix(t *testing.T) {
 	}
 }
 
+// With backend: name the engine names itself. sortie cannot know the name, so
+// every backend is sent the same placeholder where its address would go, and
+// the addresses -- alike or not -- play no part.
+func TestForPoolNamesBackendsByTheEnginesOwnName(t *testing.T) {
+	s := statsScenario(&plan.Stats{
+		Backend: plan.StatsBackendName,
+		Statsd:  &plan.Statsd{Address: "10.0.0.5:8125"},
+	})
+	s.NighthawkTemplate = &client.CommandLineOptions{
+		StatsSinks: []*metricsv3.StatsSink{{Name: "nighthawk.fake_stats_sink"}},
+	}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "sortie.smoke." + plan.StatsBackendToken
+	if want != "sortie.smoke.%BACKEND%" {
+		t.Fatalf("the token is %q; it must be the one the engine's API defines", plan.StatsBackendToken)
+	}
+
+	for name, pool := range map[string]*plan.Pool{
+		"listed":             {Name: "nodes", Services: []string{"10.0.0.11:8443", "10.0.0.12:8443"}},
+		"one host two ports": {Name: "local", Services: []string{"127.0.0.1:8443", "127.0.0.1:8444"}},
+		"a single backend":   {Name: "one", Services: []string{"10.0.0.11:8443"}},
+		"resolved dns":       {Name: "dns", Dns: "engines.example:8443", Services: []string{"10.0.0.11:8443", "10.0.0.12:8443"}},
+		// What validate and compile see; it is what each backend will get.
+		"unresolved dns": {Name: "dns", Dns: "engines.example:8443"},
+		// One options object for every target, and each target expands it.
+		"distributor": {Name: "dist", Distributor: "10.0.0.2:8443", Targets: []string{"10.0.0.11:8443", "10.0.0.12:8443"}},
+	} {
+		_, opts, err := ForPool(execs[0], pool)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(opts) == 0 {
+			t.Fatalf("%s: no options", name)
+		}
+		for i := range opts {
+			sinks := opts[i].GetStatsSinks()
+			if len(sinks) != 2 || sinks[0].GetName() != "nighthawk.fake_stats_sink" {
+				t.Fatalf("%s, backend %d: sinks = %v, want the template's sink kept, then the statsd one", name, i, sinks)
+			}
+			if got := statsdPrefix(t, opts[i], 1); got != want {
+				t.Errorf("%s, backend %d: prefix = %q, want %q", name, i, got, want)
+			}
+		}
+	}
+	if got := statsdPrefix(t, execs[0].Options, 1); got != "sortie.smoke" {
+		t.Errorf("ForPool changed the execution's options: prefix = %q", got)
+	}
+}
+
+// By address -- unset, or spelled out -- nothing changes: the two shapes with
+// no per-backend options keep the prefix without a backend, as they always
+// have, and a listed pool gets addresses.
+func TestForPoolByAddressIsTheDefault(t *testing.T) {
+	for _, backend := range []string{"", plan.StatsBackendAddress} {
+		execs, err := Expand(statsScenario(&plan.Stats{
+			Backend: backend,
+			Statsd:  &plan.Statsd{Address: "10.0.0.5:8125"},
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, c := range map[string]struct {
+			pool *plan.Pool
+			want []string
+		}{
+			"listed":         {&plan.Pool{Name: "nodes", Services: []string{"10.0.0.11:8443", "10.0.0.12:8443"}}, []string{"sortie.smoke.10_0_0_11", "sortie.smoke.10_0_0_12"}},
+			"unresolved dns": {&plan.Pool{Name: "dns", Dns: "engines.example:8443"}, []string{"sortie.smoke"}},
+			"distributor":    {&plan.Pool{Name: "dist", Distributor: "10.0.0.2:8443", Targets: []string{"10.0.0.11:8443", "10.0.0.12:8443"}}, []string{"sortie.smoke"}},
+		} {
+			_, opts, err := ForPool(execs[0], c.pool)
+			if err != nil {
+				t.Fatalf("backend %q, %s: %v", backend, name, err)
+			}
+			if len(opts) != len(c.want) {
+				t.Fatalf("backend %q, %s: %d options, want %d", backend, name, len(opts), len(c.want))
+			}
+			for i, want := range c.want {
+				if got := statsdPrefix(t, opts[i], 0); got != want {
+					t.Errorf("backend %q, %s, backend %d: prefix = %q, want %q", backend, name, i, got, want)
+				}
+			}
+		}
+	}
+}
+
+// The placeholder must be something no label and no address can sanitize to,
+// or a scenario could be named into it.
+func TestTheBackendTokenIsNotALabel(t *testing.T) {
+	if got := plan.StatsLabel(plan.StatsBackendToken); len(got) != 1 || got[0] == plan.StatsBackendToken {
+		t.Errorf("StatsLabel(%q) = %v", plan.StatsBackendToken, got)
+	}
+	if strings.Trim(plan.StatsBackendToken, "abcdefghijklmnopqrstuvwxyz0123456789_.") == "" {
+		t.Errorf("the token %q is made of characters a sanitized prefix can hold", plan.StatsBackendToken)
+	}
+}
+
 // A scenario without a stats block is dispatched as before.
 func TestForPoolLeavesOptionsWithoutStatsAlone(t *testing.T) {
 	s := statsScenario(nil)

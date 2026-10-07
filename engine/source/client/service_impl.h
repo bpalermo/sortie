@@ -12,6 +12,7 @@
 
 #include <future>
 #include <memory>
+#include <string>
 
 #include "absl/base/thread_annotations.h"
 
@@ -44,10 +45,13 @@ public:
    * refused as busy). Every execution is a Process of its own -- its own Envoy
    * cluster manager, worker threads and stats store -- so N concurrent
    * executions cost N times the threads a single one asks for.
+   * @param backend_name what this service is called in the metric names of its executions'
+   * stats sinks (see expandBackendName), already sanitized; empty when it has no name.
    */
-  explicit ServiceImpl(uint32_t max_concurrent_executions = 1)
+  explicit ServiceImpl(uint32_t max_concurrent_executions = 1, std::string backend_name = "")
       : process_wide_(std::make_shared<Envoy::ProcessWide>()),
-        max_concurrent_executions_(max_concurrent_executions) {
+        max_concurrent_executions_(max_concurrent_executions),
+        backend_name_(std::move(backend_name)) {
     logging_context_ = std::make_unique<Envoy::Logger::Context>(
         spdlog::level::from_str("info"), "[%T.%f][%t][%L] %v", log_lock_, false);
     service_verbosity_ = currentVerbosity();
@@ -103,6 +107,9 @@ private:
   std::shared_ptr<Envoy::ProcessWide> process_wide_;
   Envoy::Event::RealTimeSystem time_system_; // NO_CHECK_FORMAT(real_time)
   const uint32_t max_concurrent_executions_;
+  // Empty when the service was given no name; a request whose sinks ask for one is then
+  // refused.
+  const std::string backend_name_;
   // The level this service logs at: read back from the logging context it was constructed
   // with, and what every execution of a concurrent service runs at (the log level is
   // process-wide, so a request's own verbosity cannot be honoured there).

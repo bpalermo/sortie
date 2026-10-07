@@ -304,6 +304,17 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
+    name = "backend_name_test",
+    srcs = ["backend_name_test.cc"],
+    deps = [
+        "//engine/api/client:base_cc_proto",
+        "//engine/api/stats_sink:envoy_stats_sink_adapter_proto_cc_proto",
+        "//engine/source/client:backend_name_lib",
+        "@envoy_api//envoy/config/metrics/v3:pkg_cc_proto",
+    ],
+)
+
+envoy_cc_test(
     name = "service_main_test",
     srcs = ["service_main_test.cc"],
     deps = [
@@ -325,6 +336,7 @@ envoy_cc_test(
     name = "service_test",
     srcs = ["service_test.cc"],
     deps = [
+        "//engine/api/stats_sink:envoy_stats_sink_adapter_proto_cc_proto",
         "//engine/source/client:nighthawk_service_lib",
         "//engine/test/test_common:environment_lib",
         "@envoy//test/test_common:network_utility_lib",

@@ -5,6 +5,8 @@
 engine:
   enabled: true
   kind: DaemonSet
+  # The node's name through the downward API, as --backend-name.
+  backendNameFrom: node
   priorityClassName: loader-priority
   tolerations:
     - key: dedicated

@@ -45,6 +45,22 @@ TEST_F(ServiceMainTest, ConcurrentExecutionsFlagIsAccepted) {
   EXPECT_NO_THROW(ServiceMain(argv.size(), argv.data()));
 }
 
+TEST_F(ServiceMainTest, BackendNameIsAccepted) {
+  std::vector<const char*> argv = {"foo", "--backend-name", "Node-A.example", "--listen",
+                                   "127.0.0.1:0"};
+  EXPECT_NO_THROW(ServiceMain(argv.size(), argv.data()));
+}
+
+// A name nothing survives of would be an empty component in every metric name. It is what
+// an unset environment variable expands to, so it is refused at startup, where it is seen.
+TEST_F(ServiceMainTest, BackendNameThatReducesToNothingIsRejected) {
+  for (const char* name : {"", "-.-", "%"}) {
+    std::vector<const char*> argv = {"foo", "--backend-name", name};
+    EXPECT_THROW_WITH_REGEX(ServiceMain(argv.size(), argv.data()), MalformedArgvException,
+                            "--backend-name needs at least one letter");
+  }
+}
+
 TEST_F(ServiceMainTest, BadHost) {
   std::vector<const char*> argv = {"foo", "--listen", "b|-%ar"};
   ServiceMain service_main(argv.size(), argv.data());

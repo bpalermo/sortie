@@ -192,12 +192,24 @@ func ForPool(e Execution, pool *plan.Pool) ([]string, []*client.CommandLineOptio
 		}
 		// The distributor forwards one ExecutionRequest unchanged to every
 		// target, so a single options object carries the per-target share and
-		// the caller must not divide it again.
-		return pool.Targets, []*client.CommandLineOptions{opts}, nil
+		// the caller must not divide it again. One object cannot name each
+		// target by its address, so by address the targets share a series;
+		// by name it carries the placeholder each target expands for itself.
+		shared := []*client.CommandLineOptions{opts}
+		if err := restatAll(e, pool.Targets, shared); err != nil {
+			return nil, nil, err
+		}
+		return pool.Targets, shared, nil
 	}
 	if Unresolved(pool) {
 		opts, err := Divide(e, 1)
 		if err != nil {
+			return nil, nil, err
+		}
+		// No addresses yet, so nothing to name a backend by -- except the
+		// placeholder, which is what every backend will be sent once the pool
+		// is resolved, and `compile` should print that.
+		if err := restatAll(e, nil, opts); err != nil {
 			return nil, nil, err
 		}
 		return []string{pool.Dns}, opts, nil
@@ -210,13 +222,8 @@ func ForPool(e Execution, pool *plan.Pool) ([]string, []*client.CommandLineOptio
 	// would emit its live metrics under the same names: a statsd server
 	// would then hold one series fed by all of them, reading as one
 	// backend's worth. Each backend's sinks get the backend in their prefix.
-	if e.stats != nil {
-		segments := backendSegments(pool.Services)
-		for i, opts := range perBackend {
-			if err := restat(opts, e, segments[i]); err != nil {
-				return nil, nil, err
-			}
-		}
+	if err := restatAll(e, pool.Services, perBackend); err != nil {
+		return nil, nil, err
 	}
 	return pool.Services, perBackend, nil
 }

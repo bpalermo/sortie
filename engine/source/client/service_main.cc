@@ -7,6 +7,7 @@
 
 #include "nighthawk/common/exception.h"
 
+#include "engine/source/client/backend_name.h"
 #include "engine/source/client/options_impl.h"
 #include "engine/source/client/service_impl.h"
 #include "engine/source/common/utility.h"
@@ -46,6 +47,14 @@ ServiceMain::ServiceMain(int argc, const char** argv) {
       "so N executions cost N times the threads one asks for. Above 1, a request's verbosity is "
       "not applied: the log level is process-wide, and the service keeps its own. Default: 1.",
       false, 1, "uint32_t", cmd);
+  TCLAP::ValueArg<std::string> backend_name_arg(
+      "", "backend-name",
+      "What this service is called in the metric names of its executions' stats sinks: a statsd "
+      "or dog_statsd sink prefix containing %BACKEND% is emitted with the name in its place, so "
+      "that series are keyed by something that outlives an address -- a node name, say. "
+      "Lowercased and reduced to [a-z0-9_] (Node-A.example is node_a_example). Without a name, "
+      "an execution whose sinks ask for one is refused. Default empty.",
+      false, "", "string", cmd);
   Utility::parseCommand(cmd, argc, argv);
 
   if (max_concurrent_arg.getValue() == 0) {
@@ -57,8 +66,16 @@ ServiceMain::ServiceMain(int argc, const char** argv) {
   if (max_concurrent_arg.getValue() > OptionsImpl::largest_acceptable_uint32_option_value) {
     throw MalformedArgvException("Invalid value for --max-concurrent-executions");
   }
+  // A name with nothing to keep -- "---", or an environment variable that expanded to
+  // nothing -- would leave an empty component in every metric name, or none: refused here,
+  // where the operator sees it, rather than at the first run.
+  const std::string backend_name = sanitizeBackendName(backend_name_arg.getValue());
+  if (backend_name_arg.isSet() && backend_name.empty()) {
+    throw MalformedArgvException(
+        "--backend-name needs at least one letter, digit or underscore to name metrics by");
+  }
   if (service_arg.getValue() == "traffic-generator-service") {
-    service_ = std::make_unique<ServiceImpl>(max_concurrent_arg.getValue());
+    service_ = std::make_unique<ServiceImpl>(max_concurrent_arg.getValue(), backend_name);
   } else if (service_arg.getValue() == "dummy-request-source") {
     service_ = std::make_unique<RequestSourceServiceImpl>();
   }

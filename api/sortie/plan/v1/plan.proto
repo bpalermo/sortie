@@ -125,6 +125,35 @@ message Stats {
   // here is held to the statsd shortcut's rules: an IP literal and a port, and
   // no tcp_cluster_name.
   repeated envoy.config.metrics.v3.StatsSink sinks = 5;
+
+  // What names the engine in the statsd sink's metric names, the component
+  // after the scenario's: `<prefix>.<scenario>.<backend>.cluster...`.
+  //
+  // "address" (the default) is the engine's host as the pool lists or
+  // resolves it, sanitized: `10.0.0.11:8443` is `10_0_0_11`. sortie makes
+  // these distinct within a pool. A pool behind a distributor has no such
+  // component: its targets are all sent the same options, so they share one
+  // series.
+  //
+  // "name" is the engine's own name, the one nighthawk_service was started
+  // with (--backend-name; the chart's engine.backendNameFrom). An address
+  // that changes with every install -- a pod IP -- starts a new set of series
+  // each time; a name such as the node's does not. sortie writes a placeholder
+  // where the name goes and each engine puts its own in, so this works behind
+  // a distributor too, and its targets then have a series each. Two things
+  // follow from sortie not knowing the names: an engine started without one
+  // refuses the execution, and nothing checks that two engines of a pool are
+  // named differently -- give each its own, or their series merge.
+  //
+  // Concerns the statsd block only, like the rest of the prefix scheme.
+  string backend = 6 [
+    (buf.validate.field).cel = {
+      id: "stats.backend.enum"
+      message: "backend must be address or name"
+      expression: "this in ['address', 'name']"
+    },
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
 }
 
 // Statsd is the statsd sink. UDP only: Envoy's TCP statsd sink addresses a
