@@ -28,5 +28,6 @@ go_test(
         "//internal/run",
         "//internal/threshold",
         "@org_golang_google_protobuf//types/known/durationpb",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

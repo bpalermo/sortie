@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	client "github.com/bpalermo/sortie/engine/api/client"
 
+	"github.com/bpalermo/sortie/internal/compile"
 	"github.com/bpalermo/sortie/internal/report"
 	"github.com/bpalermo/sortie/internal/result"
 	"github.com/bpalermo/sortie/internal/run"
@@ -536,6 +539,247 @@ func TestJSONCarriesPerBackendLatencyStatistics(t *testing.T) {
 	}
 }
 
+// A failed stage is matched to what else happened at the time by these: when
+// the execution was dispatched and when it was over, and when each backend
+// started its clock.
+func TestJSONCarriesWhenAnExecutionStartedAndEnded(t *testing.T) {
+	r := reportWith(t, 10*time.Millisecond, "latency_2xx.p95 < 50ms")
+	// Not UTC, and not a whole millisecond: the report gives both in UTC, to
+	// the millisecond, and an end that is the printed start plus the printed
+	// elapsed time -- the fractions here would otherwise carry into it.
+	zone := time.FixedZone("east", 3*60*60)
+	r.Executions[0].Started = time.Date(2026, 10, 7, 15, 0, 0, 250_600_000, zone)
+	r.Executions[0].Elapsed = 61*time.Second + 500*time.Millisecond + 600*time.Microsecond
+	r.Executions[0].Set.Backends[0].Global.ExecutionStart = timestamppb.New(time.Date(2026, 10, 7, 12, 0, 1, 0, time.UTC))
+
+	var buf bytes.Buffer
+	if err := report.JSON(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Executions []struct {
+			StartedAt string `json:"started_at"`
+			EndedAt   string `json:"ended_at"`
+			ElapsedMS int64  `json:"elapsed_ms"`
+			Results   []struct {
+				StartedAt string `json:"started_at"`
+			} `json:"results"`
+		} `json:"executions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("JSON report does not parse: %v\n%s", err, buf.String())
+	}
+	e := got.Executions[0]
+	if e.StartedAt != "2026-10-07T12:00:00.250Z" || e.EndedAt != "2026-10-07T12:01:01.750Z" {
+		t.Errorf("started_at, ended_at = %q, %q", e.StartedAt, e.EndedAt)
+	}
+	if e.Results[0].StartedAt != "2026-10-07T12:00:01.000Z" {
+		t.Errorf("the backend's started_at = %q", e.Results[0].StartedAt)
+	}
+	// They are RFC 3339, and the two differ by the elapsed time.
+	start, err := time.Parse(time.RFC3339Nano, e.StartedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	end, err := time.Parse(time.RFC3339Nano, e.EndedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := end.Sub(start).Milliseconds(); got != e.ElapsedMS {
+		t.Errorf("ended_at - started_at = %d ms, elapsed_ms = %d", got, e.ElapsedMS)
+	}
+
+	var text bytes.Buffer
+	if err := report.Text(&text, r); err != nil {
+		t.Fatal(err)
+	}
+	if want := `pool "local", 1m1.501s, started 2026-10-07T12:00:00.250Z)`; !strings.Contains(text.String(), want) {
+		t.Errorf("the text report lacks %q:\n%s", want, text.String())
+	}
+}
+
+// A report with no start time -- one put together by hand, or a backend that
+// never released a request -- says nothing rather than the year 1.
+func TestReportsOmitATimeNobodyRecorded(t *testing.T) {
+	r := reportWith(t, 10*time.Millisecond, "latency_2xx.p95 < 50ms")
+
+	var jsonBuf, text bytes.Buffer
+	if err := report.JSON(&jsonBuf, r); err != nil {
+		t.Fatal(err)
+	}
+	if err := report.Text(&text, r); err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{"started_at", "ended_at", "0001-01-01"} {
+		if strings.Contains(jsonBuf.String(), unwanted) {
+			t.Errorf("the JSON report has %q with no start time to give:\n%s", unwanted, jsonBuf.String())
+		}
+	}
+	if strings.Contains(text.String(), "started") {
+		t.Errorf("the text report gives a start time it does not have:\n%s", text.String())
+	}
+}
+
+// Whatever the progress interval, each execution's verdict is one line when
+// it finishes. A pass is short; a failure names everything that failed it.
+func TestProgressPrintsAVerdictLineAsAnExecutionFinishes(t *testing.T) {
+	passed := reportWith(t, 10*time.Millisecond, "latency_2xx.p95 < 50ms").Executions[0]
+	passed.Label, passed.Scenario = "steps/stage-1", "steps"
+
+	failed := reportWith(t, 900*time.Millisecond, "latency_2xx.p95 < 50ms", "counter:benchmark.http_2xx > 0").Executions[0]
+	failed.Label, failed.Scenario = "steps/stage-2", "steps"
+	failed.BackendErrors = []run.BackendError{{Addr: "10.0.0.2:8443", Err: errors.New("went away")}}
+
+	// Several backends' errors joined are one to a line; the verdict is not.
+	broken := run.ExecutionReport{
+		Label: "steps/stage-3", Scenario: "steps", Elapsed: 1500 * time.Millisecond,
+		Err: errors.Join(errors.New("backend a: refused"), errors.New("backend b: refused")),
+	}
+
+	var buf bytes.Buffer
+	p := report.Progress{W: &buf}
+	p.ExecutionFinished(passed)
+	p.ExecutionFinished(failed)
+	p.ExecutionFinished(broken)
+
+	want := "  PASS steps/stage-1 (scenario steps, 11s)\n" +
+		"  FAIL steps/stage-2 (scenario steps, 11s): 10.0.0.2:8443: error: went away; latency_2xx.p95 < 50ms actual 900ms\n" +
+		"  FAIL steps/stage-3 (scenario steps, 1.5s): error: backend a: refused; backend b: refused\n"
+	if got := buf.String(); got != want {
+		t.Errorf("verdict lines:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// manyExecutions is a report with every kind of execution in it: passed,
+// failed on a threshold with a backend lost, and never run.
+func manyExecutions(t *testing.T) *run.Report {
+	t.Helper()
+	start := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	passed := reportWith(t, 10*time.Millisecond, "latency_2xx.p95 < 50ms").Executions[0]
+	passed.Started = start
+	failed := reportWith(t, 900*time.Millisecond, "latency_2xx.p95 < 50ms").Executions[0]
+	failed.Label, failed.Started = "smoke/2", start.Add(time.Minute)
+	failed.Backends = []string{"127.0.0.1:8443", "10.0.0.2:8443"}
+	failed.BackendErrors = []run.BackendError{{Addr: "10.0.0.2:8443", Err: errors.New("went away")}}
+	broken := run.ExecutionReport{
+		Label: "smoke/3", Scenario: "smoke", Pool: "local", Rate: 10, Duration: time.Second,
+		Started: start.Add(2 * time.Minute), Elapsed: time.Second, Err: errFake{},
+	}
+	return &run.Report{Executions: []run.ExecutionReport{passed, failed, broken}}
+}
+
+// The stream has one schema, and it is the report's: line n is, key for key
+// and value for value, executions[n] of the JSON report of the same run. Each
+// line is whole -- one object, one newline -- so a reader following the file
+// can parse every line it has.
+func TestStreamLinesAreTheReportsExecutions(t *testing.T) {
+	r := manyExecutions(t)
+
+	var stream bytes.Buffer
+	s := &report.Stream{W: &stream, Failed: func(label string, err error) { t.Errorf("%s: %v", label, err) }}
+	for _, e := range r.Executions {
+		s.ExecutionFinished(e)
+	}
+	var full bytes.Buffer
+	if err := report.JSON(&full, r); err != nil {
+		t.Fatal(err)
+	}
+	var want struct {
+		Executions []map[string]any `json:"executions"`
+	}
+	if err := json.Unmarshal(full.Bytes(), &want); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.HasSuffix(stream.String(), "\n") {
+		t.Fatalf("the last line is not terminated:\n%s", stream.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(stream.String(), "\n"), "\n")
+	if len(lines) != len(want.Executions) {
+		t.Fatalf("got %d lines for %d executions:\n%s", len(lines), len(want.Executions), stream.String())
+	}
+	for i, line := range lines {
+		var got map[string]any
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatalf("line %d does not parse: %v\n%s", i+1, err, line)
+		}
+		if !reflect.DeepEqual(got, want.Executions[i]) {
+			t.Errorf("line %d is not executions[%d] of the report:\n%s\nwant:\n%v", i+1, i, line, want.Executions[i])
+		}
+		if got["started_at"] == nil || got["ended_at"] == nil {
+			t.Errorf("line %d does not say when it ran:\n%s", i+1, line)
+		}
+	}
+}
+
+// failAfter is a writer that takes n writes whole and refuses the rest.
+type failAfter struct {
+	n      int
+	writes [][]byte
+}
+
+func (f *failAfter) Write(b []byte) (int, error) {
+	if len(f.writes) >= f.n {
+		return 0, errors.New("disk full")
+	}
+	f.writes = append(f.writes, append([]byte(nil), b...))
+	return len(b), nil
+}
+
+// A line that cannot be written is reported, by name, and is nobody's reason
+// to stop: the stream neither panics nor gives up on the lines after it. And
+// a line reaches the writer in one Write, newline and all, which is what
+// keeps a half-written object out of a file that is being followed.
+func TestStreamReportsAWriteThatFailedAndCarriesOn(t *testing.T) {
+	r := manyExecutions(t)
+	w := &failAfter{n: 1}
+	var failed []string
+	s := &report.Stream{W: w, Failed: func(label string, err error) {
+		failed = append(failed, label+": "+err.Error())
+	}}
+	for _, e := range r.Executions {
+		s.ExecutionFinished(e)
+	}
+
+	if len(w.writes) != 1 || !bytes.HasSuffix(w.writes[0], []byte("}\n")) || bytes.Count(w.writes[0], []byte("\n")) != 1 {
+		t.Errorf("the first line was not one whole write: %q", w.writes)
+	}
+	if want := []string{"smoke/2: disk full", "smoke/3: disk full"}; !reflect.DeepEqual(failed, want) {
+		t.Errorf("failures reported = %q, want %q", failed, want)
+	}
+	// With nobody to tell, a failed write is still not a panic.
+	(&report.Stream{W: &failAfter{}}).ExecutionFinished(r.Executions[0])
+}
+
+// recorder is an observer that notes what it was told.
+type recorder struct{ calls *[]string }
+
+func (r recorder) ExecutionStarted(e compile.Execution, _ []string) {
+	*r.calls = append(*r.calls, "started "+e.Label)
+}
+
+func (r recorder) ExecutionProgress(e compile.Execution, _ string, _ time.Duration, _ *client.Output) {
+	*r.calls = append(*r.calls, "progress "+e.Label)
+}
+
+func (r recorder) ExecutionFinished(e run.ExecutionReport) {
+	*r.calls = append(*r.calls, "finished "+e.Label)
+}
+
+func TestObserversPassEveryCallbackToEachMember(t *testing.T) {
+	var a, b []string
+	obs := report.Observers{recorder{&a}, recorder{&b}}
+	e := compile.Execution{Label: "x"}
+	obs.ExecutionStarted(e, nil)
+	obs.ExecutionProgress(e, "backend", time.Second, nil)
+	obs.ExecutionFinished(run.ExecutionReport{Label: "x"})
+
+	want := []string{"started x", "progress x", "finished x"}
+	if !reflect.DeepEqual(a, want) || !reflect.DeepEqual(b, want) {
+		t.Errorf("members were told %q and %q, want %q each", a, b, want)
+	}
+}
+
 // A stage that was never attempted -- the ones after a stage refused at an
 // engine's execution cap -- is listed as skipped with the reason, in both
 // renderings, and is not counted as an execution that failed.
@@ -587,5 +831,83 @@ func TestReportsMarkAStageThatWasNotRun(t *testing.T) {
 	if second := got.Executions[1]; !second.NotRun || second.Pass || second.ElapsedMS != 0 ||
 		!strings.Contains(second.Error, "not run: ramp/stage-1 was refused") {
 		t.Errorf("the skipped stage = %+v", second)
+	}
+}
+
+// The line printed as a skipped stage "finishes" says it was skipped, not
+// that it failed in no time.
+func TestProgressPrintsASkippedStageAsSkipped(t *testing.T) {
+	atCap := &run.CapError{Backend: "10.0.0.1:8443", Max: 16, Needed: 1, Err: errFake{}}
+	var buf bytes.Buffer
+	report.Progress{W: &buf}.ExecutionFinished(run.ExecutionReport{
+		Label: "ramp/stage-2", Scenario: "ramp",
+		Err: &run.NotRunError{Refused: "ramp/stage-1", Cap: atCap},
+	})
+	got := buf.String()
+	if !strings.Contains(got, "SKIP ramp/stage-2 (scenario ramp): not run: ramp/stage-1 was refused") ||
+		strings.Contains(got, "FAIL") || strings.Count(got, "\n") != 1 {
+		t.Errorf("verdict line = %q", got)
+	}
+}
+
+// tornWriter keeps what it is given, except that its second write takes only
+// the first bytes and fails, as a disk that fills does.
+type tornWriter struct {
+	buf    bytes.Buffer
+	writes int
+}
+
+func (w *tornWriter) Write(b []byte) (int, error) {
+	w.writes++
+	if w.writes == 2 {
+		w.buf.Write(b[:10])
+		return 10, errors.New("no space left on device")
+	}
+	return w.buf.Write(b)
+}
+
+// A write that failed part way leaves a piece of a line behind. The line
+// after it is not joined to that piece: the piece is closed off as a line of
+// its own, and every other line is a whole record.
+func TestStreamIsolatesAPartlyWrittenLine(t *testing.T) {
+	r := manyExecutions(t)
+	w := &tornWriter{}
+	var failed []string
+	s := &report.Stream{W: w, Failed: func(label string, _ error) { failed = append(failed, label) }}
+	for _, e := range r.Executions {
+		s.ExecutionFinished(e)
+	}
+	if len(failed) != 1 {
+		t.Fatalf("failures = %q, want the one torn line", failed)
+	}
+	lines := strings.Split(strings.TrimSuffix(w.buf.String(), "\n"), "\n")
+	if len(lines) != len(r.Executions) {
+		t.Fatalf("got %d lines, want %d: %q", len(lines), len(r.Executions), lines)
+	}
+	for i, line := range lines {
+		var got struct {
+			Label string `json:"label"`
+		}
+		err := json.Unmarshal([]byte(line), &got)
+		if i == 1 {
+			if err == nil {
+				t.Errorf("the torn line parsed: %q", line)
+			}
+			continue
+		}
+		if err != nil || got.Label != r.Executions[i].Label {
+			t.Errorf("line %d = %q (%v), want the record of %s", i, line, err, r.Executions[i].Label)
+		}
+	}
+}
+
+// A name may hold a newline; the verdict is one line all the same.
+func TestProgressVerdictIsOneLineWhateverTheNamesHold(t *testing.T) {
+	var buf bytes.Buffer
+	report.Progress{W: &buf}.ExecutionFinished(run.ExecutionReport{
+		Label: "two\nlines/stage-1", Scenario: "two\nlines", Pass: true,
+	})
+	if got := buf.String(); strings.Count(got, "\n") != 1 || !strings.Contains(got, "PASS two; lines/stage-1 (scenario two; lines,") {
+		t.Errorf("verdict line = %q", got)
 	}
 }

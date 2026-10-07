@@ -257,6 +257,26 @@ trailing slash or a dot segment at the end names a directory. */ -}}
 {{- $format -}}
 {{- end -}}
 
+{{/*
+The path of the results stream, checked: report.stream is a file name, and
+the file is written beside the report, on the volume mounted there. A name
+is all it can be -- the root filesystem is read-only, so anywhere off that
+volume the stream could not be opened and the run would refuse to start.
+*/}}
+{{- define "sortie.reportStream" -}}
+{{- $name := .Values.report.stream -}}
+{{- if not .Values.report.path -}}
+{{- fail "report.stream needs report.path: the stream is written beside the report, on report.volume" -}}
+{{- end -}}
+{{- if or (contains "/" $name) (eq $name ".") (eq $name "..") -}}
+{{- fail (printf "report.stream must be a file name, written in the directory of report.path; got %q" $name) -}}
+{{- end -}}
+{{- if eq $name (base (clean .Values.report.path)) -}}
+{{- fail (printf "report.stream and report.path name the same file, %q" $name) -}}
+{{- end -}}
+{{- printf "%s/%s" (dir (clean .Values.report.path)) $name -}}
+{{- end -}}
+
 {{- define "sortie.podSpec" -}}
 metadata:
   labels:
@@ -294,6 +314,10 @@ spec:
         - --json={{ eq (include "sortie.reportFormat" .) "json" }}
         - --output
         - {{ clean .Values.report.path | quote }}
+        {{- end }}
+        {{- if .Values.report.stream }}
+        - --results-stream
+        - {{ include "sortie.reportStream" . | quote }}
         {{- end }}
         - /etc/sortie/plan.yaml
       volumeMounts:
