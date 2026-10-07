@@ -56,15 +56,23 @@ func newRunCmd() *cobra.Command {
 
 // syncedFile writes through to a file and asks for each write to reach the
 // disk: the results stream exists for the run that does not end well, and a
-// line still in a page cache when the node goes is a line nobody reads. The
-// sync is best effort -- a pipe or a device has nothing to sync and says so
-// with an error that is not a failure to write.
-type syncedFile struct{ f *os.File }
+// line still in a page cache when the node goes is a line nobody reads. A
+// regular file that cannot be synced has not kept the line it was given --
+// the write succeeded and the disk did not -- and that is reported, without
+// failing the write. A pipe or a device has nothing to sync and says so with
+// an error that means nothing, which is ignored.
+type syncedFile struct {
+	f          *os.File
+	regular    bool
+	syncFailed func(error)
+}
 
 func (s syncedFile) Write(b []byte) (int, error) {
 	n, err := s.f.Write(b)
 	if err == nil {
-		_ = s.f.Sync()
+		if syncErr := s.f.Sync(); syncErr != nil && s.regular && s.syncFailed != nil {
+			s.syncFailed(syncErr)
+		}
 	}
 	return n, err
 }
@@ -73,14 +81,28 @@ func (s syncedFile) Write(b []byte) (int, error) {
 // truncates: what is in the file may be all that is left of a run that died,
 // and the retry of that run must not be what erases it. The lines of two runs
 // are told apart by their started_at.
-func openStream(path, out string) (*os.File, error) {
+//
+// A run that died may also have left the file ending in part of a line. What
+// is appended next would be joined to it and lost with it, so such a tail is
+// closed with a newline first: the fragment stays, as a line of its own that
+// does not parse, and every complete record before and after it does. warn is
+// told when that was done.
+func openStream(path, out string, warn func(string)) (*os.File, error) {
 	// stdout is the report's: a JSON document, or the text summary. Lines of
 	// JSON interleaved with either would leave it something no parser reads.
 	if path == "-" {
 		return nil, badUsage("--results-stream needs a file: stdout carries the report, and the two cannot share it")
 	}
-	if out != "" && filepath.Clean(path) == filepath.Clean(out) {
-		return nil, badUsage("--results-stream and --output name the same file, %s", path)
+	// The same file by any name, and writing the report would truncate the
+	// stream. By path first, relative or absolute, before anything is
+	// created; by identity once the stream is open, which also sees through
+	// a symbolic or a hard link.
+	if out != "" {
+		a, errA := filepath.Abs(path)
+		b, errB := filepath.Abs(out)
+		if errA == nil && errB == nil && a == b {
+			return nil, badUsage("--results-stream and --output name the same file, %s", path)
+		}
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
 	if err != nil {
@@ -88,7 +110,47 @@ func openStream(path, out string) (*os.File, error) {
 		// that cannot be honoured, better said now than after the run.
 		return nil, badUsage("--results-stream: %w", err)
 	}
+	if out != "" {
+		if streamInfo, err := f.Stat(); err == nil {
+			if outInfo, err := os.Stat(out); err == nil && os.SameFile(streamInfo, outInfo) {
+				_ = f.Close()
+				return nil, badUsage("--results-stream and --output name the same file, %s", path)
+			}
+		}
+	}
+	if torn, err := endsMidLine(path); err != nil {
+		_ = f.Close()
+		return nil, badUsage("--results-stream: %w", err)
+	} else if torn {
+		if _, err := f.Write([]byte("\n")); err != nil {
+			_ = f.Close()
+			return nil, badUsage("--results-stream: closing the unfinished last line of %s: %w", path, err)
+		}
+		warn(fmt.Sprintf("%s ended in an unfinished line, left by a run that did not end well; "+
+			"it is kept as a line of its own, which does not parse, and this run's lines follow it", path))
+	}
 	return f, nil
+}
+
+// endsMidLine says whether the file has content that does not end in a
+// newline. A file that cannot be read back -- a pipe, a device, one opened
+// write-only by permission -- is taken to end cleanly: there is nothing to
+// look at and nothing to repair.
+func endsMidLine(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, nil
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		return false, nil
+	}
+	last := make([]byte, 1)
+	if _, err := f.ReadAt(last, info.Size()-1); err != nil {
+		return false, fmt.Errorf("reading the end of %s: %w", path, err)
+	}
+	return last[0] != '\n', nil
 }
 
 func runPlan(parent context.Context, path string, asJSON bool, out, stream string, progress time.Duration, stdout, stderr io.Writer) error {
@@ -104,7 +166,9 @@ func runPlan(parent context.Context, path string, asJSON bool, out, stream strin
 	// The runner calls it from one goroutine at a time, so neither locks.
 	var observer run.Observer = report.Progress{W: stderr}
 	if stream != "" {
-		f, err := openStream(stream, out)
+		f, err := openStream(stream, out, func(msg string) {
+			fmt.Fprintf(stderr, "sortie: results stream: %s\n", msg)
+		})
 		if err != nil {
 			return err
 		}
@@ -113,8 +177,14 @@ func runPlan(parent context.Context, path string, asJSON bool, out, stream strin
 				fmt.Fprintf(stderr, "sortie: results stream: %v\n", err)
 			}
 		}()
-		observer = report.Observers{observer, report.Stream{
-			W: syncedFile{f},
+		regular := false
+		if info, err := f.Stat(); err == nil {
+			regular = info.Mode().IsRegular()
+		}
+		observer = report.Observers{observer, &report.Stream{
+			W: syncedFile{f: f, regular: regular, syncFailed: func(err error) {
+				fmt.Fprintf(stderr, "sortie: results stream: a line was written but not synced to disk: %v\n", err)
+			}},
 			// Reported and no more: the run and its report do not depend on
 			// the stream, and the next line is tried all the same.
 			Failed: func(label string, err error) {

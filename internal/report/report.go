@@ -515,7 +515,9 @@ func verdictLine(r run.ExecutionReport) string {
 		// Never attempted: not a failure of its own, and no time to show.
 		return oneLine.Replace(fmt.Sprintf("SKIP %s (scenario %s): %v", r.Label, r.Scenario, r.Err))
 	}
-	line := fmt.Sprintf("%s %s (scenario %s, %s)", verdict, r.Label, r.Scenario, r.Elapsed.Round(time.Millisecond))
+	// One line whatever the names hold: a scenario's name is any nonempty
+	// string, and a verdict that wraps is not found by a grep for it.
+	line := oneLine.Replace(fmt.Sprintf("%s %s (scenario %s, %s)", verdict, r.Label, r.Scenario, r.Elapsed.Round(time.Millisecond)))
 
 	var why []string
 	if r.Err != nil {
@@ -552,16 +554,30 @@ type Stream struct {
 	W io.Writer
 	// Failed, when set, is told of each line that could not be written.
 	Failed func(label string, err error)
+
+	// torn is set by a write that failed: it may have left part of a line
+	// behind -- a disk that filled does -- and the next line would be joined
+	// to that part and lost with it.
+	torn bool
 }
 
-func (s Stream) ExecutionStarted(compile.Execution, []string) {}
+func (s *Stream) ExecutionStarted(compile.Execution, []string) {}
 
-func (s Stream) ExecutionProgress(compile.Execution, string, time.Duration, *client.Output) {}
+func (s *Stream) ExecutionProgress(compile.Execution, string, time.Duration, *client.Output) {}
 
-func (s Stream) ExecutionFinished(r run.ExecutionReport) {
+func (s *Stream) ExecutionFinished(r run.ExecutionReport) {
 	line, err := json.Marshal(newJSONExecution(r))
 	if err == nil {
-		_, err = s.W.Write(append(line, '\n'))
+		line = append(line, '\n')
+		if s.torn {
+			// Close whatever the failed write left, so that it is a line of
+			// its own that does not parse and this one is whole.
+			line = append([]byte{'\n'}, line...)
+		}
+		var n int
+		n, err = s.W.Write(line)
+		// A write that took nothing leaves the stream as it was.
+		s.torn = err != nil && (n > 0 || s.torn)
 	}
 	if err != nil && s.Failed != nil {
 		s.Failed(r.Label, err)

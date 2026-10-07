@@ -871,9 +871,14 @@ scenario finish together and are written together, in plan order. The file is ap
 never truncated: a run that is retried, or the next run given the same file,
 adds its lines after the ones already there, and `started_at` tells them
 apart. Delete or rename the file between runs to keep one run in it. A line
-that cannot be written is reported on stderr and the run carries on; a file
-that cannot be opened is refused before any load, as is `-`: stdout carries
-the report. The stream does not replace the report, which is still written at
+that cannot be written is reported on stderr and the run carries on, as is
+a line that was written but could not be synced to disk; a file that cannot
+be opened is refused before any load, as are `-`, since stdout carries the
+report, and the report's own file under any name. A file that ends in part
+of a line, left by a run that died or by a write that failed half way, is not
+repaired: the part is closed off as a line of its own, which does not parse,
+and the lines after it are whole. A reader skips a line it cannot parse. The
+stream does not replace the report, which is still written at
 the end, and it has no overall `pass`: that is known only then.
 
 ### percentiles resolve to the next histogram bucket

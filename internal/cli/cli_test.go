@@ -432,10 +432,19 @@ func TestRunRefusesAStreamItCannotKeep(t *testing.T) {
 	plan := writePlan(t, listener.Addr().String(), "")
 	dir := t.TempDir()
 
+	// A report that exists, and a second name for it.
+	if err := os.WriteFile(filepath.Join(dir, "linked.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "linked.json"), filepath.Join(dir, "link.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+
 	for name, args := range map[string][]string{
-		"stdout":          {"--results-stream", "-"},
-		"the report file": {"-o", filepath.Join(dir, "r.json"), "--results-stream", filepath.Join(dir, ".", "r.json")},
-		"no such dir":     {"--results-stream", filepath.Join(dir, "missing", "results.jsonl")},
+		"stdout":                     {"--results-stream", "-"},
+		"the report file":            {"-o", filepath.Join(dir, "r.json"), "--results-stream", filepath.Join(dir, ".", "r.json")},
+		"the report file, by a link": {"-o", filepath.Join(dir, "linked.json"), "--results-stream", filepath.Join(dir, "link.jsonl")},
+		"no such dir":                {"--results-stream", filepath.Join(dir, "missing", "results.jsonl")},
 	} {
 		code, _, stderr := runCLI(append(append([]string{"run"}, args...), plan)...)
 		if code != exitBadUsage {
@@ -447,5 +456,47 @@ func TestRunRefusesAStreamItCannotKeep(t *testing.T) {
 	}
 	if n := backend.calls.Load(); n != 0 {
 		t.Errorf("the backend was driven %d times by runs that should not have started", n)
+	}
+}
+
+// A run that died can leave the stream ending in part of a line. The retry's
+// first line is not joined to it: the complete record before stays, the
+// fragment becomes a line of its own, and the retry's lines are whole.
+func TestRunKeepsItsLinesApartFromAnUnfinishedOne(t *testing.T) {
+	plan := writeStaircase(t, startBackend(t, 900*time.Millisecond))
+	stream := filepath.Join(t.TempDir(), "results.jsonl")
+	if err := os.WriteFile(stream, []byte("{\"label\":\"earlier\"}\n{\"label\":\"cut sho"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runCLI("run", "--results-stream", stream, plan)
+	if code != exitFailed {
+		t.Fatalf("exit = %d, want %d\nstdout:\n%s\nstderr:\n%s", code, exitFailed, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "ended in an unfinished line") {
+		t.Errorf("stderr does not say the stream had an unfinished line:\n%s", stderr)
+	}
+	raw, err := os.ReadFile(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("got %d lines, want the earlier record, the fragment and two stages:\n%s", len(lines), raw)
+	}
+	for i, want := range []string{"earlier", "", "steps/stage-1", "steps/stage-2"} {
+		var got struct {
+			Label string `json:"label"`
+		}
+		err := json.Unmarshal([]byte(lines[i]), &got)
+		if want == "" {
+			if err == nil {
+				t.Errorf("the fragment parsed: %q", lines[i])
+			}
+			continue
+		}
+		if err != nil || got.Label != want {
+			t.Errorf("line %d = %q (%v), want the record of %s", i, lines[i], err, want)
+		}
 	}
 }

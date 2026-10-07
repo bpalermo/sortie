@@ -676,7 +676,7 @@ func TestStreamLinesAreTheReportsExecutions(t *testing.T) {
 	r := manyExecutions(t)
 
 	var stream bytes.Buffer
-	s := report.Stream{W: &stream, Failed: func(label string, err error) { t.Errorf("%s: %v", label, err) }}
+	s := &report.Stream{W: &stream, Failed: func(label string, err error) { t.Errorf("%s: %v", label, err) }}
 	for _, e := range r.Executions {
 		s.ExecutionFinished(e)
 	}
@@ -734,7 +734,7 @@ func TestStreamReportsAWriteThatFailedAndCarriesOn(t *testing.T) {
 	r := manyExecutions(t)
 	w := &failAfter{n: 1}
 	var failed []string
-	s := report.Stream{W: w, Failed: func(label string, err error) {
+	s := &report.Stream{W: w, Failed: func(label string, err error) {
 		failed = append(failed, label+": "+err.Error())
 	}}
 	for _, e := range r.Executions {
@@ -748,7 +748,7 @@ func TestStreamReportsAWriteThatFailedAndCarriesOn(t *testing.T) {
 		t.Errorf("failures reported = %q, want %q", failed, want)
 	}
 	// With nobody to tell, a failed write is still not a panic.
-	report.Stream{W: &failAfter{}}.ExecutionFinished(r.Executions[0])
+	(&report.Stream{W: &failAfter{}}).ExecutionFinished(r.Executions[0])
 }
 
 // recorder is an observer that notes what it was told.
@@ -846,6 +846,68 @@ func TestProgressPrintsASkippedStageAsSkipped(t *testing.T) {
 	got := buf.String()
 	if !strings.Contains(got, "SKIP ramp/stage-2 (scenario ramp): not run: ramp/stage-1 was refused") ||
 		strings.Contains(got, "FAIL") || strings.Count(got, "\n") != 1 {
+		t.Errorf("verdict line = %q", got)
+	}
+}
+
+// tornWriter keeps what it is given, except that its second write takes only
+// the first bytes and fails, as a disk that fills does.
+type tornWriter struct {
+	buf    bytes.Buffer
+	writes int
+}
+
+func (w *tornWriter) Write(b []byte) (int, error) {
+	w.writes++
+	if w.writes == 2 {
+		w.buf.Write(b[:10])
+		return 10, errors.New("no space left on device")
+	}
+	return w.buf.Write(b)
+}
+
+// A write that failed part way leaves a piece of a line behind. The line
+// after it is not joined to that piece: the piece is closed off as a line of
+// its own, and every other line is a whole record.
+func TestStreamIsolatesAPartlyWrittenLine(t *testing.T) {
+	r := manyExecutions(t)
+	w := &tornWriter{}
+	var failed []string
+	s := &report.Stream{W: w, Failed: func(label string, _ error) { failed = append(failed, label) }}
+	for _, e := range r.Executions {
+		s.ExecutionFinished(e)
+	}
+	if len(failed) != 1 {
+		t.Fatalf("failures = %q, want the one torn line", failed)
+	}
+	lines := strings.Split(strings.TrimSuffix(w.buf.String(), "\n"), "\n")
+	if len(lines) != len(r.Executions) {
+		t.Fatalf("got %d lines, want %d: %q", len(lines), len(r.Executions), lines)
+	}
+	for i, line := range lines {
+		var got struct {
+			Label string `json:"label"`
+		}
+		err := json.Unmarshal([]byte(line), &got)
+		if i == 1 {
+			if err == nil {
+				t.Errorf("the torn line parsed: %q", line)
+			}
+			continue
+		}
+		if err != nil || got.Label != r.Executions[i].Label {
+			t.Errorf("line %d = %q (%v), want the record of %s", i, line, err, r.Executions[i].Label)
+		}
+	}
+}
+
+// A name may hold a newline; the verdict is one line all the same.
+func TestProgressVerdictIsOneLineWhateverTheNamesHold(t *testing.T) {
+	var buf bytes.Buffer
+	report.Progress{W: &buf}.ExecutionFinished(run.ExecutionReport{
+		Label: "two\nlines/stage-1", Scenario: "two\nlines", Pass: true,
+	})
+	if got := buf.String(); strings.Count(got, "\n") != 1 || !strings.Contains(got, "PASS two; lines/stage-1 (scenario two; lines,") {
 		t.Errorf("verdict line = %q", got)
 	}
 }
