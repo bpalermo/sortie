@@ -223,7 +223,12 @@ unchanged to each.
 Nighthawk cannot change the rate of a run already in flight — the `UpdateRequest`
 RPC exists in `api/client/service.proto` but the service rejects it. Each stage
 is therefore its own execution: connections are re-established at every
-boundary, and each stage is reported and judged separately.
+boundary, and each stage is reported and judged separately. A stage that
+fails does not stop the ones after it, with one exception: when a stage is
+refused because an engine is at its execution cap (see Weighted targets), the
+scenario's remaining stages are not attempted. They are listed in the report
+as `SKIP` (`"not_run": true` in the JSON) with the stage that was refused, and
+the plan's other scenarios still run.
 
 ## Weighted targets
 

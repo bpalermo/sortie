@@ -55,7 +55,15 @@ type ExecutionReport struct {
 
 	// Err is set when the execution itself failed, as opposed to failing a
 	// threshold: nothing could be dispatched, or no backend returned anything.
+	// A *CapError is a stage stopped at an engine's execution cap, and a
+	// *NotRunError a later stage that was therefore never attempted.
 	Err error
+}
+
+// NotRun reports whether the execution was never attempted (see NotRunError).
+func (e ExecutionReport) NotRun() bool {
+	var notRun *NotRunError
+	return errors.As(e.Err, &notRun)
 }
 
 // CapError is a stage that was stopped because a backend refused one of its
@@ -91,6 +99,28 @@ func (e *CapError) Error() string {
 }
 
 func (e *CapError) Unwrap() error { return e.Err }
+
+// NotRunError is the Err of an execution that was never attempted: an earlier
+// stage of its scenario was refused at an engine's execution cap, and the
+// stages after a refused one are not run. Its report has no Started and no
+// Elapsed. It unwraps to the CapError that stopped the scenario.
+type NotRunError struct {
+	// Refused is the stage that was refused: its label, or its group's for
+	// a stage of several targets.
+	Refused string
+	Cap     *CapError
+}
+
+func (e *NotRunError) Error() string {
+	limit := "its cap of concurrent executions"
+	if e.Cap.Max > 0 {
+		limit = fmt.Sprintf("its cap of %d concurrent executions", e.Cap.Max)
+	}
+	return fmt.Sprintf("not run: %s was refused because the engine on backend %s was at %s, "+
+		"and the stages after a refused one are not attempted", e.Refused, e.Cap.Backend, limit)
+}
+
+func (e *NotRunError) Unwrap() error { return e.Cap }
 
 // BackendError is one backend's failure within an execution.
 type BackendError struct {
@@ -153,6 +183,10 @@ const resolvePoll = time.Second
 // goroutines at once: the backends' progress arrives concurrently and is
 // serialized before it reaches ExecutionProgress, so an observer needs no
 // locking of its own.
+//
+// ExecutionFinished is called once for every execution of the plan, in plan
+// order within a scenario. One that was never attempted (ExecutionReport.NotRun)
+// gets it too, with no ExecutionStarted before it.
 type Observer interface {
 	ExecutionStarted(e compile.Execution, backends []string)
 	// ExecutionProgress carries one backend's interim snapshot; elapsed is the
@@ -200,6 +234,24 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 				}
 			}
 			reports := r.runGroup(ctx, executions[i:j], pool, thresholds)
+			// A stage refused at an engine's execution cap ends its scenario:
+			// the engine has no room for it, and a staircase that resumed at
+			// whichever stage happened to find the slots free would not be
+			// the staircase that was planned. The remaining stages are
+			// reported, as not run, so the report still lists every stage and
+			// an observer hears of each one. Only this failure does it: a
+			// stage that failed any other way says nothing about the next,
+			// and a staircase survives it.
+			if atCap := refusedAtCap(reports); atCap != nil {
+				refused := executions[i].Label
+				if executions[i].Group != "" {
+					refused = executions[i].Group
+				}
+				for _, e := range executions[j:] {
+					reports = append(reports, notRun(e, pool, &NotRunError{Refused: refused, Cap: atCap}))
+				}
+				j = len(executions)
+			}
 			i = j
 			for _, er := range reports {
 				if !er.Pass {
@@ -220,6 +272,40 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 		}
 	}
 	return report, nil
+}
+
+// refusedAtCap returns the CapError a group's executions were stopped with,
+// nil when they were not.
+func refusedAtCap(reports []ExecutionReport) *CapError {
+	for _, er := range reports {
+		var atCap *CapError
+		if errors.As(er.Err, &atCap) {
+			return atCap
+		}
+	}
+	return nil
+}
+
+// notRun is the report of an execution that was never attempted. It says
+// what was planned and where, and has no start time and no elapsed time:
+// nothing happened.
+func notRun(e compile.Execution, pool *plan.Pool, err *NotRunError) ExecutionReport {
+	backends := pool.Services
+	if pool.Distributor != "" {
+		backends = pool.Targets
+	}
+	return ExecutionReport{
+		Label:      e.Label,
+		Scenario:   e.Scenario.Name,
+		Pool:       pool.Name,
+		Rate:       e.Rate,
+		PerBackend: e.PerBackend,
+		Duration:   e.Duration,
+		RampTime:   e.RampTime,
+		Backends:   backends,
+		Dns:        pool.Dns,
+		Err:        err,
+	}
 }
 
 // resolve returns the plan with its dns pools resolved. Each name is looked

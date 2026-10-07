@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	client "github.com/bpalermo/sortie/engine/api/client"
+	"github.com/bpalermo/sortie/internal/compile"
 	"github.com/bpalermo/sortie/internal/nh"
 	"github.com/bpalermo/sortie/internal/run"
 )
@@ -228,5 +229,181 @@ func TestRunDoesNotStopAStageForAnyOtherBackendFailure(t *testing.T) {
 		if e.Pass != wantPass {
 			t.Errorf("%s: pass = %v, want %v", e.Label, e.Pass, wantPass)
 		}
+	}
+}
+
+// recorder is an Observer that notes which executions it was told started
+// and finished, in order.
+type recorder struct {
+	started  []string
+	finished []run.ExecutionReport
+}
+
+func (r *recorder) ExecutionStarted(e compile.Execution, _ []string) {
+	r.started = append(r.started, e.Label)
+}
+func (r *recorder) ExecutionProgress(compile.Execution, string, time.Duration, *client.Output) {}
+func (r *recorder) ExecutionFinished(er run.ExecutionReport) {
+	r.finished = append(r.finished, er)
+}
+
+// A staircase whose first stage is refused at the cap does not go on to its
+// other stages: they are reported as not run, naming the stage that was
+// refused, with no start and no elapsed time, and the observer is told of
+// each. The plan's next scenario runs as usual.
+func TestRunDoesNotAttemptTheStagesAfterOneRefusedAtTheCap(t *testing.T) {
+	fake := startFake(t, nil)
+	fake.serve = func(n int, _ *client.CommandLineOptions, stream client.NighthawkService_ExecutionStreamServer) error {
+		// Only the very first start finds the engine full: stages 2 and 3,
+		// had they been attempted, would have run.
+		if n == 0 {
+			return atCap(stream)
+		}
+		return stream.Send(okResponse(100, time.Millisecond, time.Second))
+	}
+	p := planFor(t, `
+scenarios:
+  - name: steps
+    executor:
+      type: staircase
+      stages:
+        - {rate: 100, duration: 1s}
+        - {rate: 200, duration: 1s}
+        - {rate: 300, duration: 1s}
+  - name: after
+    executor: {type: constant-rate, rate: 100, duration: 1s}
+`, fake.addr)
+
+	observer := &recorder{}
+	report, err := (&run.Runner{Plan: p, Observer: observer}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(fake.received()); got != 2 {
+		t.Errorf("the backend saw %d starts, want 2: the refused stage and the next scenario", got)
+	}
+	if report.Pass {
+		t.Error("the report passed")
+	}
+	if len(report.Executions) != 4 {
+		t.Fatalf("got %d executions, want the three stages and the next scenario", len(report.Executions))
+	}
+	refused := report.Executions[0]
+	var atCap *run.CapError
+	if !errors.As(refused.Err, &atCap) || refused.NotRun() {
+		t.Fatalf("stage 1: Err = %v, want the CapError of a stage that was attempted", refused.Err)
+	}
+	for i, e := range report.Executions[1:3] {
+		wantLabel := []string{"steps/stage-2", "steps/stage-3"}[i]
+		var notRun *run.NotRunError
+		if e.Label != wantLabel || !errors.As(e.Err, &notRun) || !e.NotRun() {
+			t.Fatalf("execution %d = %s with Err %v, want %s not run", i+1, e.Label, e.Err, wantLabel)
+		}
+		if notRun.Refused != "steps/stage-1" || notRun.Cap != atCap {
+			t.Errorf("%s: NotRunError = %+v, want it to name steps/stage-1 and carry its CapError", e.Label, notRun)
+		}
+		for _, want := range []string{"not run: steps/stage-1 was refused", fake.addr, "cap of 16 concurrent executions"} {
+			if !strings.Contains(e.Err.Error(), want) {
+				t.Errorf("%s: the error does not say %q: %v", e.Label, want, e.Err)
+			}
+		}
+		if !e.Started.IsZero() || e.Elapsed != 0 {
+			t.Errorf("%s: started %v, elapsed %s for something that never ran", e.Label, e.Started, e.Elapsed)
+		}
+		if e.Pass || e.Set != nil {
+			t.Errorf("%s: judged", e.Label)
+		}
+		if e.Scenario != "steps" || e.Rate != uint32(200+100*i) || e.Duration != time.Second || len(e.Backends) != 1 {
+			t.Errorf("%s: the report does not say what was planned: %+v", e.Label, e)
+		}
+	}
+	if after := report.Executions[3]; after.Label != "after" || after.Err != nil || after.Set == nil {
+		t.Errorf("the next scenario = %s with Err %v, want it run", after.Label, after.Err)
+	}
+
+	if got := strings.Join(observer.started, " "); got != "steps/stage-1 after" {
+		t.Errorf("started = %q: a stage that was not run was announced as started", got)
+	}
+	var finished []string
+	for _, er := range observer.finished {
+		finished = append(finished, er.Label)
+	}
+	if got := strings.Join(finished, " "); got != "steps/stage-1 steps/stage-2 steps/stage-3 after" {
+		t.Errorf("finished = %q, want every execution, the ones not run included", got)
+	}
+}
+
+// With weighted targets a stage is a group: every target's execution of the
+// later stages is reported as not run, and the stage is named by its group.
+func TestRunDoesNotAttemptTheLaterStagesOfAWeightedScenarioRefusedAtTheCap(t *testing.T) {
+	fake := startFake(t, nil)
+	fake.serve = func(_ int, _ *client.CommandLineOptions, stream client.NighthawkService_ExecutionStreamServer) error {
+		return atCap(stream)
+	}
+	p := planFor(t, `
+scenarios:
+  - name: mix
+    executor:
+      type: staircase
+      stages:
+        - {rate: 100, duration: 1s}
+        - {rate: 200, duration: 1s}
+    targets:
+      - {name: a, url: http://127.0.0.1:1/a, weight: 1}
+      - {name: b, url: http://127.0.0.1:1/b, weight: 1}
+`, fake.addr)
+
+	report, err := (&run.Runner{Plan: p}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(fake.received()); got != 2 {
+		t.Errorf("the backend saw %d starts, want the first stage's 2", got)
+	}
+	if len(report.Executions) != 4 {
+		t.Fatalf("got %d executions, want 2 targets x 2 stages", len(report.Executions))
+	}
+	for i, e := range report.Executions {
+		if got, want := e.NotRun(), i >= 2; got != want {
+			t.Errorf("%s: not run = %v, want %v", e.Label, got, want)
+		}
+		var notRun *run.NotRunError
+		if errors.As(e.Err, &notRun) && notRun.Refused != "mix/stage-1" {
+			t.Errorf("%s: refused stage = %q, want mix/stage-1", e.Label, notRun.Refused)
+		}
+	}
+}
+
+// Any other failed stage leaves the staircase going: the stages after it run.
+func TestRunAttemptsTheStagesAfterOneThatFailedAnyOtherWay(t *testing.T) {
+	fake := startFake(t, nil)
+	fake.serve = func(n int, _ *client.CommandLineOptions, stream client.NighthawkService_ExecutionStreamServer) error {
+		if n == 0 {
+			return status.Error(codes.ResourceExhausted, "out of something else")
+		}
+		return stream.Send(okResponse(100, time.Millisecond, time.Second))
+	}
+	p := planFor(t, `
+scenarios:
+  - name: steps
+    executor:
+      type: staircase
+      stages:
+        - {rate: 100, duration: 1s}
+        - {rate: 200, duration: 1s}
+`, fake.addr)
+
+	report, err := (&run.Runner{Plan: p}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(report.Executions) != 2 {
+		t.Fatalf("got %d executions", len(report.Executions))
+	}
+	if first := report.Executions[0]; first.Err == nil || first.NotRun() {
+		t.Errorf("stage 1: Err = %v, want its own failure", first.Err)
+	}
+	if second := report.Executions[1]; second.Err != nil || second.Set == nil || !second.Pass {
+		t.Errorf("stage 2: Err = %v, pass = %v, want it run and passed", second.Err, second.Pass)
 	}
 }

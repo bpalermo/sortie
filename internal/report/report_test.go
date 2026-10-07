@@ -492,3 +492,57 @@ func TestJSONCarriesPerBackendLatencyStatistics(t *testing.T) {
 		t.Errorf("an empty statistic was reported: %v", stats)
 	}
 }
+
+// A stage that was never attempted -- the ones after a stage refused at an
+// engine's execution cap -- is listed as skipped with the reason, in both
+// renderings, and is not counted as an execution that failed.
+func TestReportsMarkAStageThatWasNotRun(t *testing.T) {
+	atCap := &run.CapError{Backend: "10.0.0.1:8443", Max: 16, Needed: 1, Err: errFake{}}
+	r := &run.Report{Executions: []run.ExecutionReport{
+		{Label: "ramp/stage-1", Pool: "local", Rate: 10, Duration: time.Second, Elapsed: 20 * time.Millisecond, Err: atCap},
+		{Label: "ramp/stage-2", Pool: "local", Rate: 20, Duration: time.Second,
+			Err: &run.NotRunError{Refused: "ramp/stage-1", Cap: atCap}},
+	}}
+
+	var text bytes.Buffer
+	if err := report.Text(&text, r); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"FAIL   ramp/stage-1  (10 rps for 1s, pool \"local\", 20ms)",
+		"SKIP   ramp/stage-2  (20 rps for 1s, pool \"local\")",
+		"not run: ramp/stage-1 was refused because the engine on backend 10.0.0.1:8443 was at its cap of 16 concurrent executions",
+		"FAIL  0/1 executions passed, 1 not run",
+	} {
+		if !strings.Contains(text.String(), want) {
+			t.Errorf("the text report lacks %q:\n%s", want, text.String())
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := report.JSON(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Executions []struct {
+			Label     string `json:"label"`
+			NotRun    bool   `json:"not_run"`
+			Pass      bool   `json:"pass"`
+			ElapsedMS int64  `json:"elapsed_ms"`
+			Error     string `json:"error"`
+		} `json:"executions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Executions) != 2 {
+		t.Fatalf("executions = %+v", got.Executions)
+	}
+	if first := got.Executions[0]; first.NotRun || first.Error == "" {
+		t.Errorf("the refused stage = %+v, want an error and no not_run", first)
+	}
+	if second := got.Executions[1]; !second.NotRun || second.Pass || second.ElapsedMS != 0 ||
+		!strings.Contains(second.Error, "not run: ramp/stage-1 was refused") {
+		t.Errorf("the skipped stage = %+v", second)
+	}
+}

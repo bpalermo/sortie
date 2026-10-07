@@ -74,16 +74,24 @@ func Text(w io.Writer, r *run.Report) error {
 		}
 	}
 
-	passed := 0
+	passed, notRun := 0, 0
 	for _, e := range r.Executions {
 		if e.Pass {
 			passed++
+		}
+		if e.NotRun() {
+			notRun++
 		}
 	}
 	fmt.Fprintln(w)
 	verdict := "FAIL"
 	if r.Pass {
 		verdict = "PASS"
+	}
+	if notRun > 0 {
+		// Counted apart: they did not fail, they were never attempted.
+		fmt.Fprintf(w, "%s  %d/%d executions passed, %d not run\n", verdict, passed, len(r.Executions)-notRun, notRun)
+		return nil
 	}
 	fmt.Fprintf(w, "%s  %d/%d executions passed\n", verdict, passed, len(r.Executions))
 	return nil
@@ -95,6 +103,13 @@ func execution(w io.Writer, e run.ExecutionReport) error {
 	if e.RampTime > 0 {
 		shape = fmt.Sprintf("ramp to %d %s over %s, then hold for %s",
 			e.Rate, rps, e.RampTime, e.Duration-e.RampTime)
+	}
+	if e.NotRun() {
+		// Never attempted: no elapsed time to show, and not a FAIL of its
+		// own -- the stage that was refused is the failure.
+		fmt.Fprintf(w, "%-6s %s  (%s, pool %q)\n", "SKIP", e.Label, shape, e.Pool)
+		fmt.Fprintf(w, "       %v\n", e.Err)
+		return nil
 	}
 	fmt.Fprintf(w, "%-6s %s  (%s, pool %q, %s)\n",
 		status(e.Pass), e.Label, shape, e.Pool, e.Elapsed.Round(time.Millisecond))
@@ -200,15 +215,18 @@ type jsonReport struct {
 }
 
 type jsonExecution struct {
-	Label      string          `json:"label"`
-	Scenario   string          `json:"scenario"`
-	Pool       string          `json:"pool"`
-	Rate       uint32          `json:"rate"`
-	PerBackend bool            `json:"per_backend,omitempty"`
-	DurationMS int64           `json:"duration_ms"`
-	RampTimeMS int64           `json:"ramp_time_ms,omitempty"`
-	ElapsedMS  int64           `json:"elapsed_ms"`
-	Pass       bool            `json:"pass"`
+	Label      string `json:"label"`
+	Scenario   string `json:"scenario"`
+	Pool       string `json:"pool"`
+	Rate       uint32 `json:"rate"`
+	PerBackend bool   `json:"per_backend,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
+	RampTimeMS int64  `json:"ramp_time_ms,omitempty"`
+	ElapsedMS  int64  `json:"elapsed_ms"`
+	Pass       bool   `json:"pass"`
+	// NotRun marks an execution that was never attempted -- a stage after one
+	// refused at an engine's execution cap. Error says why; elapsed_ms is 0.
+	NotRun     bool            `json:"not_run,omitempty"`
 	Error      string          `json:"error,omitempty"`
 	Dns        string          `json:"dns,omitempty"` // the name Backends were resolved from, for a dns pool
 	Backends   []string        `json:"backends,omitempty"`
@@ -343,6 +361,7 @@ func JSON(w io.Writer, r *run.Report) error {
 			RampTimeMS: e.RampTime.Milliseconds(),
 			ElapsedMS:  e.Elapsed.Milliseconds(),
 			Pass:       e.Pass,
+			NotRun:     e.NotRun(),
 			Dns:        e.Dns,
 			Backends:   append([]string(nil), e.Backends...),
 		}
