@@ -182,12 +182,12 @@ func TestWorkspaceStatusEngineRefSuffix(t *testing.T) {
 		t.Errorf("with a digest the suffix = %q, want @%s", got, digest)
 	}
 	for _, bad := range []string{
-		"sha256:" + strings.Repeat("a", 63), // too short
-		"sha256:" + strings.Repeat("A", 64), // not lowercase hex
-		"sha512:" + strings.Repeat("a", 64), // another algorithm
-		digest + " x",                       // trailing text
-		"quay.io/sortie/engine@" + digest,   // a whole reference
-		"x; rm -rf /",                       // not a digest at all
+		"sha256:" + strings.Repeat("a", 63),    // too short
+		"sha256:" + strings.Repeat("A", 64),    // not lowercase hex
+		"sha512:" + strings.Repeat("a", 64),    // another algorithm
+		digest + " x",                          // trailing text
+		"registry.example/ns/engine@" + digest, // a whole reference
+		"x; rm -rf /",                          // not a digest at all
 	} {
 		if got := suffix("SORTIE_ENGINE_DIGEST=" + bad); got != ":dev-unknown" {
 			t.Errorf("a malformed digest %q was written into the suffix: %q", bad, got)
