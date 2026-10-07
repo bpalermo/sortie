@@ -833,3 +833,19 @@ func TestReportsMarkAStageThatWasNotRun(t *testing.T) {
 		t.Errorf("the skipped stage = %+v", second)
 	}
 }
+
+// The line printed as a skipped stage "finishes" says it was skipped, not
+// that it failed in no time.
+func TestProgressPrintsASkippedStageAsSkipped(t *testing.T) {
+	atCap := &run.CapError{Backend: "10.0.0.1:8443", Max: 16, Needed: 1, Err: errFake{}}
+	var buf bytes.Buffer
+	report.Progress{W: &buf}.ExecutionFinished(run.ExecutionReport{
+		Label: "ramp/stage-2", Scenario: "ramp",
+		Err: &run.NotRunError{Refused: "ramp/stage-1", Cap: atCap},
+	})
+	got := buf.String()
+	if !strings.Contains(got, "SKIP ramp/stage-2 (scenario ramp): not run: ramp/stage-1 was refused") ||
+		strings.Contains(got, "FAIL") || strings.Count(got, "\n") != 1 {
+		t.Errorf("verdict line = %q", got)
+	}
+}

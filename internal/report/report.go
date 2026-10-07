@@ -511,6 +511,10 @@ func verdictLine(r run.ExecutionReport) string {
 	if r.Pass {
 		verdict = "PASS"
 	}
+	if r.NotRun() {
+		// Never attempted: not a failure of its own, and no time to show.
+		return oneLine.Replace(fmt.Sprintf("SKIP %s (scenario %s): %v", r.Label, r.Scenario, r.Err))
+	}
 	line := fmt.Sprintf("%s %s (scenario %s, %s)", verdict, r.Label, r.Scenario, r.Elapsed.Round(time.Millisecond))
 
 	var why []string
