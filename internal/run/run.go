@@ -101,10 +101,16 @@ func (e *CapError) Error() string {
 		left = "the executions that had started were abandoned but not stopped, since a distributor " +
 			"forwards no cancellation, and they run on its targets to their duration"
 	}
-	return fmt.Sprintf("backend %s refused a start because the engine is at %s, and %s; "+
-		"%s. "+
-		"Raise the engine's --max-concurrent-executions (engine.maxConcurrentExecutions in the chart) "+
-		"or wait for the runs holding its slots to end (%v)", e.Backend, limit, needs, left, e.Err)
+	// Waiting helps only a stage that fits an idle engine. One that starts
+	// more at once than the cap allows is refused however long it waits.
+	remedy := "Raise the engine's --max-concurrent-executions (engine.maxConcurrentExecutions in the chart) " +
+		"or wait for the runs holding its slots to end"
+	if e.Max > 0 && e.Needed > e.Max {
+		remedy = fmt.Sprintf("Raise the engine's --max-concurrent-executions (engine.maxConcurrentExecutions "+
+			"in the chart) to at least %d: this stage does not fit the cap even on an idle engine", e.Needed)
+	}
+	return fmt.Sprintf("backend %s refused a start because the engine is at %s, and %s; %s. %s (%v)",
+		e.Backend, limit, needs, left, remedy, e.Err)
 }
 
 func (e *CapError) Unwrap() error { return e.Err }

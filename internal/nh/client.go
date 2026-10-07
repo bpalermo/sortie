@@ -208,6 +208,18 @@ func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLin
 		CommandSpecificOptions: &client.ExecutionRequest_StartRequest{StartRequest: start},
 	}
 	if err := stream.Send(req); err != nil {
+		// A stream the service has already ended fails a Send with io.EOF and
+		// keeps its status for Recv. That status may be the refusal of a
+		// service at its execution cap, which the caller must be able to tell
+		// from any other failed start.
+		if err == io.EOF {
+			if _, recvErr := stream.Recv(); recvErr != nil && recvErr != io.EOF {
+				if refused := busy(stream, recvErr); refused != nil {
+					return nil, refused
+				}
+				err = recvErr
+			}
+		}
 		return nil, fmt.Errorf("sending start request: %w", err)
 	}
 

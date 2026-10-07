@@ -194,11 +194,16 @@ type fakeRefusingService struct {
 	client.UnimplementedNighthawkServiceServer
 	trailer string
 	err     error
+	// eager refuses without reading the start request, so that the refusal
+	// may reach the client before its Send does.
+	eager bool
 }
 
 func (f *fakeRefusingService) ExecutionStream(stream client.NighthawkService_ExecutionStreamServer) error {
-	if _, err := stream.Recv(); err != nil {
-		return err
+	if !f.eager {
+		if _, err := stream.Recv(); err != nil {
+			return err
+		}
 	}
 	if f.trailer != "" {
 		stream.SetTrailer(metadata.Pairs(nh.MaxConcurrentExecutionsTrailer, f.trailer))
@@ -262,6 +267,25 @@ func TestExecuteDoesNotMistakeOtherFailuresForTheExecutionCap(t *testing.T) {
 		var refused *nh.BusyError
 		if errors.As(err, &refused) {
 			t.Errorf("%s: reported as a BusyError: %v", name, err)
+		}
+	}
+}
+
+// A service that refuses before it has read the start request can end the
+// stream under the client's Send, which then fails with io.EOF and leaves the
+// status to Recv. Whichever of the two the client meets, the refusal is the
+// same BusyError.
+func TestExecuteReportsTheExecutionCapWhenTheRefusalBeatsTheStart(t *testing.T) {
+	service := &fakeRefusingService{
+		eager:   true,
+		trailer: "16",
+		err:     status.Error(codes.ResourceExhausted, "Busy: 16 executions are running, the maximum this service allows (--max-concurrent-executions)."),
+	}
+	for i := 0; i < 50; i++ {
+		err := executeAgainst(t, service)
+		var refused *nh.BusyError
+		if !errors.As(err, &refused) || refused.Max != 16 {
+			t.Fatalf("attempt %d: err = %v, want a BusyError with the cap", i, err)
 		}
 	}
 }

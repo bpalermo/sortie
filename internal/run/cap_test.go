@@ -559,3 +559,17 @@ func TestAnExecutionThatFinishedBeforeTheRefusalIsNotJudged(t *testing.T) {
 		t.Errorf("%d executions cancelled, want the 1 still running", got)
 	}
 }
+
+// Waiting for slots to free helps only a stage that fits an idle engine: one
+// that starts more at once than the cap is told to raise the cap, and by how
+// much.
+func TestCapErrorAdvisesWaitingOnlyWhenTheStageFits(t *testing.T) {
+	fits := (&run.CapError{Backend: "10.0.0.1:8443", Max: 16, Needed: 3, Err: errors.New("busy")}).Error()
+	if !strings.Contains(fits, "or wait for the runs holding its slots to end") {
+		t.Errorf("a stage that fits is not told it can wait: %s", fits)
+	}
+	never := (&run.CapError{Backend: "10.0.0.1:8443", Max: 2, Needed: 3, Err: errors.New("busy")}).Error()
+	if strings.Contains(never, "or wait") || !strings.Contains(never, "to at least 3") {
+		t.Errorf("a stage over the cap is not told to raise it to 3: %s", never)
+	}
+}
