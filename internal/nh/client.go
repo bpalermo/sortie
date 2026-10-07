@@ -7,7 +7,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -142,6 +144,34 @@ func busy(stream grpc.ClientStream, err error) *BusyError {
 		limit = 0
 	}
 	return &BusyError{Max: limit, Err: err}
+}
+
+// The service's two refusals at its execution cap, as worded in the engine's
+// ServiceImpl::ExecutionStream. With a cap above one the message gives the
+// number running, which at a refusal is the cap.
+var busyMessage = regexp.MustCompile(`Busy: (\d+) executions are running, the maximum this service allows`)
+
+const busySingleMessage = "Only a single benchmark session is allowed at a time."
+
+// busyFromStatus is busy for a refusal that arrives second hand, as the
+// google.rpc.Status a distributor hands back for one of its targets: the
+// code it copied from the service's stream and the service's message. The
+// trailer that marks the refusal on a direct stream does not travel that way,
+// so here it is the code together with the service's own wording that
+// identifies it, and the wording that gives the cap.
+func busyFromStatus(code int32, message string) *BusyError {
+	if codes.Code(code) != codes.ResourceExhausted {
+		return nil
+	}
+	limit := 0
+	if m := busyMessage.FindStringSubmatch(message); m != nil {
+		limit, _ = strconv.Atoi(m[1])
+	} else if strings.Contains(message, busySingleMessage) {
+		limit = 1
+	} else {
+		return nil
+	}
+	return &BusyError{Max: limit, Err: status.Error(codes.ResourceExhausted, message)}
 }
 
 // Progress asks the service for interim responses while a run is in flight

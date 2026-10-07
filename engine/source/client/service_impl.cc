@@ -351,6 +351,9 @@ grpc::Status ServiceImpl::ExecutionStream(
                   "Refusing to start an execution: {} running, and this service allows {} at "
                   "once (--max-concurrent-executions).",
                   *refused_at, max_concurrent_executions_);
+        // The wording of both messages is read by clients that get the refusal second hand,
+        // through a distributor, which passes on the code and the message and not the trailer:
+        // "Busy: N executions are running, the maximum this service allows" gives the cap.
         context->AddTrailingMetadata(MaxConcurrentExecutionsTrailer,
                                      std::to_string(max_concurrent_executions_));
         return finishGrpcStream(

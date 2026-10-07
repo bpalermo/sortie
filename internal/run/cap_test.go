@@ -3,16 +3,21 @@ package run_test
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	client "github.com/bpalermo/sortie/engine/api/client"
+	distributorpb "github.com/bpalermo/sortie/engine/api/distributor"
 	"github.com/bpalermo/sortie/internal/compile"
 	"github.com/bpalermo/sortie/internal/nh"
 	"github.com/bpalermo/sortie/internal/run"
@@ -405,5 +410,90 @@ scenarios:
 	}
 	if second := report.Executions[1]; second.Err != nil || second.Set == nil || !second.Pass {
 		t.Errorf("stage 2: Err = %v, pass = %v, want it run and passed", second.Err, second.Pass)
+	}
+}
+
+// busyDistributor is a distributor whose every target is at its execution
+// cap: it answers each request with the status it would relay from the
+// target's stream, code and message and nothing else.
+type busyDistributor struct {
+	distributorpb.UnimplementedNighthawkDistributorServer
+}
+
+func (busyDistributor) DistributedRequestStream(stream distributorpb.NighthawkDistributor_DistributedRequestStreamServer) error {
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		resp := &distributorpb.DistributedResponse{}
+		for _, service := range req.GetServices() {
+			resp.ServiceResponse = append(resp.ServiceResponse, &distributorpb.DistributedServiceResponse{
+				Service: service,
+				DistributedResponseType: &distributorpb.DistributedServiceResponse_Error{Error: &rpcstatus.Status{
+					Code:    int32(codes.ResourceExhausted),
+					Message: "Distributed Execution Request failed: Busy: 16 executions are running, the maximum this service allows (--max-concurrent-executions).",
+				}},
+			})
+		}
+		if err := stream.Send(resp); err != nil {
+			return err
+		}
+	}
+}
+
+// A target refused at its cap behind a distributor ends the scenario the same
+// way: a CapError, the later stages not attempted. The error does not claim
+// that anything was stopped -- a distributor forwards no cancellation.
+func TestRunStopsAScenarioWhenATargetBehindADistributorIsAtItsExecutionCap(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	distributorpb.RegisterNighthawkDistributorServer(server, busyDistributor{})
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	p := mustParse(t, `
+version: v1
+pools:
+  - name: far
+    distributor: "`+listener.Addr().String()+`"
+    targets: ["10.0.0.11:8443"]
+defaults:
+  pool: far
+  target: http://127.0.0.1:1/
+scenarios:
+  - name: steps
+    executor:
+      type: staircase
+      stages:
+        - {rate: 100, duration: 1s}
+        - {rate: 200, duration: 1s}
+`)
+	report, err := (&run.Runner{Plan: p}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(report.Executions) != 2 {
+		t.Fatalf("got %d executions", len(report.Executions))
+	}
+	var atCap *run.CapError
+	if !errors.As(report.Executions[0].Err, &atCap) {
+		t.Fatalf("stage 1: Err = %v, want a CapError", report.Executions[0].Err)
+	}
+	if atCap.Backend != "10.0.0.11:8443" || atCap.Max != 16 || !atCap.Distributed {
+		t.Errorf("CapError = %+v, want the target, its cap of 16, and the distributor noted", atCap)
+	}
+	msg := atCap.Error()
+	if !strings.Contains(msg, "abandoned but not stopped") || strings.Contains(msg, "nothing was left running") {
+		t.Errorf("the error claims a stop a distributor cannot perform: %s", msg)
+	}
+	if !report.Executions[1].NotRun() {
+		t.Errorf("stage 2: Err = %v, want it not run", report.Executions[1].Err)
 	}
 }

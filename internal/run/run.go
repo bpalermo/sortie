@@ -79,6 +79,10 @@ type CapError struct {
 	// Needed is how many executions the stage starts on every backend at
 	// once: one per target of a weighted scenario, otherwise one.
 	Needed int
+	// Distributed says the pool is driven through a distributor, which
+	// forwards no cancellation: the executions that had started were
+	// abandoned, not stopped, and run on its targets to their duration.
+	Distributed bool
 	// Err is the refusal itself.
 	Err error
 }
@@ -92,10 +96,15 @@ func (e *CapError) Error() string {
 	if e.Needed > 1 {
 		needs = fmt.Sprintf("this scenario starts %d at once on every backend, one per target", e.Needed)
 	}
+	left := "nothing was left running, the executions that had started were stopped"
+	if e.Distributed {
+		left = "the executions that had started were abandoned but not stopped, since a distributor " +
+			"forwards no cancellation, and they run on its targets to their duration"
+	}
 	return fmt.Sprintf("backend %s refused a start because the engine is at %s, and %s; "+
-		"nothing was left running, the executions that had started were stopped. "+
+		"%s. "+
 		"Raise the engine's --max-concurrent-executions (engine.maxConcurrentExecutions in the chart) "+
-		"or wait for the runs holding its slots to end (%v)", e.Backend, limit, needs, e.Err)
+		"or wait for the runs holding its slots to end (%v)", e.Backend, limit, needs, left, e.Err)
 }
 
 func (e *CapError) Unwrap() error { return e.Err }
@@ -429,7 +438,10 @@ func (r *Runner) runGroup(
 	//
 	// Only the first refusal is recorded; the cause of a context is set once.
 	refused := func(backend string, err *nh.BusyError) {
-		stop(&CapError{Backend: backend, Max: err.Max, Needed: len(group), Err: err})
+		stop(&CapError{
+			Backend: backend, Max: err.Max, Needed: len(group),
+			Distributed: pool.Distributor != "", Err: err,
+		})
 	}
 
 	reports := make([]ExecutionReport, len(group))
@@ -704,6 +716,13 @@ func (r *Runner) dispatch(
 		}
 		var failed []BackendError
 		for _, b := range bad {
+			// As for a direct backend: a target at its execution cap ends
+			// the stage. All that can be done for the others here is to
+			// abandon their RPCs (see nh.Distribute on cancellation).
+			var busy *nh.BusyError
+			if errors.As(b.Err, &busy) {
+				refused(b.Target, busy)
+			}
 			failed = append(failed, BackendError{Addr: b.Target, Err: silent(b.Err)})
 		}
 		return targets, outputs, append(failed, overdue(e, runBound, targets, outputs, failed)...), nil

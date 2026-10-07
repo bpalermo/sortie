@@ -32,6 +32,7 @@ go_test(
     embed = [":run"],
     deps = [
         "//engine/api/client:base_go_proto",
+        "//engine/api/distributor:distributor_go_proto",
         "//internal/compile",
         "//internal/nh",
         "//internal/plan",

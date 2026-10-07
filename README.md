@@ -277,7 +277,10 @@ the start, and the scenario does not run on part of its slots: as soon as one
 start is refused, the executions that did start are cancelled on every backend,
 and the scenario fails at once with an error that names the backend, its limit
 and the setting to raise. The slots are not reserved ahead of the start, so
-for that moment the targets that got one do send load. Every execution has its
+for that moment the targets that got one do send load. Behind a distributor
+the refusal is recognised and reported the same way, but only once the
+distributor answers, and the executions that started there cannot be stopped:
+a distributor forwards no cancellation. Every execution has its
 own worker threads, so a ten-target scenario at `concurrency: "2"` runs twenty.
 An engine
 that allows more than one execution logs at its own level throughout: the log

@@ -2,6 +2,7 @@ package nh_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -39,6 +41,10 @@ type fakeDistributor struct {
 	// emptyFor names a service the fake answers for with a response that has
 	// no error and no results.
 	emptyFor string
+
+	// errorFor gives the services the fake reports an error for instead of a
+	// response, the way a distributor relays a target's failed stream.
+	errorFor map[string]*rpcstatus.Status
 }
 
 func (f *fakeDistributor) DistributedRequestStream(
@@ -65,6 +71,18 @@ func (f *fakeDistributor) DistributedRequestStream(
 		resp := &distributorpb.DistributedResponse{}
 		for _, name := range f.answerAs(requested) {
 			host, port := splitHostPort(name)
+			if failure := f.errorFor[name]; failure != nil {
+				resp.ServiceResponse = append(resp.ServiceResponse, &distributorpb.DistributedServiceResponse{
+					Service: &corev3.Address{Address: &corev3.Address_SocketAddress{
+						SocketAddress: &corev3.SocketAddress{
+							Address:       host,
+							PortSpecifier: &corev3.SocketAddress_PortValue{PortValue: port},
+						},
+					}},
+					DistributedResponseType: &distributorpb.DistributedServiceResponse_Error{Error: failure},
+				})
+				continue
+			}
 			resp.ServiceResponse = append(resp.ServiceResponse, &distributorpb.DistributedServiceResponse{
 				Service: &corev3.Address{Address: &corev3.Address_SocketAddress{
 					SocketAddress: &corev3.SocketAddress{
@@ -326,5 +344,54 @@ func TestDistributePartialFailsATargetThatReturnsNothing(t *testing.T) {
 	}
 	if len(failed) != 1 || failed[0].Target != "10.0.0.12:8443" || !strings.Contains(failed[0].Err.Error(), "no results") {
 		t.Errorf("failed = %+v, want the empty target named", failed)
+	}
+}
+
+// A target the distributor reports as refused at its execution cap comes back
+// as the BusyError a direct backend gives, with the cap read from the
+// service's message -- the code and the message are all a distributor passes
+// on. Anything else stays an ordinary failure: the code with other wording,
+// or the wording under another code, as an engine from before the refusal was
+// ResourceExhausted sends it.
+func TestDistributePartialRecognisesATargetAtItsExecutionCap(t *testing.T) {
+	const relayed = "Distributed Execution Request failed: "
+	targets := []string{"10.0.0.11:8443", "10.0.0.12:8443", "10.0.0.13:8443", "10.0.0.14:8443", "10.0.0.15:8443"}
+	fake := startFakeDistributor(t, func(requested []string) []string { return requested })
+	fake.errorFor = map[string]*rpcstatus.Status{
+		"10.0.0.12:8443": {Code: 8, Message: relayed + "Busy: 16 executions are running, the maximum this service allows (--max-concurrent-executions)."},
+		"10.0.0.13:8443": {Code: 8, Message: relayed + "Only a single benchmark session is allowed at a time."},
+		"10.0.0.14:8443": {Code: 8, Message: relayed + "received message larger than max"},
+		"10.0.0.15:8443": {Code: 13, Message: relayed + "Busy: 16 executions are running, the maximum this service allows (--max-concurrent-executions)."},
+	}
+
+	ctx := context.Background()
+	conn, err := nh.Dial(ctx, fake.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	names, _, failed, err := nh.DistributePartial(ctx, conn, &client.CommandLineOptions{}, targets)
+	if err != nil {
+		t.Fatalf("DistributePartial: %v", err)
+	}
+	if len(names) != 1 || names[0] != "10.0.0.11:8443" {
+		t.Errorf("names = %v, want the one target that ran", names)
+	}
+	wantMax := map[string]int{"10.0.0.12:8443": 16, "10.0.0.13:8443": 1, "10.0.0.14:8443": -1, "10.0.0.15:8443": -1}
+	if len(failed) != len(wantMax) {
+		t.Fatalf("failed = %+v, want %d targets", failed, len(wantMax))
+	}
+	for _, f := range failed {
+		var refused *nh.BusyError
+		isBusy := errors.As(f.Err, &refused)
+		want := wantMax[f.Target]
+		switch {
+		case want < 0 && isBusy:
+			t.Errorf("%s: reported as at its cap: %v", f.Target, f.Err)
+		case want >= 0 && (!isBusy || refused.Max != want):
+			t.Errorf("%s: err = %v, want a BusyError with a cap of %d", f.Target, f.Err, want)
+		case want >= 0 && status.Code(f.Err) != codes.ResourceExhausted:
+			t.Errorf("%s: code = %s, want ResourceExhausted", f.Target, status.Code(f.Err))
+		}
 	}
 }

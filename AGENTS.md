@@ -193,7 +193,12 @@ the `nighthawk-max-concurrent-executions` trailer; `nh.Execute` returns that
 as a `*nh.BusyError`, and `Runner.runGroup` then cancels the whole group on
 every backend and reports a `*run.CapError` -- the one case where a backend's
 failure stops the others. There is no reservation: slots are taken one start
-at a time.
+at a time. A distributor relays only the code and the message, so
+`nh.DistributePartial` recognises the refusal by the code plus the engine's
+wording (`busyFromStatus`) -- keep the two messages in
+`ServiceImpl::ExecutionStream` and that pattern in step. A scenario's stages
+after one refused at the cap are reported as `*run.NotRunError` and not
+attempted.
 
 ## gRPC modes
 
