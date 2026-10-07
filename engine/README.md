@@ -90,7 +90,7 @@ bazel-bin/engine/nighthawk_client  [--user-defined-plugin-config <string>] ...
 [--termination-predicate <string:uint64_t>]
 ... [--trace <uri format>]
 [--sequencer-idle-strategy <spin|poll
-|sleep>] [--max-concurrent-streams
+|sleep|wait>] [--max-concurrent-streams
 <uint32_t>] [--max-requests-per-connection
 <uint32_t>] [--max-active-requests
 <uint32_t>] [--max-pending-requests
@@ -250,9 +250,12 @@ value for terminating execution.
 Trace uri. Example: zipkin://localhost:9411/api/v2/spans. Default is
 empty.
 
---sequencer-idle-strategy <spin|poll|sleep>
+--sequencer-idle-strategy <spin|poll|sleep|wait>
 Choose between using a busy spin/yield loop or have the thread poll or
-sleep while waiting for the next scheduled request (default: spin).
+sleep while waiting for the next scheduled request. 'wait' blocks
+until the next request is due instead, so that CPU usage follows the
+request rate: use it for low request rates or when CPU is constrained
+(default: spin).
 
 --max-concurrent-streams <uint32_t>
 Max concurrent streams allowed on one HTTP/2 or HTTP/3 connection.

@@ -1554,7 +1554,27 @@ TEST_P(OptionsImplSequencerIdleStrategyTest, SequencerIdleStrategyValues) {
 }
 
 INSTANTIATE_TEST_SUITE_P(SequencerIdleStrategyOptionsTest, OptionsImplSequencerIdleStrategyTest,
-                         Values("sleep", "poll", "spin"));
+                         Values("sleep", "poll", "spin", "wait"));
+
+// Test that the wait strategy makes it from the command line into the options, and from there
+// through the proto representation and back.
+TEST_F(OptionsImplTest, SequencerIdleStrategyWaitRoundTrips) {
+  std::unique_ptr<OptionsImpl> options = TestUtility::createOptionsImpl(
+      fmt::format("{} --sequencer-idle-strategy wait {}", client_name_, good_test_uri_));
+  EXPECT_EQ(nighthawk::client::SequencerIdleStrategy::WAIT, options->sequencerIdleStrategy());
+  CommandLineOptionsPtr cmd = options->toCommandLineOptions();
+  EXPECT_EQ(nighthawk::client::SequencerIdleStrategy::WAIT, cmd->sequencer_idle_strategy().value());
+  OptionsImpl options_from_proto(*cmd);
+  EXPECT_EQ(nighthawk::client::SequencerIdleStrategy::WAIT,
+            options_from_proto.sequencerIdleStrategy());
+}
+
+// Test that adding a strategy did not move the default.
+TEST_F(OptionsImplTest, SequencerIdleStrategyDefaultsToSpin) {
+  std::unique_ptr<OptionsImpl> options =
+      TestUtility::createOptionsImpl(fmt::format("{} {}", client_name_, good_test_uri_));
+  EXPECT_EQ(nighthawk::client::SequencerIdleStrategy::SPIN, options->sequencerIdleStrategy());
+}
 
 // Test we don't accept any bad -sequencer-idle-strategy values.
 TEST_F(OptionsImplTest, SequencerIdleStrategyValuesAreConstrained) {

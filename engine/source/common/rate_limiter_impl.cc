@@ -1,4 +1,5 @@
 #include "engine/source/common/rate_limiter_impl.h"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -87,6 +88,26 @@ bool ScheduledStartingRateLimiter::tryAcquireOne() {
   return rate_limiter_->tryAcquireOne();
 }
 
+std::optional<std::chrono::nanoseconds> BurstingRateLimiter::timeUntilNextRelease() {
+  if (releasing_) {
+    return 0ns;
+  }
+  // While accumulating, a burst is released by the acquisition of the wrapped limiter that
+  // completes it. We report the time until the wrapped limiter's next one rather than the time
+  // until the last one of the burst: the wrapped limiter can only speak for its next acquisition,
+  // and each one has to be collected by a call to tryAcquireOne() anyway.
+  return rate_limiter_->timeUntilNextRelease();
+}
+
+std::optional<std::chrono::nanoseconds> ScheduledStartingRateLimiter::timeUntilNextRelease() {
+  const Envoy::MonotonicTime now = timeSource().monotonicTime();
+  if (now < scheduled_starting_time_) {
+    // The wrapped limiter has not been asked anything yet, and its clock only starts when it is.
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(scheduled_starting_time_ - now);
+  }
+  return rate_limiter_->timeUntilNextRelease();
+}
+
 void ScheduledStartingRateLimiter::releaseOne() {
   if (timeSource().monotonicTime() < scheduled_starting_time_) {
     throw NighthawkException("Unexpected call to releaseOne()");
@@ -122,6 +143,18 @@ bool LinearRateLimiter::tryAcquireOne() {
 void LinearRateLimiter::releaseOne() {
   acquireable_count_++;
   acquired_count_--;
+}
+
+std::optional<std::chrono::nanoseconds> LinearRateLimiter::timeUntilNextRelease() {
+  if (acquireable_count_ > 0 || !started()) {
+    // Before the first call to tryAcquireOne() there is no clock to measure against.
+    return 0ns;
+  }
+  // The inverse of tryAcquireOne(): acquisition number n (counting from one) is due once
+  // elapsed() + interval / 2 reaches n * interval.
+  const std::chrono::duration<double> due =
+      frequency_.interval() * (acquired_count_ + 1) - (frequency_.interval() / 2);
+  return std::max(0ns, std::chrono::ceil<std::chrono::nanoseconds>(due - elapsed()));
 }
 
 LinearRampingRateLimiterImpl::LinearRampingRateLimiterImpl(Envoy::TimeSource& time_source,
@@ -168,6 +201,29 @@ bool LinearRampingRateLimiterImpl::tryAcquireOne() {
 void LinearRampingRateLimiterImpl::releaseOne() {
   acquireable_count_++;
   acquired_count_--;
+}
+
+std::optional<std::chrono::nanoseconds> LinearRampingRateLimiterImpl::timeUntilNextRelease() {
+  if (acquireable_count_ > 0 || !started()) {
+    // Before the first call to tryAcquireOne() there is no clock to measure against.
+    return 0ns;
+  }
+  // The inverse of tryAcquireOne(). That rounds the number of acquisitions due, so the next one
+  // is due when the unrounded number reaches acquired_count_ + 0.5.
+  const double target = acquired_count_ + 0.5;
+  // While ramping, the number due after e nanoseconds is e * e * target_freq_ns_ / (2 * ramp_time).
+  double due_ns = std::sqrt(target * 2.0 * ramp_time_.count() / target_freq_ns_);
+  if (due_ns >= ramp_time_.count()) {
+    // Past the ramp it is total_ramp_requests_ + (e - ramp_time) * target_freq_ns_. Rounding
+    // total_ramp_requests_ can put the result just before the end of the ramp, hence the max.
+    due_ns = std::max<double>(
+        ramp_time_.count(), ramp_time_.count() + (target - total_ramp_requests_) / target_freq_ns_);
+  }
+  // The floating point math can be off by a little in either direction. That is fine: a caller
+  // that wakes up early is told to wait the remainder, and one that is told to wait a nanosecond
+  // too long acquires a nanosecond late.
+  return std::max(0ns,
+                  std::chrono::nanoseconds(static_cast<int64_t>(std::ceil(due_ns))) - elapsed());
 }
 
 RateLimiterPtr LinearRampingRateLimiterImplFactory::createRateLimiterPlugin(
@@ -235,6 +291,22 @@ void DelegatingRateLimiterImpl::releaseOne() {
                  "unexpected call to DelegatingRateLimiterImpl::releaseOne()");
   sanity_check_pending_release_ = true;
   rate_limiter_->releaseOne();
+}
+
+std::optional<std::chrono::nanoseconds> DelegatingRateLimiterImpl::timeUntilNextRelease() {
+  // Two things can make the next tryAcquireOne() succeed: the earliest timing that is already
+  // queued coming due, or the wrapped limiter releasing an acquisition that the delegate then
+  // offsets by nothing at all. Whichever comes first is the lower bound.
+  const std::optional<std::chrono::nanoseconds> wrapped = rate_limiter_->timeUntilNextRelease();
+  if (!wrapped.has_value()) {
+    return std::nullopt;
+  }
+  if (distributed_timings_.empty()) {
+    return wrapped;
+  }
+  const auto queued = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      distributed_timings_.front() - timeSource().monotonicTime());
+  return std::max(0ns, std::min(queued, wrapped.value()));
 }
 
 DistributionSamplingRateLimiterImpl::DistributionSamplingRateLimiterImpl(

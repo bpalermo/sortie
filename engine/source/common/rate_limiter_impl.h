@@ -42,6 +42,13 @@ public:
     return first_acquisition_time_;
   }
 
+protected:
+  /**
+   * @return bool true once elapsed() started the clock. Lets timeUntilNextRelease() avoid
+   * starting it as a side effect of being asked a question.
+   */
+  bool started() const { return start_time_.has_value(); }
+
 private:
   Envoy::TimeSource& time_source_;
   std::optional<Envoy::MonotonicTime> start_time_;
@@ -59,6 +66,7 @@ public:
   LinearRateLimiter(Envoy::TimeSource& time_source, const Frequency frequency);
   bool tryAcquireOne() override;
   void releaseOne() override;
+  std::optional<std::chrono::nanoseconds> timeUntilNextRelease() override;
 
 protected:
   int64_t acquireable_count_{0};
@@ -76,6 +84,7 @@ public:
                                const std::chrono::nanoseconds ramp_time, const Frequency frequency);
   bool tryAcquireOne() override;
   void releaseOne() override;
+  std::optional<std::chrono::nanoseconds> timeUntilNextRelease() override;
 
 private:
   int64_t acquireable_count_{0};
@@ -144,6 +153,7 @@ public:
   BurstingRateLimiter(RateLimiterPtr&& rate_limiter, const uint64_t burst_size);
   bool tryAcquireOne() override;
   void releaseOne() override;
+  std::optional<std::chrono::nanoseconds> timeUntilNextRelease() override;
 
 private:
   const uint64_t burst_size_;
@@ -167,6 +177,7 @@ public:
                                const Envoy::MonotonicTime scheduled_starting_time);
   bool tryAcquireOne() override;
   void releaseOne() override;
+  std::optional<std::chrono::nanoseconds> timeUntilNextRelease() override;
 
 private:
   const Envoy::MonotonicTime scheduled_starting_time_;
@@ -191,6 +202,7 @@ public:
                             RateLimiterDelegate random_distribution_generator);
   bool tryAcquireOne() override;
   void releaseOne() override;
+  std::optional<std::chrono::nanoseconds> timeUntilNextRelease() override;
 
 protected:
   const RateLimiterDelegate random_distribution_generator_;
@@ -237,6 +249,13 @@ public:
   FilteringRateLimiterImpl(RateLimiterPtr&& rate_limiter, RateLimiterFilter filter);
   bool tryAcquireOne() override;
   void releaseOne() override { rate_limiter_->releaseOne(); }
+  // The filter decides after the wrapped limiter released, so the wrapped limiter's answer is
+  // still a lower bound: no acquisition gets here before it gets there. Reporting anything
+  // longer could stall a filter that rejects at random, as it has to be offered every
+  // acquisition of the wrapped limiter to let any through.
+  std::optional<std::chrono::nanoseconds> timeUntilNextRelease() override {
+    return rate_limiter_->timeUntilNextRelease();
+  }
 
 protected:
   const RateLimiterFilter filter_;
