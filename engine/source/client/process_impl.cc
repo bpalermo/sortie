@@ -863,10 +863,11 @@ namespace {
 std::atomic<uint64_t> live_snapshots{0};
 
 // What one snapshot() shares with the jobs it posts to the workers. Shared rather than on
-// snapshot()'s stack: a worker whose dispatcher has exited never runs its job, and one that
-// is slow may run it after the wait gave up, so nothing the jobs touch may have gone away
-// by then. The jobs hold the only other references, and a dispatcher destroys a job once it
-// has run it, so this lives exactly as long as the snapshot is in flight.
+// snapshot()'s stack because a slow worker may run its job after the wait gave up. Owned by
+// snapshot() alone: the jobs hold weak references and lock them when they run. A strong one
+// would be wrong for the worker whose dispatcher has already exited -- it never runs its
+// job, and never destroys it until the Process is torn down, so the snapshot's state would
+// outlive its response by the rest of the run. This lives exactly as long as snapshot() does.
 struct PendingSnapshot {
   PendingSnapshot() { live_snapshots++; }
   ~PendingSnapshot() { live_snapshots--; }
@@ -897,7 +898,13 @@ std::optional<nighthawk::client::Output> ProcessImpl::snapshot(SnapshotDetail de
     pending->copies.resize(workers_.size());
     pending->outstanding = workers_.size();
     for (size_t i = 0; i < workers_.size(); i++) {
-      workers_[i]->snapshotStatistics(detail, [pending, i](std::vector<StatisticPtr> copies) {
+      std::weak_ptr<PendingSnapshot> weak = pending;
+      workers_[i]->snapshotStatistics(detail, [weak, i](std::vector<StatisticPtr> copies) {
+        // Gone when snapshot() has already returned: nobody to hand these to.
+        const std::shared_ptr<PendingSnapshot> pending = weak.lock();
+        if (pending == nullptr) {
+          return;
+        }
         Envoy::Thread::LockGuard guard(pending->lock);
         if (pending->abandoned) {
           return;
