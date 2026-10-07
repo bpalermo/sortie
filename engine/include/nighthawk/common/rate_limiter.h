@@ -43,6 +43,24 @@ public:
    * rate limiter implementations to compute acquisition rate.
    */
   virtual std::chrono::nanoseconds elapsed() PURE;
+
+  /**
+   * Tells a caller that just saw tryAcquireOne() fail how long it can wait before trying again.
+   *
+   * The value is a lower bound: tryAcquireOne() will not succeed sooner, but it may still fail
+   * once the time has passed (a filter may suppress the acquisition, a burst may still be
+   * accumulating). The caller is expected to call tryAcquireOne() again when the time is up, and
+   * to ask again if that fails. A lower bound is what makes this safe to forward through any
+   * wrapper: waking up early costs a wake-up, waking up late costs pacing accuracy.
+   *
+   * Zero means "try now". std::nullopt means the limiter cannot tell, and the caller has to
+   * poll. That is the default, so that a limiter which predates this method (a plugin, say) keeps
+   * working unchanged.
+   *
+   * @return std::optional<std::chrono::nanoseconds> a lower bound on the time until
+   * tryAcquireOne() can succeed, or std::nullopt when that is unknown.
+   */
+  virtual std::optional<std::chrono::nanoseconds> timeUntilNextRelease() { return std::nullopt; }
 };
 
 using RateLimiterPtr = std::unique_ptr<RateLimiter>;

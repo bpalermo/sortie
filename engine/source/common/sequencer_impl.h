@@ -21,6 +21,20 @@ using namespace std::chrono_literals;
 // We shoot for a 40kHz resolution.
 constexpr std::chrono::microseconds NighthawkTimerResolution = 25us;
 
+// The longest the WAIT idle strategy lets the sequencer go without running. Besides releasing
+// requests, running is how the sequencer evaluates the termination predicates: the duration, the
+// failure predicates, and a cancellation, which arrives as a counter that one of them watches.
+// The cap is therefore how late an execution can end or notice it was cancelled, and by how much
+// it can overrun its duration. No request is sent in that overrun, as the predicates are
+// evaluated first. It also bounds the damage should a rate limiter report a wait that is too
+// long.
+//
+// The cap is a trade against idle cost, which is all wake-ups, and most of a wake-up that finds
+// nothing to do is spent in the kernel. Measured on an optimized build, a worker with next to
+// nothing to send costs 27 millicores when capped at 1 ms and 11 when capped at 5 ms. The
+// difference is not worth ending a run 4 ms sooner.
+constexpr std::chrono::microseconds NighthawkMaxIdleWait = 5ms;
+
 } // namespace
 
 #define ALL_SEQUENCER_STATS(COUNTER) COUNTER(failed_terminations)
@@ -99,11 +113,19 @@ protected:
    * For more context on the current implementation of how we spin, see the the review discussion:
    * https://github.com/envoyproxy/envoy-perf/pull/49#discussion_r259133387
    *
+   * With the WAIT idle strategy none of that spinning happens. The periodic timer is armed for
+   * the time the rate limiter says is left until the next request instead, see idleWait().
+   *
    * @param from_periodic_timer Indicates if we this is called from the periodic timer.
    * Used to determine if re-enablement of the periodic timer should be performed before returning.
    */
   void run(bool from_periodic_timer);
   void scheduleRun();
+  /**
+   * @return std::chrono::microseconds how long the periodic timer may wait before the next run
+   * under the WAIT idle strategy.
+   */
+  std::chrono::microseconds idleWait();
   void stop(bool timed_out);
   void unblockAndUpdateStatisticIfNeeded(const Envoy::MonotonicTime& now);
   void updateStartBlockingTimeIfNeeded();

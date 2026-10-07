@@ -40,7 +40,28 @@ void SequencerImpl::start() {
   run(false);
 }
 
-void SequencerImpl::scheduleRun() { periodic_timer_->enableHRTimer(NighthawkTimerResolution); }
+void SequencerImpl::scheduleRun() {
+  periodic_timer_->enableHRTimer(idle_strategy_ == nighthawk::client::SequencerIdleStrategy::WAIT
+                                     ? idleWait()
+                                     : NighthawkTimerResolution);
+}
+
+std::chrono::microseconds SequencerImpl::idleWait() {
+  const std::optional<std::chrono::nanoseconds> until_next_release =
+      rate_limiter_->timeUntilNextRelease();
+  if (!until_next_release.has_value() || until_next_release.value() <= 0ns) {
+    // Either the rate limiter cannot tell when it will release, or it would release right now and
+    // it is the target that has no capacity (closed-loop mode), which the rate limiter knows
+    // nothing about. Both leave polling, at the pace the POLL strategy polls at. Arming the timer
+    // for the zero the rate limiter reported would be a spin.
+    return NighthawkTimerResolution;
+  }
+  // Round up: the timer has microsecond resolution, and waking up before the request is due means
+  // waking up twice for it. Waking up late is not a concern for the rate, only for the timing of
+  // this one request: the rate limiter releases everything that came due since it was last asked.
+  return std::min(NighthawkMaxIdleWait,
+                  std::chrono::ceil<std::chrono::microseconds>(until_next_release.value()));
+}
 
 void SequencerImpl::stop(bool failed) {
   ASSERT(running_);
@@ -135,7 +156,13 @@ void SequencerImpl::run(bool from_periodic_timer) {
     }
   }
 
-  if (from_periodic_timer) {
+  if (idle_strategy_ == nighthawk::client::SequencerIdleStrategy::WAIT) {
+    // Re-arm whichever timer woke us up: a completion that arrives through the spin timer may
+    // have let a request go out, which changes when the next one is due. Completions are also
+    // what wakes us up to retry a target that had no capacity, so in closed-loop mode a blocked
+    // request still goes out as soon as there is room for it.
+    scheduleRun();
+  } else if (from_periodic_timer) {
     // Re-schedule the periodic timer if it was responsible for waking up this code.
     scheduleRun();
   } else {

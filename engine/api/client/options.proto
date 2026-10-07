@@ -100,6 +100,12 @@ message SequencerIdleStrategy {
     SPIN = 1;
     POLL = 2;
     SLEEP = 3;
+    // Block until the rate limiter says the next request is due, for at most 5 ms at a time so
+    // that the end of the execution or a cancellation is noticed that soon. Unlike the other
+    // strategies its CPU cost follows the request rate, which is what a low-rate run on a
+    // CPU-constrained machine wants. SPIN, POLL and SLEEP wake up thousands of times per second
+    // per worker whatever the rate.
+    WAIT = 4;
   }
   SequencerIdleStrategyOptions value = 1;
 }
@@ -334,7 +340,8 @@ message CommandLineOptions {
   // Max requests per connection (default: 4294937295).
   google.protobuf.UInt32Value max_requests_per_connection = 16 [(validate.rules).uint32 = {gte: 1}];
   // Choose between using a busy spin/yield loop or have the thread poll or sleep while waiting for
-  // the next scheduled request (default: SPIN).
+  // the next scheduled request, or WAIT to have it block until that request is due
+  // (default: SPIN).
   SequencerIdleStrategy sequencer_idle_strategy = 17;
   // Either a single URI is configured, or the same traffic can be spread across a static
   // set of backends.

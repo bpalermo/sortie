@@ -15,6 +15,7 @@ public:
   MOCK_METHOD(Envoy::TimeSource&, timeSource, (), (override));
   MOCK_METHOD(std::chrono::nanoseconds, elapsed, (), (override));
   MOCK_METHOD(std::optional<Envoy::SystemTime>, firstAcquisitionTime, (), (const, override));
+  MOCK_METHOD(std::optional<std::chrono::nanoseconds>, timeUntilNextRelease, (), (override));
 };
 
 class MockDiscreteNumericDistributionSampler : public DiscreteNumericDistributionSampler {

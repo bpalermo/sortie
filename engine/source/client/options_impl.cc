@@ -355,13 +355,15 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
                   max_concurrent_streams_),
       false, 0, "uint32_t", cmd);
 
-  std::vector<std::string> sequencer_idle_strategies = {"spin", "poll", "sleep"};
+  std::vector<std::string> sequencer_idle_strategies = {"spin", "poll", "sleep", "wait"};
   TCLAP::ValuesConstraint<std::string> sequencer_idle_strategies_allowed(sequencer_idle_strategies);
   TCLAP::ValueArg<std::string> sequencer_idle_strategy(
       "", "sequencer-idle-strategy",
       fmt::format(
           "Choose between using a busy spin/yield loop or have the thread poll or sleep while "
-          "waiting for the next scheduled request (default: {}).",
+          "waiting for the next scheduled request. 'wait' blocks until the next request is due "
+          "instead, so that CPU usage follows the request rate: use it for low request rates or "
+          "when CPU is constrained (default: {}).",
           absl::AsciiStrToLower(
               nighthawk::client::SequencerIdleStrategy_SequencerIdleStrategyOptions_Name(
                   sequencer_idle_strategy_))),

@@ -149,6 +149,32 @@ without resolving it.
 never compensates for a client that cannot keep pace, so saturation shows up as
 pool overflow rather than as latency.
 
+### a low rate still costs a core per worker, unless told to wait
+
+Between requests a worker thread does not block. By default it spins, because
+that releases each request closest to its time, and so a worker costs a whole
+core at any rate. The engine's other idle strategies trade that off: measured
+on one worker sending 60 rps, `SPIN` used 970 millicores, `POLL` 390, `SLEEP`
+150 and `WAIT` 26.
+
+`WAIT` is the one a low-rate soak wants. It blocks until the rate limiter says
+the next request is due, so its cost follows the rate rather than the worker
+count, and an engine under a CPU limit is not throttled into reporting its own
+scheduling delay as the target's latency. The schema has no field for it; it
+goes through the template:
+
+```yaml
+scenarios:
+  - name: soak
+    executor: {type: constant-rate, rate: 60, duration: 8h, open_loop: true}
+    nighthawk_template:
+      sequencer_idle_strategy: {value: WAIT}
+```
+
+Keep the default when the rate is high or the machine has cores to spare: a
+spinning worker releases each request closer to its time than one that has to
+be woken up for it.
+
 ### rate is aggregate, and that has consequences
 
 `rate` is what the target receives. Nighthawk's own `--rps` is **per worker

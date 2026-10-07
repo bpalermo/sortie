@@ -570,4 +570,317 @@ TEST_F(ZipfRateLimiterImplTest, BadArgumentsTest) {
   }
 }
 
+// Tests of RateLimiter::timeUntilNextRelease(), which the sequencer's WAIT idle strategy uses to
+// decide how long it can block.
+class TimeUntilNextReleaseTest : public Test {
+public:
+  /**
+   * Drives a rate limiter the way the WAIT idle strategy does: acquire all there is, then move
+   * time forward by what the rate limiter says the wait is, rounded up to the microsecond
+   * resolution of a timer.
+   *
+   * @return std::vector<std::chrono::microseconds> the time of every acquisition, counted from
+   * the first call to tryAcquireOne().
+   */
+  std::vector<std::chrono::microseconds>
+  acquireByWaiting(RateLimiter& rate_limiter, const std::chrono::microseconds duration) {
+    std::vector<std::chrono::microseconds> timings;
+    std::chrono::microseconds elapsed = 0us;
+    wakeups_ = 0;
+    while (true) {
+      while (rate_limiter.tryAcquireOne()) {
+        timings.push_back(elapsed);
+      }
+      const std::optional<std::chrono::nanoseconds> wait = rate_limiter.timeUntilNextRelease();
+      EXPECT_TRUE(wait.has_value());
+      if (!wait.has_value()) {
+        break;
+      }
+      EXPECT_GE(wait.value(), 0ns);
+      // Zero is a valid answer after a filter suppressed an acquisition while more are due.
+      const std::chrono::microseconds step =
+          std::max(1us, std::chrono::ceil<std::chrono::microseconds>(wait.value()));
+      if (elapsed + step > duration) {
+        break;
+      }
+      time_system_.advanceTimeWait(step);
+      elapsed += step;
+      wakeups_++;
+    }
+    return timings;
+  }
+
+  static std::vector<int64_t> toMilliseconds(const std::vector<std::chrono::microseconds>& in) {
+    std::vector<int64_t> out;
+    for (const std::chrono::microseconds t : in) {
+      out.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(t).count());
+    }
+    return out;
+  }
+
+  // The answers are computed with doubles, so allow them to be a microsecond off.
+  static void expectWait(RateLimiter& rate_limiter, const std::chrono::nanoseconds expected) {
+    const std::optional<std::chrono::nanoseconds> wait = rate_limiter.timeUntilNextRelease();
+    ASSERT_TRUE(wait.has_value());
+    EXPECT_NEAR(wait.value().count(), expected.count(), 1000);
+  }
+
+  Envoy::Event::SimulatedTimeSystem time_system_;
+  uint64_t wakeups_{0};
+};
+
+// A rate limiter that does not implement the method cannot tell.
+TEST_F(TimeUntilNextReleaseTest, DefaultsToUnknown) {
+  class MinimalRateLimiter : public RateLimiter {
+  public:
+    MinimalRateLimiter(Envoy::TimeSource& time_source) : time_source_(time_source) {}
+    bool tryAcquireOne() override { return false; }
+    void releaseOne() override {}
+    Envoy::TimeSource& timeSource() override { return time_source_; }
+    std::optional<Envoy::SystemTime> firstAcquisitionTime() const override { return std::nullopt; }
+    std::chrono::nanoseconds elapsed() override { return 0ns; }
+
+  private:
+    Envoy::TimeSource& time_source_;
+  };
+  MinimalRateLimiter rate_limiter(time_system_);
+  EXPECT_EQ(std::nullopt, rate_limiter.timeUntilNextRelease());
+}
+
+TEST_F(TimeUntilNextReleaseTest, LinearRateLimiter) {
+  LinearRateLimiter rate_limiter(time_system_, 10_Hz);
+  // Asking does not start the clock, the first acquisition attempt does.
+  EXPECT_EQ(0ns, rate_limiter.timeUntilNextRelease());
+  time_system_.advanceTimeWait(1s);
+  EXPECT_EQ(0ns, rate_limiter.timeUntilNextRelease());
+  EXPECT_EQ(std::nullopt, rate_limiter.firstAcquisitionTime());
+
+  EXPECT_FALSE(rate_limiter.tryAcquireOne());
+  // The first acquisition is due half an interval in.
+  expectWait(rate_limiter, 50ms);
+  time_system_.advanceTimeWait(20ms);
+  expectWait(rate_limiter, 30ms);
+  time_system_.advanceTimeWait(30ms);
+  EXPECT_TRUE(rate_limiter.tryAcquireOne());
+  EXPECT_FALSE(rate_limiter.tryAcquireOne());
+  expectWait(rate_limiter, 100ms);
+
+  // Two more came due. Whether or not the rate limiter has counted them yet, there is no wait.
+  time_system_.advanceTimeWait(250ms);
+  EXPECT_EQ(0ns, rate_limiter.timeUntilNextRelease());
+  EXPECT_TRUE(rate_limiter.tryAcquireOne());
+  EXPECT_EQ(0ns, rate_limiter.timeUntilNextRelease());
+  EXPECT_TRUE(rate_limiter.tryAcquireOne());
+  EXPECT_FALSE(rate_limiter.tryAcquireOne());
+  expectWait(rate_limiter, 50ms);
+  // An acquisition that is handed back is available right away.
+  rate_limiter.releaseOne();
+  EXPECT_EQ(0ns, rate_limiter.timeUntilNextRelease());
+}
+
+// Waiting for exactly as long as the rate limiter says yields every acquisition on time, for one
+// wake-up each.
+TEST_F(TimeUntilNextReleaseTest, LinearRateLimiterDrivenByWaiting) {
+  const Frequency frequency = 60_Hz;
+  LinearRateLimiter rate_limiter(time_system_, frequency);
+  const std::vector<std::chrono::microseconds> timings = acquireByWaiting(rate_limiter, 10s);
+  ASSERT_EQ(600, timings.size());
+  for (uint64_t i = 0; i < timings.size(); i++) {
+    const double due_us = (i + 0.5) * 1e6 / frequency.value();
+    EXPECT_GE(timings[i].count(), std::floor(due_us));
+    EXPECT_LE(timings[i].count(), std::ceil(due_us) + 2);
+  }
+  // Floating point math makes an occasional wake-up come a microsecond early, which costs one
+  // more.
+  EXPECT_GE(wakeups_, 600);
+  EXPECT_LE(wakeups_, 700);
+}
+
+TEST_F(TimeUntilNextReleaseTest, LinearRampingRateLimiterDrivenByWaiting) {
+  const std::chrono::seconds ramp_time = 5s;
+  const Frequency frequency = 5_Hz;
+  LinearRampingRateLimiterImpl rate_limiter(time_system_, ramp_time, frequency);
+  EXPECT_EQ(0ns, rate_limiter.timeUntilNextRelease());
+  const std::vector<std::chrono::microseconds> timings = acquireByWaiting(rate_limiter, 10s);
+  // 12.5 rounded up during the ramp, then five per second.
+  const uint64_t during_ramp = 13;
+  ASSERT_EQ(during_ramp + 25, timings.size());
+  for (uint64_t i = 0; i < timings.size(); i++) {
+    // Acquisition i + 1 is due when the unrounded number of acquisitions reaches i + 0.5. During
+    // the ramp that number is ½ * a * t², after it grows by the frequency.
+    const double a = frequency.value() / (ramp_time.count() * 1.0);
+    const double due_s = i < during_ramp
+                             ? std::sqrt((i + 0.5) * 2.0 / a)
+                             : ramp_time.count() + (i + 0.5 - during_ramp) / frequency.value();
+    EXPECT_NEAR(timings[i].count(), due_s * 1e6, 2);
+  }
+  EXPECT_LE(wakeups_, 2 * timings.size());
+
+  // An acquisition that is handed back is available right away.
+  rate_limiter.releaseOne();
+  EXPECT_EQ(0ns, rate_limiter.timeUntilNextRelease());
+}
+
+TEST_F(TimeUntilNextReleaseTest, BurstingRateLimiter) {
+  const uint64_t burst_size = 3;
+  BurstingRateLimiter rate_limiter(std::make_unique<LinearRateLimiter>(time_system_, 10_Hz),
+                                   burst_size);
+  EXPECT_FALSE(rate_limiter.tryAcquireOne());
+  // While accumulating, the answer is the wait for the wrapped rate limiter's next acquisition,
+  // not for the one that completes the burst: each has to be collected.
+  expectWait(rate_limiter, 50ms);
+  time_system_.advanceTimeWait(50ms);
+  EXPECT_FALSE(rate_limiter.tryAcquireOne());
+  expectWait(rate_limiter, 100ms);
+  time_system_.advanceTimeWait(200ms);
+  // The burst is complete. While it is being released there is no wait.
+  EXPECT_TRUE(rate_limiter.tryAcquireOne());
+  EXPECT_EQ(0ns, rate_limiter.timeUntilNextRelease());
+  rate_limiter.releaseOne();
+  EXPECT_EQ(0ns, rate_limiter.timeUntilNextRelease());
+  EXPECT_TRUE(rate_limiter.tryAcquireOne());
+  EXPECT_TRUE(rate_limiter.tryAcquireOne());
+  EXPECT_TRUE(rate_limiter.tryAcquireOne());
+  EXPECT_FALSE(rate_limiter.tryAcquireOne());
+  expectWait(rate_limiter, 100ms);
+}
+
+// Bursts go out complete and on time when the wait is all that drives the rate limiter.
+TEST_F(TimeUntilNextReleaseTest, BurstingRateLimiterDrivenByWaiting) {
+  BurstingRateLimiter rate_limiter(std::make_unique<LinearRateLimiter>(time_system_, 10_Hz), 3);
+  // The third, sixth and ninth acquisition of the wrapped rate limiter each release a burst.
+  EXPECT_EQ(toMilliseconds(acquireByWaiting(rate_limiter, 1s)),
+            std::vector<int64_t>({250, 250, 250, 550, 550, 550, 850, 850, 850}));
+}
+
+TEST_F(TimeUntilNextReleaseTest, BurstingRateLimiterForwardsUnknown) {
+  auto mock_rate_limiter = std::make_unique<NiceMock<MockRateLimiter>>();
+  EXPECT_CALL(*mock_rate_limiter, timeUntilNextRelease()).WillOnce(Return(std::nullopt));
+  BurstingRateLimiter rate_limiter(std::move(mock_rate_limiter), 3);
+  EXPECT_FALSE(rate_limiter.tryAcquireOne());
+  EXPECT_EQ(std::nullopt, rate_limiter.timeUntilNextRelease());
+}
+
+TEST_F(TimeUntilNextReleaseTest, ScheduledStartingRateLimiter) {
+  auto mock_rate_limiter = std::make_unique<NiceMock<MockRateLimiter>>();
+  MockRateLimiter& unsafe_mock_rate_limiter = *mock_rate_limiter;
+  EXPECT_CALL(unsafe_mock_rate_limiter, timeSource).WillRepeatedly(ReturnRef(time_system_));
+  ScheduledStartingRateLimiter rate_limiter(std::move(mock_rate_limiter),
+                                            time_system_.monotonicTime() + 10ms);
+  // Until it is time to start the wrapped rate limiter is left alone, and the wait is for the
+  // start.
+  EXPECT_CALL(unsafe_mock_rate_limiter, timeUntilNextRelease()).Times(0);
+  EXPECT_EQ(10ms, rate_limiter.timeUntilNextRelease());
+  time_system_.advanceTimeWait(4ms);
+  EXPECT_EQ(6ms, rate_limiter.timeUntilNextRelease());
+  time_system_.advanceTimeWait(6ms);
+  Mock::VerifyAndClearExpectations(&unsafe_mock_rate_limiter);
+  EXPECT_CALL(unsafe_mock_rate_limiter, timeSource).WillRepeatedly(ReturnRef(time_system_));
+  // From then on the wrapped rate limiter answers.
+  EXPECT_CALL(unsafe_mock_rate_limiter, timeUntilNextRelease())
+      .WillOnce(Return(std::chrono::nanoseconds(7ms)))
+      .WillOnce(Return(std::nullopt));
+  EXPECT_EQ(7ms, rate_limiter.timeUntilNextRelease());
+  EXPECT_EQ(std::nullopt, rate_limiter.timeUntilNextRelease());
+}
+
+// What the sequencer factory builds by default: a linear rate limiter with a scheduled start.
+TEST_F(TimeUntilNextReleaseTest, ScheduledStartingLinearRateLimiterDrivenByWaiting) {
+  ScheduledStartingRateLimiter rate_limiter(
+      std::make_unique<LinearRateLimiter>(time_system_, 10_Hz),
+      time_system_.monotonicTime() + 100ms);
+  // The wrapped rate limiter's clock starts with the first attempt that gets through to it.
+  EXPECT_EQ(toMilliseconds(acquireByWaiting(rate_limiter, 500ms)),
+            std::vector<int64_t>({150, 250, 350, 450}));
+  EXPECT_LE(wakeups_, 10);
+}
+
+TEST_F(DistributionSamplingRateLimiterTest, TimeUntilNextRelease) {
+  // With nothing queued, the wrapped rate limiter's answer is passed on: the offset that will be
+  // added to its next acquisition may be zero.
+  EXPECT_CALL(mock_inner_rate_limiter_, timeUntilNextRelease())
+      .WillOnce(Return(std::chrono::nanoseconds(10ms)));
+  EXPECT_EQ(10ms, rate_limiter_->timeUntilNextRelease());
+
+  // Queue an acquisition that is offset by 5 ms.
+  EXPECT_CALL(mock_inner_rate_limiter_, tryAcquireOne)
+      .WillOnce(Return(true))
+      .WillRepeatedly(Return(false));
+  EXPECT_CALL(mock_discrete_numeric_distribution_sampler_, getValue)
+      .WillOnce(Return(std::chrono::nanoseconds(5ms).count()));
+  EXPECT_FALSE(rate_limiter_->tryAcquireOne());
+
+  // The earlier of the queued timing and the wrapped rate limiter's next acquisition counts.
+  EXPECT_CALL(mock_inner_rate_limiter_, timeUntilNextRelease())
+      .WillOnce(Return(std::chrono::nanoseconds(10ms)))
+      .WillOnce(Return(std::chrono::nanoseconds(1ms)))
+      .WillOnce(Return(std::nullopt))
+      .WillOnce(Return(std::chrono::nanoseconds(10ms)))
+      .WillOnce(Return(std::chrono::nanoseconds(10ms)));
+  EXPECT_EQ(5ms, rate_limiter_->timeUntilNextRelease());
+  EXPECT_EQ(1ms, rate_limiter_->timeUntilNextRelease());
+  // A wrapped rate limiter that cannot tell might release, unoffset, at any moment.
+  EXPECT_EQ(std::nullopt, rate_limiter_->timeUntilNextRelease());
+  time_system_.advanceTimeWait(2ms);
+  EXPECT_EQ(3ms, rate_limiter_->timeUntilNextRelease());
+  // A queued timing that is overdue does not make for a negative wait.
+  time_system_.advanceTimeWait(4ms);
+  EXPECT_EQ(0ns, rate_limiter_->timeUntilNextRelease());
+  EXPECT_TRUE(rate_limiter_->tryAcquireOne());
+}
+
+// Jitter delays acquisitions but does not lose any when the wait is all that drives the rate
+// limiter.
+TEST_F(TimeUntilNextReleaseTest, DistributionSamplingRateLimiterDrivenByWaiting) {
+  DistributionSamplingRateLimiterImpl rate_limiter(
+      std::make_unique<UniformRandomDistributionSamplerImpl>(
+          std::chrono::nanoseconds(30ms).count()),
+      std::make_unique<LinearRateLimiter>(time_system_, 10_Hz));
+  const std::vector<std::chrono::microseconds> timings = acquireByWaiting(rate_limiter, 1s);
+  ASSERT_EQ(10, timings.size());
+  for (uint64_t i = 0; i < timings.size(); i++) {
+    const std::chrono::microseconds due = (i * 100ms) + 50ms;
+    EXPECT_GE(timings[i], due);
+    EXPECT_LE(timings[i], due + 30ms + 2us);
+  }
+  // One wake-up to queue each acquisition, and one to release it.
+  EXPECT_LE(wakeups_, 3 * timings.size());
+}
+
+// A filter that suppresses acquisitions at random has to be offered every acquisition of the
+// wrapped rate limiter. Driven by the wait alone it lets through exactly what it lets through
+// when polled every millisecond (the timings are those of ZipfRateLimiterImplTest above).
+TEST_F(TimeUntilNextReleaseTest, ZipfRateLimiterDrivenByWaiting) {
+  ZipfRateLimiterImpl rate_limiter(std::make_unique<LinearRateLimiter>(time_system_, 10_Hz), 2.0,
+                                   1.0, ZipfRateLimiterImpl::ZipfBehavior::ZIPF_PSEUDO_RANDOM);
+  EXPECT_EQ(toMilliseconds(acquireByWaiting(rate_limiter, 15s)),
+            std::vector<int64_t>({450,   750,   1250,  2350,  2850,  3850,  4150,  4350,  4450,
+                                  5750,  5950,  6350,  7850,  8350,  8550,  9850,  10150, 10450,
+                                  10550, 11950, 12250, 12550, 13250, 13550, 13650, 13750, 13850}));
+  // About one wake-up per acquisition of the wrapped rate limiter, suppressed or not.
+  EXPECT_GE(wakeups_, 150);
+  EXPECT_LE(wakeups_, 200);
+}
+
+// Same for the filter that opens up gradually (the timings are those of
+// GraduallyOpeningRateLimiterFilterTest above).
+TEST_F(TimeUntilNextReleaseTest, GraduallyOpeningRateLimiterFilterDrivenByWaiting) {
+  auto sampler = std::make_unique<MockDiscreteNumericDistributionSampler>();
+  EXPECT_CALL(*sampler, getValue).WillRepeatedly(Return(500000));
+  EXPECT_CALL(*sampler, min).WillRepeatedly(Return(1));
+  EXPECT_CALL(*sampler, max).WillRepeatedly(Return(1000000));
+  GraduallyOpeningRateLimiterFilter rate_limiter(
+      1s, std::move(sampler), std::make_unique<LinearRateLimiter>(time_system_, 50_Hz));
+  EXPECT_EQ(toMilliseconds(acquireByWaiting(rate_limiter, 1s)),
+            std::vector<int64_t>({510, 530, 550, 570, 590, 610, 630, 650, 670, 690, 710, 730, 750,
+                                  770, 790, 810, 830, 850, 870, 890, 910, 930, 950, 970, 990}));
+}
+
+TEST_F(TimeUntilNextReleaseTest, FilteringRateLimiterForwardsUnknown) {
+  auto mock_rate_limiter = std::make_unique<NiceMock<MockRateLimiter>>();
+  EXPECT_CALL(*mock_rate_limiter, timeUntilNextRelease()).WillOnce(Return(std::nullopt));
+  FilteringRateLimiterImpl rate_limiter(std::move(mock_rate_limiter), []() { return true; });
+  EXPECT_EQ(std::nullopt, rate_limiter.timeUntilNextRelease());
+}
+
 } // namespace Nighthawk

@@ -418,7 +418,8 @@ TEST_P(SequencerFactoryTest, UnknownRateLimiterPluginThrowsException) {
 INSTANTIATE_TEST_SUITE_P(SequencerIdleStrategies, SequencerFactoryTest,
                          ValuesIn({nighthawk::client::SequencerIdleStrategy::POLL,
                                    nighthawk::client::SequencerIdleStrategy::SLEEP,
-                                   nighthawk::client::SequencerIdleStrategy::SPIN}));
+                                   nighthawk::client::SequencerIdleStrategy::SPIN,
+                                   nighthawk::client::SequencerIdleStrategy::WAIT}));
 
 TEST_F(FactoriesTest, CreateStatistic) {
   StatisticFactoryImpl factory(options_);
