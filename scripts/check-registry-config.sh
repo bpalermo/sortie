@@ -54,9 +54,9 @@ echo "setting: ${host}/${namespace}"
 esc() { printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|/]/\\&/g'; }
 
 # --- 2. the chart's engine default agrees ------------------------------------
-n="$(grep -cE "^[[:space:]]*ref:[[:space:]]*\"$(esc "$engine"):dev-\{STABLE_GIT_COMMIT\}\"[[:space:]]*$" charts/sortie/values.yaml || true)"
+n="$(grep -cE "^[[:space:]]*ref:[[:space:]]*\"$(esc "$engine")\{STABLE_ENGINE_REF_SUFFIX\}\"[[:space:]]*$" charts/sortie/values.yaml || true)"
 if [ "$n" != 1 ]; then
-	bad "charts/sortie/values.yaml has ${n} \`ref:\` line(s) naming ${engine}:dev-{STABLE_GIT_COMMIT}, want exactly 1 -- the chart's engine default disagrees with bazel/registry.bzl"
+	bad "charts/sortie/values.yaml has ${n} \`ref:\` line(s) naming ${engine}{STABLE_ENGINE_REF_SUFFIX}, want exactly 1 -- the chart's engine default disagrees with bazel/registry.bzl"
 else
 	echo "ok: charts/sortie/values.yaml defaults the engine to ${engine}"
 fi

@@ -68,8 +68,11 @@ engine:
   kind: Deployment
   image:
     # The engine image published by the same workflow run as this chart, so
-    # the two always come from one commit. Stamped at package time.
-    ref: "quay.io/sortie/engine:dev-{STABLE_GIT_COMMIT}"
+    # the two always come from one commit. Stamped at package time: a
+    # published chart pins the engine by the digest of the index that run
+    # pushed and signed, and a chart built anywhere else names this commit's
+    # tag.
+    ref: "quay.io/sortie/engine{STABLE_ENGINE_REF_SUFFIX}"
     pullPolicy: IfNotPresent
   # Deployment only; a DaemonSet has one pod per eligible node.
   replicas: 1

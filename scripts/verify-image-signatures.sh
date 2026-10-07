@@ -17,6 +17,7 @@
 # is a failure, not a healthy signature. Set it to `any` to skip the assertion.
 #
 #   bazel run //bazel/cosign:verify_image -- <ref> [<ref>...]
+#   bazel run //bazel/cosign:verify_image -- --single <chart ref>
 #   COSIGN=/path/to/cosign scripts/verify-image-signatures.sh <ref>...
 #
 # Each ref is `<registry>/<repo>@sha256:<index digest>`: a digest, never a tag.
@@ -53,6 +54,13 @@ case "$expect" in referrer | tag | any) ;; *)
 	;;
 esac
 
+# --single: the refs are single manifests, not indexes -- a Helm chart, say --
+# so there are no children to walk and asking for them would be an error.
+single=0
+if [ "${1:-}" = "--single" ]; then
+	single=1
+	shift
+fi
 refs=("$@")
 if [ "${#refs[@]}" -eq 0 ]; then
 	echo "::error::no image refs to verify" >&2
@@ -111,6 +119,10 @@ for ref in "${refs[@]}"; do
 		echo "::error::could not obtain a pull token for ${repo}" >&2
 		exit 2
 	fi
+	if [ "$single" = 1 ]; then
+		check manifest "$repo" "$digest" "$tok"
+		continue
+	fi
 	check index "$repo" "$digest" "$tok"
 	if ! children="$(registry_index_children "$repo" "$digest" "$tok")" || [ -z "$children" ]; then
 		echo "::error::could not enumerate the child manifests of ${ref} (not an index, or no children)" >&2
@@ -125,6 +137,16 @@ for ref in "${refs[@]}"; do
 done
 
 echo ""
+# A chart is one manifest: saying "index(es)" of it would misdescribe what was
+# checked, in the failure as much as in the pass.
+if [ "$single" = 1 ]; then
+	if [ "$failed" -gt 0 ]; then
+		echo "FAIL: ${failed} check(s) failed, ${verified} manifest(s) verified, of ${#refs[@]} single manifest(s)"
+		exit 1
+	fi
+	echo "PASS: ${verified} manifest(s) verified, layout ${expect}"
+	exit 0
+fi
 if [ "$failed" -gt 0 ]; then
 	echo "FAIL: ${failed} check(s) failed, ${verified} manifest(s) verified, across ${#refs[@]} index(es)"
 	exit 1

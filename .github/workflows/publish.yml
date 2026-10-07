@@ -54,6 +54,14 @@ jobs:
     needs: [engine-index]
     environment: release
     runs-on: ubuntu-latest
+    env:
+      # The engine index the job before this one pushed and signed. Bazel's
+      # workspace status reads it (bazel/workspace_status.sh) and the chart's
+      # default engine reference is stamped with it, so the published chart
+      # pins the engine by digest, as it pins the driver. Set for the whole
+      # job: every Bazel invocation must see the same value, or the chart
+      # that is pushed would not be the chart that was built.
+      SORTIE_ENGINE_DIGEST: ${{ needs.engine-index.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -108,6 +116,18 @@ jobs:
       # cosign is part of that: the release binary the rules_img_signer_cosign
       # bazel_dep pins by sha256 (//bazel/cosign), the same one
       # `bazel run //bazel/cosign` gives a workstation.
+      # Without the digest the chart would fall back to the commit's tag and
+      # publish looking right. A pin that silently is not one is worse than a
+      # failed run.
+      - name: Require the engine digest
+        run: |
+          set -euo pipefail
+          if ! [[ "${SORTIE_ENGINE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::the engine-index job handed over no digest (got '${SORTIE_ENGINE_DIGEST}')" >&2
+            exit 1
+          fi
+          echo "the chart will pin the engine at ${ENGINE_IMAGE}@${SORTIE_ENGINE_DIGEST}"
+
       - name: Build the image, the chart and the tools
         run: |
           bazel build //:image_push //charts/sortie:sortie.chart_push \
@@ -189,7 +209,38 @@ jobs:
       # chart_push writes the artifact `helm push` would, with oras, to the
       # repository the setting names; the login above is its credential.
       - name: Push the chart
-        run: bazel run //charts/sortie:sortie.chart_push
+        id: chart
+        run: |
+          set -euo pipefail
+          bazel run //charts/sortie:sortie.chart_push 2>&1 | tee chart-push.log
+          # oras prints the digest of the manifest it pushed; that, not a tag
+          # looked up afterwards, is what gets signed.
+          # `|| true`: grep exits 1 when nothing matches, and under pipefail
+          # that would end the step here, before the message below that says
+          # what went wrong.
+          digest="$(grep -oE '^Digest: sha256:[0-9a-f]{64}$' chart-push.log | tail -1 | cut -d' ' -f2 || true)"
+          if [ -z "${digest}" ]; then
+            echo "::error::the chart push printed no digest" >&2
+            exit 1
+          fi
+          echo "ref=${CHART_REPOSITORY}@${digest}" >> "${GITHUB_OUTPUT}"
+          echo "pushed ${CHART_REPOSITORY}@${digest}"
+
+      # The chart is an artifact people install by name, so it is signed like
+      # the images it names: keyless, by digest, as a referrer.
+      - name: Sign the chart
+        env:
+          COSIGN_YES: "true"
+        run: bazel run //bazel/cosign -- sign "${{ steps.chart.outputs.ref }}"
+
+      # A chart is one manifest, not an index: --single verifies it and where
+      # its signature landed, without looking for children.
+      - name: Verify the chart's signature and where it is published
+        env:
+          REGISTRY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.QUAY_TOKEN }}
+          REGISTRY_CREDENTIAL_HOST: ${{ env.IMAGE_REGISTRY_HOST }}
+        run: bazel run //bazel/cosign:verify_image -- --single "${{ steps.chart.outputs.ref }}"
 
   # The engine image. An Envoy binary cannot be cross-built, so each
   # architecture is built natively on its own runner, with the compile offloaded
@@ -278,6 +329,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment: release
     runs-on: ubuntu-latest
+    outputs:
+      # The signed engine index, for the chart to pin (see the publish job).
+      digest: ${{ steps.digest.outputs.digest }}
     steps:
       # For the registry setting and the pinned cosign, both of which live in
       # the checkout.
@@ -342,6 +396,7 @@ jobs:
           index="$(docker buildx imagetools inspect "${image}:dev-${GITHUB_SHA}" --format '{{.Manifest.Digest}}')"
           case "${index}" in sha256:*) ;; *) echo "::error::unexpected index digest ${index}" >&2; exit 1 ;; esac
           echo "image=${image}@${index}" >> "${GITHUB_OUTPUT}"
+          echo "digest=${index}" >> "${GITHUB_OUTPUT}"
           echo "index ${image}@${index} (amd64 ${amd64}, arm64 ${arm64})"
 
       - name: Sign the engine image

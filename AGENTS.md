@@ -296,6 +296,16 @@ These are deliberate and easy to undo by accident:
   `docker/login-action` wrote; `helm pull oci://...` reads it back. Set
   `CHART_PUSH_REPOSITORY` and pass `-- --plain-http` to try it against a local
   registry.
+- **The chart pins the engine by digest, through the workspace status.** The
+  engine index is stitched and signed by the workflow, not built by Bazel, so
+  Bazel cannot know its digest. The `engine-index` job outputs it, the
+  `publish` job exports it as `SORTIE_ENGINE_DIGEST` for every step, and
+  `bazel/workspace_status.sh` turns it into `STABLE_ENGINE_REF_SUFFIX`, which
+  `values.yaml` is stamped with. Unset, or not a sha256 digest, it falls back
+  to the commit's tag; the workflow refuses to publish in that case.
+- **The chart is signed too**, by the digest oras printed when it pushed it,
+  and verified with `verify_image -- --single`: a chart is one manifest, with
+  no children to walk.
 - **The verify step asserts where signatures are published**, by asking the
   registry (`scripts/verify-image-signatures.sh`): a referrer, and no
   `sha256-<digest>` tag, for the index and every child. `cosign verify` cannot
