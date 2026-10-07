@@ -602,3 +602,125 @@ scenarios:
 		t.Errorf("backend rates = %v", rates)
 	}
 }
+
+// A backend that goes away does not void the run on the others: with one
+// engine per node, a node rebooting mid-soak takes its own numbers with it
+// and nobody else's. The execution fails, names the lost backend, and still
+// reports and judges what the survivor counted.
+func TestRunKeepsTheOtherBackendsWhenOneIsLost(t *testing.T) {
+	alive := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		return okResponse(1000, 10*time.Millisecond, 10*time.Second)
+	})
+	// A port nothing listens on: the dial fails.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := l.Addr().String()
+	l.Close()
+
+	p := planFor(t, `
+scenarios:
+  - name: soak
+    executor: {type: constant-rate, rate: 100, duration: 10s}
+    thresholds:
+      - "latency_2xx.p95 < 50ms"
+`, alive.addr, dead)
+
+	runner := &run.Runner{Plan: p, DialTimeout: 200 * time.Millisecond}
+	report, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	e := report.Executions[0]
+	if e.Err != nil {
+		t.Fatalf("the execution as a whole errored (%v); one backend returned results", e.Err)
+	}
+	if e.Pass || report.Pass {
+		t.Error("a run that lost a backend must not pass, whatever the survivors' thresholds say")
+	}
+	if len(e.BackendErrors) != 1 || e.BackendErrors[0].Addr != dead {
+		t.Fatalf("backend errors = %+v, want exactly the dead backend %s", e.BackendErrors, dead)
+	}
+	if e.Set == nil || len(e.Set.Backends) != 1 || e.Set.Backends[0].Addr != alive.addr {
+		t.Fatalf("results = %+v, want the surviving backend's", e.Set)
+	}
+	if len(e.Outcomes) != 1 || !e.Outcomes[0].Pass {
+		t.Errorf("the survivor's threshold was not evaluated, or did not hold: %+v", e.Outcomes)
+	}
+}
+
+// An engine that reports a failure but returns what it counted -- a run
+// stopped early by a failure predicate the plan asked for -- keeps its
+// counters in the report. The execution fails; its numbers are not lost.
+func TestRunKeepsTheCountersOfAnExecutionTheEngineFailed(t *testing.T) {
+	fake := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		resp := okResponse(42, time.Millisecond, time.Second)
+		resp.ErrorDetail = &status.Status{Code: 13, Message: "Exiting due to failing termination predicate"}
+		return resp
+	})
+	p := planFor(t, `
+scenarios:
+  - name: stopped
+    executor: {type: constant-rate, rate: 100, duration: 10s}
+`, fake.addr)
+
+	report, err := (&run.Runner{Plan: p}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	e := report.Executions[0]
+	if e.Pass {
+		t.Error("an execution the engine failed must not pass")
+	}
+	if e.Err != nil {
+		t.Fatalf("Err = %v; the backend returned results, so this is a backend error, not a lost execution", e.Err)
+	}
+	if len(e.BackendErrors) != 1 || !strings.Contains(e.BackendErrors[0].Err.Error(), "termination predicate") {
+		t.Errorf("backend errors = %+v, want the engine's message", e.BackendErrors)
+	}
+	if e.Set == nil || len(e.Set.Backends) != 1 {
+		t.Fatalf("the engine's counters were discarded: %+v", e.Set)
+	}
+}
+
+// The engine's own defaults end an execution at its first failed request.
+// sortie turns them off, so the backend is told to run the distance, unless
+// the plan's template asks for an early stop.
+func TestRunDisablesTheEnginesDefaultFailurePredicates(t *testing.T) {
+	fake := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		return okResponse(10, time.Millisecond, time.Second)
+	})
+	p := planFor(t, `
+scenarios:
+  - name: default
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+  - name: asks-for-a-stop
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+    nighthawk_template:
+      failure_predicates: {"benchmark.http_5xx": 0}
+  - name: asks-for-the-defaults
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+    nighthawk_template:
+      no_default_failure_predicates: false
+`, fake.addr)
+	if _, err := (&run.Runner{Plan: p}).Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := fake.received()
+	if len(got) != 3 {
+		t.Fatalf("backend saw %d requests, want 3", len(got))
+	}
+	if !got[0].GetNoDefaultFailurePredicates().GetValue() || len(got[0].GetFailurePredicates()) != 0 {
+		t.Errorf("default: no_default_failure_predicates = %v, predicates = %v; want the defaults off",
+			got[0].GetNoDefaultFailurePredicates(), got[0].GetFailurePredicates())
+	}
+	if got[1].GetNoDefaultFailurePredicates() != nil || len(got[1].GetFailurePredicates()) != 1 {
+		t.Errorf("a template's failure_predicates were not left alone: %v / %v",
+			got[1].GetNoDefaultFailurePredicates(), got[1].GetFailurePredicates())
+	}
+	if got[2].GetNoDefaultFailurePredicates() == nil || got[2].GetNoDefaultFailurePredicates().GetValue() {
+		t.Errorf("a template's explicit no_default_failure_predicates: false was overridden: %v",
+			got[2].GetNoDefaultFailurePredicates())
+	}
+}

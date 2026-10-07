@@ -148,6 +148,13 @@ README's Limitations section; keep the two in sync.
 - `RequestSource` never sees responses, so there is no session flow and no
   response correlation.
 
+An execution is not ended by a failed request, and a run is not ended by a
+lost backend. `compile.options` sets `no_default_failure_predicates` unless the
+template sets predicates of its own; `Runner.dispatch` runs backends
+independently and returns per-backend errors beside the outputs, and
+`runExecution` judges whatever came back. Do not reintroduce an errgroup there:
+its context cancels the survivors.
+
 ## The plan schema
 
 `api/sortie/plan/v1/plan.proto` is the schema, with constraints declared inline

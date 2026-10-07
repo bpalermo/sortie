@@ -133,8 +133,8 @@ answers with nothing is retried for up to 30 seconds, because a headless
 Service lists a pod only once it is ready; nothing after that is an error
 before any load is generated, with exit code 2. With several such pools each
 name has its own 30 seconds, and one that has answered is not asked again. A node that joins during a run
-gets no load, and one that leaves fails its backend's execution visibly rather
-than silently shrinking the pool. `validate` and `compile` accept the pool
+gets no load, and one that leaves fails the execution visibly rather than
+silently shrinking the pool, without taking the other nodes' results with it. `validate` and `compile` accept the pool
 without resolving it.
 
 ## Executors
@@ -522,6 +522,36 @@ present and zero, so a missing counter reads as zero — `counter:benchmark.http
 passes on a clean run. A threshold naming a statistic that does not exist fails,
 because it went unchecked rather than being satisfied.
 
+### a run goes the distance
+
+A failed request does not end a run. The engine's own defaults stop an
+execution the moment it counts one 4xx, 5xx, failed connection or reset, which
+suits a benchmark that means nothing once the target misbehaves. sortie turns
+them off: an execution lasts its `duration`, counts what goes wrong, and the
+thresholds judge it. One 503 three hours into a soak is a number in the
+report, not the end of that target's load.
+
+A plan that does want an early stop asks for it, and what it asks for is left
+alone:
+
+```yaml
+nighthawk_template:
+  failure_predicates: {"benchmark.http_5xx": 100}   # stop past 100 of them
+```
+
+An execution the engine stops this way fails, and still reports what it had
+counted up to then.
+
+### a lost backend
+
+Backends are independent. One that cannot be reached, or goes away during a
+run -- a node rebooting under an engine-per-node pool -- fails the execution
+and is named in the report, and the other backends carry on and are reported
+and judged as usual. Counter and rate thresholds are then judged against the
+survivors' totals, so a threshold on a total count will show the gap; the
+execution fails either way. Only when no backend returns anything is there
+nothing to report.
+
 ### failure classes
 
 These are the counters a failed request shows up in. The finer ones refine
@@ -584,7 +614,10 @@ Three things are not failure classes, and why:
   request.
 
 The report prints a backend's non-zero failure counters beside its request
-count, and lists them under `failures` in JSON.
+count, and lists them under `failures` in JSON. The JSON also carries, per
+execution, `results` -- each backend's `benchmark.*` counters and elapsed time
+-- `totals`, the same summed over the pool, and `backend_errors` for any
+backend that did not finish cleanly.
 
 ### percentiles resolve to the next histogram bucket
 

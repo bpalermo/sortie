@@ -5,12 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 	"net"
 	"sync"
 	"time"
-
-	"golang.org/x/sync/errgroup"
 
 	client "github.com/bpalermo/sortie/engine/api/client"
 	"github.com/bpalermo/sortie/internal/compile"
@@ -43,9 +42,22 @@ type ExecutionReport struct {
 	Outcomes []result.Outcome
 	Pass     bool
 
+	// BackendErrors are the backends that did not finish cleanly: one that
+	// could not be reached or went away mid-run, which has no results in Set,
+	// and one whose engine reported a failure but still returned what it had
+	// counted, which does. Either fails the execution; neither discards the
+	// other backends' results.
+	BackendErrors []BackendError
+
 	// Err is set when the execution itself failed, as opposed to failing a
-	// threshold.
+	// threshold: nothing could be dispatched, or no backend returned anything.
 	Err error
+}
+
+// BackendError is one backend's failure within an execution.
+type BackendError struct {
+	Addr string
+	Err  error
 }
 
 // Report is the verdict for a whole plan.
@@ -75,6 +87,10 @@ type Runner struct {
 	// with at least one address before giving up, lookups in flight included.
 	// Zero means resolveTimeout.
 	ResolveTimeout time.Duration
+
+	// DialTimeout bounds the wait for each backend to accept connections.
+	// Zero means nh.Dial's own default.
+	DialTimeout time.Duration
 
 	// Serializes the backends' progress callbacks into the Observer.
 	observerMu sync.Mutex
@@ -306,53 +322,98 @@ func (r *Runner) runExecution(
 		r.observerMu.Unlock()
 	}
 
-	addrs, outputs, err := r.dispatch(ctx, e, pool)
+	addrs, outputs, failed, err := r.dispatch(ctx, e, pool)
 	er.Elapsed = time.Since(er.Started)
 	if err != nil {
 		er.Err = err
 		return er
 	}
+	er.BackendErrors = failed
 
-	set, err := result.NewSet(addrs, outputs)
+	// Judge what came back. A backend that returned nothing is left out of
+	// the set and named in BackendErrors; the others' counters and latencies
+	// are still the record of what the run did.
+	var gotAddrs []string
+	var gotOutputs []*client.Output
+	for i, out := range outputs {
+		if out != nil {
+			gotAddrs = append(gotAddrs, addrs[i])
+			gotOutputs = append(gotOutputs, out)
+		}
+	}
+	if len(gotOutputs) == 0 {
+		errs := make([]error, 0, len(failed))
+		for _, f := range failed {
+			errs = append(errs, fmt.Errorf("backend %s: %w", f.Addr, f.Err))
+		}
+		er.Err = errors.Join(errs...)
+		if er.Err == nil {
+			er.Err = errors.New("no backend returned a result")
+		}
+		return er
+	}
+	set, err := result.NewSet(gotAddrs, gotOutputs)
 	if err != nil {
 		er.Err = err
 		return er
 	}
 	er.Set = set
 	er.Outcomes, er.Pass = set.Evaluate(thresholds)
+	// Thresholds that hold over the survivors do not make a run that lost a
+	// backend a pass: part of the load was never generated or never reported.
+	if len(failed) > 0 {
+		er.Pass = false
+	}
 	return er
 }
 
+// dispatch runs the execution on every backend of the pool and returns, in
+// the pool's order, each backend's output (nil when it returned none) and the
+// backends that failed. Backends are independent: one that cannot be reached,
+// or goes away halfway, does not stop the others -- with one engine per node,
+// a node rebooting mid-soak must not void the run on every other node. Only
+// the caller's context ends them all. The error return is for a plan that
+// could not be dispatched at all.
 func (r *Runner) dispatch(
 	ctx context.Context,
 	e compile.Execution,
 	pool *plan.Pool,
-) ([]string, []*client.Output, error) {
+) ([]string, []*client.Output, []BackendError, error) {
 	addrs, perBackend, err := compile.ForPool(e, pool)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	if pool.Distributor != "" {
 		conn, err := nh.Dial(ctx, pool.Distributor)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		defer conn.Close()
 		// ForPool returns exactly one options for this path: the distributor
-		// forwards it unchanged to every target.
-		return nh.Distribute(ctx, conn, perBackend[0], pool.Targets)
+		// forwards it unchanged to every target, and answers for all of them
+		// or for none.
+		targets, outputs, err := nh.Distribute(ctx, conn, perBackend[0], pool.Targets)
+		return targets, outputs, nil, err
 	}
 
 	outputs := make([]*client.Output, len(addrs))
-	var mu sync.Mutex
-	group, gctx := errgroup.WithContext(ctx)
-
+	errs := make([]error, len(addrs))
+	var wg sync.WaitGroup
 	for i, addr := range addrs {
-		group.Go(func() error {
-			conn, err := nh.Dial(gctx, addr)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var conn *grpc.ClientConn
+			var err error
+			if r.DialTimeout > 0 {
+				conn, err = nh.DialTimeout(ctx, addr, r.DialTimeout)
+			} else {
+				conn, err = nh.Dial(ctx, addr)
+			}
 			if err != nil {
-				return err
+				errs[i] = err
+				return
 			}
 			defer conn.Close()
 			var progress *nh.Progress
@@ -366,18 +427,24 @@ func (r *Runner) dispatch(
 					},
 				}
 			}
-			resp, err := nh.Execute(gctx, conn, perBackend[i], progress)
-			if err != nil {
-				return fmt.Errorf("backend %s: %w", addr, err)
+			resp, err := nh.Execute(ctx, conn, perBackend[i], progress)
+			errs[i] = err
+			// An engine that reports a failure still returns what it counted
+			// (a run stopped by a failure predicate the plan asked for, say).
+			// Keep it: the error says the run was not clean, the output says
+			// what it did.
+			if out := resp.GetOutput(); len(out.GetResults()) > 0 {
+				outputs[i] = out
 			}
-			mu.Lock()
-			outputs[i] = resp.GetOutput()
-			mu.Unlock()
-			return nil
-		})
+		}()
 	}
-	if err := group.Wait(); err != nil {
-		return nil, nil, err
+	wg.Wait()
+
+	var failed []BackendError
+	for i, err := range errs {
+		if err != nil {
+			failed = append(failed, BackendError{Addr: addrs[i], Err: err})
+		}
 	}
-	return addrs, outputs, nil
+	return addrs, outputs, failed, nil
 }

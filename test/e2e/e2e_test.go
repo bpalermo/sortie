@@ -563,6 +563,77 @@ func TestWeightedTargetsEachEmitTheirOwnLiveMetrics(t *testing.T) {
 	}
 }
 
+// A target that fails every request, on a real engine. The engine's own
+// default would end the execution within a second of the first failure and
+// return an error with nothing to judge; a soak needs the opposite: the run
+// goes the distance, counts the failures, and a threshold decides.
+const failingTargetPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+defaults:
+  pool: local
+  target: http://127.0.0.1:%d/
+  protocol: http1
+  concurrency: "1"
+  connections: 2
+scenarios:
+  - name: nothing-listening
+    executor:
+      type: constant-rate
+      rate: 20
+      duration: 4s
+      open_loop: true
+    thresholds:
+      - "counter:benchmark.pool_connection_failure > 0"
+      - "counter:benchmark.http_2xx == 0"
+`
+
+func TestARunGoesTheDistanceWhenItsTargetFails(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tmp := t.TempDir()
+
+	// A port that was free a moment ago: every connection is refused.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadPort := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+
+	servicePath := filepath.Join(tmp, "service_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath)
+	serviceAddr := waitForAddress(t, servicePath)
+	assertHealthy(t, ctx, serviceAddr)
+
+	planPath := filepath.Join(tmp, "plan.yaml")
+	if err := os.WriteFile(planPath, []byte(fmt.Sprintf(failingTargetPlanTemplate, serviceAddr, deadPort)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath)
+	out, err := cmd.CombinedOutput()
+	elapsed := time.Since(started)
+	t.Logf("sortie run:\n%s", out)
+	if err != nil {
+		t.Fatalf("sortie run failed: %v", err)
+	}
+	// Stopped at the first failure it would be over in about a second.
+	if elapsed < 3500*time.Millisecond {
+		t.Errorf("the run ended after %s; it was to last 4s whatever the target did", elapsed)
+	}
+	if strings.Contains(string(out), "error:") {
+		t.Errorf("the execution was reported as an error rather than judged")
+	}
+	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict: the thresholds were to hold")
+	}
+}
+
 // The test server with the upgrade allowed and the websocket-echo filter in
 // front of the test-server one: a WebSocket echo endpoint at any path.
 const wsTestServerConfig = `admin:
