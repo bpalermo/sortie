@@ -428,6 +428,23 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 		o.NoDefaultFailurePredicates = wrapperspb.Bool(true)
 	}
 
+	// Between requests a worker waits for the next one to be due instead of
+	// spinning for it. The engine's own default, SPIN, costs a core per worker
+	// at any rate, which is the wrong price for a load generator that mostly
+	// runs at tens or hundreds of requests per second beside the thing it is
+	// measuring: under a CPU limit it gets throttled and reports the
+	// throttling as the target's latency. Measured at 60 rps, WAIT costs about
+	// a fifteenth of SLEEP and a fortieth of SPIN and shows the same latencies.
+	// The price is at the end of a run: a worker woken late stops without the
+	// requests that came due while it slept, so a run can fall short of
+	// rate x duration (one request, in what has been measured), never exceed
+	// it. A plan that wants another
+	// strategy -- SPIN, for a very high rate on a machine with cores to spare
+	// -- names it in its template, and what it names is left alone.
+	if o.GetSequencerIdleStrategy() == nil {
+		o.SequencerIdleStrategy = &client.SequencerIdleStrategy{Value: client.SequencerIdleStrategy_WAIT}
+	}
+
 	// sortie owns the load shape and the identity of the execution.
 	o.RequestsPerSecond = wrapperspb.UInt32(rate)
 	o.OneofDurationOptions = &client.CommandLineOptions_Duration{Duration: durationpb.New(dur)}

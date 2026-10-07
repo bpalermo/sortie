@@ -915,3 +915,38 @@ scenarios:
 		t.Errorf("no result from the backend: %+v", e.Set)
 	}
 }
+
+// Between requests a worker waits rather than spins: sortie asks every
+// backend for the WAIT idle strategy, unless the plan's template names one.
+func TestRunAsksForTheWaitIdleStrategyUnlessThePlanNamesAnother(t *testing.T) {
+	fake := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		return okResponse(10, time.Millisecond, time.Second)
+	})
+	p := planFor(t, `
+scenarios:
+  - name: default
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+  - name: asks-to-spin
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+    nighthawk_template:
+      sequencer_idle_strategy: {value: SPIN}
+  - name: other-template-fields
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+    nighthawk_template:
+      burst_size: 5
+`, fake.addr)
+	if _, err := (&run.Runner{Plan: p}).Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := fake.received()
+	if len(got) != 3 {
+		t.Fatalf("backend saw %d requests, want 3", len(got))
+	}
+	for i, want := range []client.SequencerIdleStrategy_SequencerIdleStrategyOptions{
+		client.SequencerIdleStrategy_WAIT, client.SequencerIdleStrategy_SPIN, client.SequencerIdleStrategy_WAIT,
+	} {
+		if v := got[i].GetSequencerIdleStrategy().GetValue(); v != want {
+			t.Errorf("scenario %d: idle strategy = %v, want %v", i, v, want)
+		}
+	}
+}
