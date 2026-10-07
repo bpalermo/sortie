@@ -489,7 +489,17 @@ func (r *Runner) dispatch(
 	// Every backend gets the same budget, measured from here. A backend that
 	// has not answered when it runs out is cancelled and reported; the parent
 	// context, which is the caller's, is untouched and tells the two apart.
-	budget := r.backendDeadline(e)
+	// runBound is how long the run itself may take, and what a backend's own
+	// account of it is held to. budget is how long to wait for the answer: the
+	// same, plus however long the engine was told to wait before starting. A
+	// scheduled start reaches the engine through the template, and the engine
+	// sits idle until then -- time that is not part of the execution it
+	// reports, but is very much part of how long its answer takes.
+	runBound := r.backendDeadline(e)
+	budget := runBound
+	if start := e.Options.GetScheduledStart(); start != nil {
+		budget = addDuration(budget, time.Until(start.AsTime()))
+	}
 	parent := ctx
 	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
@@ -525,7 +535,7 @@ func (r *Runner) dispatch(
 		for _, b := range bad {
 			failed = append(failed, BackendError{Addr: b.Target, Err: silent(b.Err)})
 		}
-		return targets, outputs, append(failed, overdue(e, budget, targets, outputs, failed)...), nil
+		return targets, outputs, append(failed, overdue(e, runBound, targets, outputs, failed)...), nil
 	}
 
 	outputs := make([]*client.Output, len(addrs))
@@ -590,7 +600,7 @@ func (r *Runner) dispatch(
 			gotOutputs = append(gotOutputs, out)
 		}
 	}
-	return addrs, outputs, append(failed, overdue(e, budget, gotAddrs, gotOutputs, failed)...), nil
+	return addrs, outputs, append(failed, overdue(e, runBound, gotAddrs, gotOutputs, failed)...), nil
 }
 
 // overdue names the backends whose own account of the execution is far longer

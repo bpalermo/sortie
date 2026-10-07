@@ -880,3 +880,38 @@ scenarios:
 		t.Errorf("both backends' results should be in the report: %+v", e.Set)
 	}
 }
+
+// An execution scheduled to start later is waited for: the engine sits idle
+// until its start time, and that wait is not silence. Without it in the
+// deadline a run scheduled past the budget was cancelled before it began.
+func TestRunWaitsForAScheduledStart(t *testing.T) {
+	defer nh.SetCancelGraceForTest(100 * time.Millisecond)()
+
+	// The fake "starts" two seconds from now, as an engine told to would, and
+	// then answers: later than duration + timeout + grace allow on their own.
+	fake := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		time.Sleep(2 * time.Second)
+		return okResponse(10, time.Millisecond, 100*time.Millisecond)
+	})
+	start := time.Now().Add(2 * time.Second).UTC().Format(time.RFC3339Nano)
+	p := planFor(t, `
+scenarios:
+  - name: later
+    timeout: 100ms
+    executor: {type: constant-rate, rate: 10, duration: 100ms}
+    nighthawk_template:
+      scheduled_start: "`+start+`"
+`, fake.addr)
+
+	report, err := (&run.Runner{Plan: p, ResponseGrace: 500 * time.Millisecond}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	e := report.Executions[0]
+	if e.Err != nil || len(e.BackendErrors) != 0 {
+		t.Fatalf("a run waiting for its scheduled start was given up on: err=%v backend errors=%+v", e.Err, e.BackendErrors)
+	}
+	if e.Set == nil || len(e.Set.Backends) != 1 {
+		t.Errorf("no result from the backend: %+v", e.Set)
+	}
+}
