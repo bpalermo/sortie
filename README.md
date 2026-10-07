@@ -597,7 +597,9 @@ nothing to report.
 A backend can also be lost without a sound: a node that freezes or drops off
 the network sends nothing at all, and a connection can wait on it for ever.
 So every backend has a deadline, counted from dispatch: the execution's
-duration, plus the scenario's `timeout`, plus two minutes. One that has not
+duration, plus every wait the plan asks of the engine after it -- the
+`timeout`, and the drain window of a gRPC stream, WebSocket, TCP or UDP run --
+plus two minutes. One that has not
 answered by then is cancelled and reported as silent, and the run ends with
 the others' results instead of hanging with none. The same margin is applied
 to what a backend says of itself: a result that claims to have run far longer

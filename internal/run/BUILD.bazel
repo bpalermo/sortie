@@ -21,12 +21,14 @@ go_test(
     name = "run_test",
     size = "small",
     srcs = [
+        "deadline_internal_test.go",
         "fake_service_test.go",
         "run_test.go",
     ],
+    embed = [":run"],
     deps = [
-        ":run",
         "//engine/api/client:base_go_proto",
+        "//internal/compile",
         "//internal/nh",
         "//internal/plan",
         "@org_golang_google_genproto_googleapis_rpc//status",

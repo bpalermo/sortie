@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
+	"math"
 	"net"
 	"sync"
 	"time"
@@ -388,9 +389,20 @@ func (r *Runner) runExecution(
 // assembles the report, which together run to seconds. The rest is margin.
 const responseGrace = 2 * time.Minute
 
+// engineTimeout is the engine's default for the timeout option, which bounds
+// connecting and the final drain of an HTTP run, when the options name none.
+const engineTimeout = 30 * time.Second
+
 // backendDeadline is how long a backend has, from dispatch, to return an
-// execution's result: the planned duration, the scenario's own timeout (the
-// bound on connecting and on the final drain), and the grace.
+// execution's result: the planned duration, every wait the engine was asked
+// to perform after it, and the grace.
+//
+// Those waits are read from the compiled options, which is what the engine
+// actually receives: the timeout, whether the scenario set it or a template
+// did, and whichever mode's drain window applies -- a gRPC stream's, a
+// WebSocket's or a TCP run's wait for outstanding echoes, a UDP run's wait
+// before a datagram is lost. A plan may set any of them to minutes, and an
+// engine still draining as it was told to is not a silent one.
 //
 // It exists for the backend that goes SILENT. One that dies audibly -- a
 // deleted pod, a refused connection -- breaks the stream and is reported at
@@ -404,7 +416,36 @@ func (r *Runner) backendDeadline(e compile.Execution) time.Duration {
 	if grace <= 0 {
 		grace = responseGrace
 	}
-	return e.Duration + e.Scenario.GetTimeout().AsDuration() + grace
+	o := e.Options
+	timeout := engineTimeout
+	if o.GetTimeout() != nil {
+		timeout = o.GetTimeout().AsDuration()
+	}
+	budget := e.Duration
+	for _, wait := range []time.Duration{
+		timeout,
+		o.GetGrpcStream().GetDrainDuration().AsDuration(),
+		o.GetWebsocket().GetDrainDuration().AsDuration(),
+		o.GetTcp().GetDrainDuration().AsDuration(),
+		o.GetUdp().GetTimeout().AsDuration(),
+		grace,
+	} {
+		budget = addDuration(budget, wait)
+	}
+	return budget
+}
+
+// addDuration adds two non-negative durations without wrapping: a plan can
+// carry durations of years, and a sum that overflowed would be a deadline in
+// the past.
+func addDuration(a, b time.Duration) time.Duration {
+	if b <= 0 {
+		return a
+	}
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
 }
 
 // dispatch runs the execution on every backend of the pool and returns, in
