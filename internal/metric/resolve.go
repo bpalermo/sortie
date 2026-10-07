@@ -57,6 +57,10 @@ func Resolve(result *client.Result, sel Selector) (Value, error) {
 	return Value{}, fmt.Errorf("%s: unsupported selector kind", sel.Raw)
 }
 
+// percentileTolerance absorbs the rounding of a decimal percentile into a
+// fraction. Histogram buckets are far further apart than this.
+const percentileTolerance = 1e-9
+
 func resolvePercentile(st *client.Statistic, sel Selector) (Value, error) {
 	pcts := st.GetPercentiles()
 	if len(pcts) == 0 {
@@ -67,10 +71,12 @@ func resolvePercentile(st *client.Statistic, sel Selector) (Value, error) {
 		return sorted[i].GetPercentile() < sorted[j].GetPercentile()
 	})
 
+	// "p99.9" parsed and divided by 100 is one ULP above the 0.999 the engine
+	// writes, so an exact comparison would skip the very bucket asked for.
 	target := sel.Percentile / 100.0
 	var chosen *client.Percentile
 	for _, p := range sorted {
-		if p.GetPercentile() >= target {
+		if p.GetPercentile() >= target-percentileTolerance {
 			chosen = p
 			break
 		}
@@ -84,12 +90,18 @@ func resolvePercentile(st *client.Statistic, sel Selector) (Value, error) {
 			"%s: statistic %q carries no percentile at or above %.4g; the highest is %.4g",
 			sel.Raw, st.GetId(), target, highest)
 	}
+	// The value is a oneof like the aggregates below: with neither arm set the
+	// raw getter returns zero, which would pass for a measured zero.
 	v := Value{ActualPercentile: chosen.GetPercentile()}
-	if d := chosen.GetDuration(); d != nil {
-		v.Num = float64(d.AsDuration().Nanoseconds())
+	switch chosen.GetDurationType().(type) {
+	case *client.Percentile_Duration:
+		v.Num = float64(chosen.GetDuration().AsDuration().Nanoseconds())
 		v.IsDuration = true
-	} else {
+	case *client.Percentile_RawValue:
 		v.Num = chosen.GetRawValue()
+	default:
+		return Value{}, fmt.Errorf("%s: statistic %q carries no value at percentile %.4g",
+			sel.Raw, st.GetId(), chosen.GetPercentile())
 	}
 	return v, nil
 }

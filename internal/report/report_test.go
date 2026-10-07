@@ -419,8 +419,14 @@ func TestJSONCarriesPerBackendLatencyStatistics(t *testing.T) {
 				Percentiles: []*client.Percentile{
 					pc(0.5, 1700*time.Microsecond), pc(0.9, 2500*time.Microsecond),
 					// The histogram's own buckets: nothing at exactly 0.99.
-					pc(0.9902, 3300*time.Microsecond), pc(0.9995, 8*time.Millisecond), pc(1, 9*time.Millisecond),
+					pc(0.9902, 3300*time.Microsecond), pc(0.999, 8*time.Millisecond), pc(1, 9*time.Millisecond),
 				},
+			},
+			{
+				// A percentile the engine gave no value for.
+				Id:          "benchmark_http_client.request_to_response",
+				Count:       600,
+				Percentiles: []*client.Percentile{{Percentile: 0.5}, pc(1, 9*time.Millisecond)},
 			},
 			{
 				Id:       "benchmark_http_client.response_body_size",
@@ -468,6 +474,13 @@ func TestJSONCarriesPerBackendLatencyStatistics(t *testing.T) {
 	}
 	if _, has := lat["pstdev"]; has {
 		t.Errorf("pstdev was not reported by the engine and must be absent: %v", lat)
+	}
+	rtr := stats["benchmark_http_client.request_to_response"]
+	if _, has := rtr["p50"]; has {
+		t.Errorf("a percentile with no value must be absent, not zero: %v", rtr)
+	}
+	if rtr["p90"] != 9e6 {
+		t.Errorf("request_to_response p90 = %v, want 9e6 (the next bucket with a value is not skipped)", rtr["p90"])
 	}
 	size := stats["benchmark_http_client.response_body_size"]
 	if size["unit"] != "raw" || size["mean"] != float64(10) {
