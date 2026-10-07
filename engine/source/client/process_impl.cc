@@ -899,20 +899,29 @@ std::optional<nighthawk::client::Output> ProcessImpl::snapshot(SnapshotDetail de
     pending->outstanding = workers_.size();
     for (size_t i = 0; i < workers_.size(); i++) {
       std::weak_ptr<PendingSnapshot> weak = pending;
-      workers_[i]->snapshotStatistics(detail, [weak, i](std::vector<StatisticPtr> copies) {
-        // Gone when snapshot() has already returned: nobody to hand these to.
+      const auto still_wanted = [weak]() {
         const std::shared_ptr<PendingSnapshot> pending = weak.lock();
         if (pending == nullptr) {
-          return;
+          return false;
         }
         Envoy::Thread::LockGuard guard(pending->lock);
-        if (pending->abandoned) {
-          return;
-        }
-        pending->copies[i] = std::move(copies);
-        pending->outstanding--;
-        pending->answered.notifyOne();
-      });
+        return !pending->abandoned;
+      };
+      workers_[i]->snapshotStatistics(
+          detail, still_wanted, [weak, i](std::vector<StatisticPtr> copies) {
+            // Gone when snapshot() has already returned: nobody to hand these to.
+            const std::shared_ptr<PendingSnapshot> pending = weak.lock();
+            if (pending == nullptr) {
+              return;
+            }
+            Envoy::Thread::LockGuard guard(pending->lock);
+            if (pending->abandoned) {
+              return;
+            }
+            pending->copies[i] = std::move(copies);
+            pending->outstanding--;
+            pending->answered.notifyOne();
+          });
     }
   }
   // Bounded: progress keeps flowing with the counters and whatever statistics arrived.

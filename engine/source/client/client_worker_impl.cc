@@ -104,23 +104,30 @@ void ClientWorkerImpl::requestExecutionCancellation() {
       [this]() { worker_number_scope_->counterFromString("graceful_stop_requested").inc(); });
 }
 
-void ClientWorkerImpl::snapshotStatistics(SnapshotDetail detail,
+void ClientWorkerImpl::snapshotStatistics(SnapshotDetail detail, std::function<bool()> still_wanted,
                                           std::function<void(std::vector<StatisticPtr>)> callback) {
-  dispatcher_->post([this, detail, callback = std::move(callback)]() {
-    std::vector<StatisticPtr> copies;
-    for (const auto& statistic : statistics()) {
-      // A summary reads the live statistic in place. This runs on the thread that generates
-      // the load, every progress interval: a copy would allocate and fill a histogram per
-      // statistic here, megabytes each, which is what Full asks for and Summary must not do.
-      StatisticPtr copy =
-          detail == SnapshotDetail::Full
-              ? statistic.second->createNewInstanceOfSameType()->combine(*statistic.second)
-              : StreamingStatistic::summaryOf(*statistic.second);
-      copy->setId(statistic.first);
-      copies.push_back(std::move(copy));
-    }
-    callback(std::move(copies));
-  });
+  dispatcher_->post(
+      [this, detail, still_wanted = std::move(still_wanted), callback = std::move(callback)]() {
+        // Asked before copying, not after: this job may run long after the snapshot that posted
+        // it stopped waiting, and building the copies only to have them refused would allocate
+        // every histogram for nothing, after the caller has already released what it freed.
+        if (!still_wanted()) {
+          return;
+        }
+        std::vector<StatisticPtr> copies;
+        for (const auto& statistic : statistics()) {
+          // A summary reads the live statistic in place. This runs on the thread that generates
+          // the load, every progress interval: a copy would allocate and fill a histogram per
+          // statistic here, megabytes each, which is what Full asks for and Summary must not do.
+          StatisticPtr copy =
+              detail == SnapshotDetail::Full
+                  ? statistic.second->createNewInstanceOfSameType()->combine(*statistic.second)
+                  : StreamingStatistic::summaryOf(*statistic.second);
+          copy->setId(statistic.first);
+          copies.push_back(std::move(copy));
+        }
+        callback(std::move(copies));
+      });
 }
 
 StatisticPtrMap ClientWorkerImpl::statistics() const {

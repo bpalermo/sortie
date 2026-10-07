@@ -50,7 +50,7 @@ public:
 
   void requestExecutionCancellation() override;
 
-  void snapshotStatistics(SnapshotDetail detail,
+  void snapshotStatistics(SnapshotDetail detail, std::function<bool()> still_wanted,
                           std::function<void(std::vector<StatisticPtr>)> callback) override;
 
   /**

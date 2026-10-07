@@ -61,9 +61,12 @@ public:
    * alive until it has run or can no longer run.
    *
    * @param detail summaries of the statistics, or full copies of them.
+   * @param still_wanted asked on the worker's thread before anything is copied. When it
+   * says no -- the caller stopped waiting -- nothing is built and the callback is not called:
+   * a job that runs late must not allocate copies nobody will take, least of all Full ones.
    * @param callback receives one Statistic per statistic of the worker, on the worker's thread.
    */
-  virtual void snapshotStatistics(SnapshotDetail detail,
+  virtual void snapshotStatistics(SnapshotDetail detail, std::function<bool()> still_wanted,
                                   std::function<void(std::vector<StatisticPtr>)> callback) PURE;
 
   /**
