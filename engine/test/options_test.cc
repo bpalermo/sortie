@@ -607,6 +607,7 @@ TEST_F(OptionsImplTest, TcpUriSelectsTcpModeWithDefaultsRoundTripAndValidation) 
   EXPECT_EQ(1, options->tcpConnections());
   EXPECT_EQ(256, options->tcpMaxInflightPerConnection());
   EXPECT_TRUE(options->tcpExpectEcho());
+  EXPECT_EQ(0, options->tcpMaxMessagesPerConnection());
   CommandLineOptionsPtr cmd = options->toCommandLineOptions();
   ASSERT_TRUE(cmd->has_tcp());
   EXPECT_EQ(1, cmd->tcp().connections().value());
@@ -616,13 +617,17 @@ TEST_F(OptionsImplTest, TcpUriSelectsTcpModeWithDefaultsRoundTripAndValidation) 
 
   std::unique_ptr<OptionsImpl> explicit_values = TestUtility::createOptionsImpl(fmt::format(
       "{} --rps 100 --tcp-connections 4 --tcp-max-inflight-per-connection 8 --tcp-no-echo "
-      "tcps://127.0.0.1:9000",
+      "--tcp-max-messages-per-connection 600 tcps://127.0.0.1:9000",
       client_name_));
   EXPECT_TRUE(explicit_values->tcp());
   EXPECT_EQ(4, explicit_values->tcpConnections());
   EXPECT_EQ(8, explicit_values->tcpMaxInflightPerConnection());
   EXPECT_FALSE(explicit_values->tcpExpectEcho());
-  EXPECT_FALSE(explicit_values->toCommandLineOptions()->tcp().expect_echo().value());
+  EXPECT_EQ(600, explicit_values->tcpMaxMessagesPerConnection());
+  CommandLineOptionsPtr explicit_cmd = explicit_values->toCommandLineOptions();
+  EXPECT_FALSE(explicit_cmd->tcp().expect_echo().value());
+  EXPECT_EQ(600, explicit_cmd->tcp().max_messages_per_connection().value());
+  EXPECT_EQ(600, OptionsImpl(*explicit_cmd).tcpMaxMessagesPerConnection());
 
   // An http URI is not TCP mode, whatever the tcp flags say.
   EXPECT_FALSE(TestUtility::createOptionsImpl(

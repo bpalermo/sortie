@@ -138,7 +138,9 @@ README's Limitations section; keep the two in sync.
   (`TcpBenchmarkClientImpl`, a second `BenchmarkClient` on
   `ThreadLocalCluster::tcpConn`, so the cluster's transport socket applies);
   `Scenario.tcp` tunes it. Per-worker rate like HTTP; counters `benchmark.tcp_*`,
-  statistic `benchmark_tcp.message_latency`.
+  statistics `benchmark_tcp.message_latency` and `benchmark_tcp.connect_latency`.
+  A closed connection is reopened with a backoff; `tcp.max_messages_per_connection`
+  rotates connections make-before-break.
 - A `udp://` target selects the engine's UDP mode (`UdpBenchmarkClientImpl`:
   one connected datagram socket per worker, sequence-matched echoes, a sweep
   timer losing datagrams past `--udp-timeout`); `Scenario.udp` tunes it.

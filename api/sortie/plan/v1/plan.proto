@@ -262,6 +262,16 @@ message Tcp {
     (buf.validate.field).duration.gte = {seconds: 0},
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
   ];
+
+  // Messages after which a connection is replaced by a new one, so that a run
+  // keeps setting connections up (timed in benchmark_tcp.connect_latency).
+  // Once a connection has sent this many, its replacement is opened while it
+  // goes on sending and takes over when it has connected, so rotating neither
+  // drops nor delays a message; the old one is sent nothing more, is given up
+  // to the scenario's timeout for its outstanding echoes, and is closed.
+  // Counted in benchmark.tcp_connections_rotated. Default 0: a connection is
+  // only replaced when it closes.
+  optional uint32 max_messages_per_connection = 5;
 }
 
 // Udp is what a scenario can set about UDP load.
@@ -419,7 +429,9 @@ message Scenario {
   // engine's own requests_per_second is per worker -- and, with expect_echo,
   // times it against its echo,
   // matched in order (benchmark_tcp.message_latency); the message must not be
-  // empty then. method, headers, protocol, grpc and websocket are errors with
+  // empty then. A connection that closes is opened again after a short
+  // backoff (benchmark.tcp_reconnects); the messages that came due meanwhile
+  // are benchmark.tcp_unavailable. method, headers, protocol, grpc and websocket are errors with
   // a tcp target.
   Tcp tcp = 20;
 

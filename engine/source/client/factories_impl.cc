@@ -69,10 +69,10 @@ BenchmarkClientPtr BenchmarkClientFactoryImpl::create(
   if (options_.tcp()) {
     return std::make_unique<TcpBenchmarkClientImpl>(
         api, dispatcher, scope, std::make_unique<SinkableHdrStatistic>(scope, worker_id),
-        cluster_manager, cluster_name,
+        std::make_unique<SinkableHdrStatistic>(scope, worker_id), cluster_manager, cluster_name,
         rawMessageGenerator(request_generator, options_.requestBodySize()),
         options_.tcpConnections(), options_.tcpMaxInflightPerConnection(), options_.tcpExpectEcho(),
-        options_.streamDrainDuration(), options_.timeout());
+        options_.streamDrainDuration(), options_.timeout(), options_.tcpMaxMessagesPerConnection());
   }
   if (options_.websocket()) {
     const uint32_t concurrency = std::stoi(options_.concurrency());

@@ -14,7 +14,7 @@ the order the gaps get closed in.
 | gRPC unary | `grpc: {mode: unary}` + a serialized `body_file` | engine fork |
 | gRPC bidirectional streaming | `grpc: {mode: bidi-stream, streams, max_inflight_per_stream, drain_duration}`, `benchmark_stream.message_latency` | engine fork |
 | WebSocket (Envoy's upgrade path) | `websocket: {streams, max_inflight_per_stream, drain_duration, binary}`; the bidi-stream client's twin, same `benchmark.stream_*` counters and `benchmark_stream.message_latency` | #32 |
-| Raw TCP (`tcp_proxy`, TLS-terminating listeners) | `tcp://` / `tcps://` targets, `tcp: {connections, max_inflight_per_connection, expect_echo, drain_duration}`, `benchmark.tcp_*`, `benchmark_tcp.message_latency` | #33 |
+| Raw TCP (`tcp_proxy`, TLS-terminating listeners) | `tcp://` / `tcps://` targets, `tcp: {connections, max_inflight_per_connection, expect_echo, drain_duration, max_messages_per_connection}`, `benchmark.tcp_*`, `benchmark_tcp.message_latency`, `benchmark_tcp.connect_latency` | #33 |
 | UDP (`udp_proxy`) | `udp://` targets, `udp: {max_inflight, timeout}`, loss as `benchmark.udp_lost`, `benchmark_udp.message_latency` | #34 |
 | Request routing on headers, bodies | `headers`, `body`, `body_file`, `method` | sortie |
 | Rate shaping: constant, ramp, staircase; open and closed loop | `executor` | sortie |
@@ -94,6 +94,11 @@ new mode of the existing one:
   `benchmark.tcp_echo_mismatch`.
 - `nighthawk_test_server` already links Envoy's `echo` network filter, which
   is the test target.
+- Added since: a connection that closes is reopened with a backoff
+  (`benchmark.tcp_reconnects`), `tcp.max_messages_per_connection` rotates
+  connections make-before-break (`benchmark.tcp_connections_rotated`), and
+  every connect is timed (`benchmark_tcp.connect_latency`). See the README's
+  TCP section.
 
 Size: smaller than WebSocket -- no framing, no handshake -- but it touches the
 engine's factories, since today they assume HTTP.

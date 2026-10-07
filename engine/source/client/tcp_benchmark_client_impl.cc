@@ -1,5 +1,6 @@
 #include "engine/source/client/tcp_benchmark_client_impl.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace Nighthawk {
@@ -7,25 +8,39 @@ namespace Client {
 
 using namespace std::chrono_literals;
 
+namespace {
+
+// See the class comment for why these.
+constexpr std::chrono::milliseconds InitialBackoff = 10ms;
+constexpr std::chrono::milliseconds MaxBackoff = 1000ms;
+constexpr std::chrono::milliseconds BackoffStartsOverAfter = 2 * MaxBackoff;
+
+} // namespace
+
 TcpBenchmarkClientImpl::TcpBenchmarkClientImpl(
     Envoy::Api::Api& api, Envoy::Event::Dispatcher& dispatcher, Envoy::Stats::Scope& scope,
-    StatisticPtr&& message_latency_statistic, Envoy::Upstream::ClusterManagerPtr& cluster_manager,
-    absl::string_view cluster_name, RequestGenerator request_generator, uint32_t connections,
-    uint32_t max_inflight_per_connection, bool expect_echo, std::chrono::nanoseconds drain_duration,
-    std::chrono::seconds open_timeout)
+    StatisticPtr&& message_latency_statistic, StatisticPtr&& connect_latency_statistic,
+    Envoy::Upstream::ClusterManagerPtr& cluster_manager, absl::string_view cluster_name,
+    RequestGenerator request_generator, uint32_t connections, uint32_t max_inflight_per_connection,
+    bool expect_echo, std::chrono::nanoseconds drain_duration, std::chrono::seconds timeout,
+    uint32_t max_messages_per_connection)
     : api_(api), dispatcher_(dispatcher), scope_(scope.createScope("benchmark.")),
       message_latency_statistic_(std::move(message_latency_statistic)),
+      connect_latency_statistic_(std::move(connect_latency_statistic)),
       cluster_manager_(cluster_manager), cluster_name_(std::string(cluster_name)),
       request_generator_(std::move(request_generator)), connection_count_(connections),
       max_inflight_per_connection_(max_inflight_per_connection), expect_echo_(expect_echo),
-      drain_duration_(drain_duration), open_timeout_(open_timeout),
+      drain_duration_(drain_duration), timeout_(timeout),
+      max_messages_per_connection_(max_messages_per_connection),
       counters_({ALL_TCP_COUNTERS(POOL_COUNTER(*scope_))}) {
   RELEASE_ASSERT(connection_count_ > 0, "at least one connection is required");
   RELEASE_ASSERT(max_inflight_per_connection_ > 0, "max_inflight_per_connection must be positive");
   message_latency_statistic_->setId("benchmark_tcp.message_latency");
-  connections_.resize(connection_count_);
+  connect_latency_statistic_->setId("benchmark_tcp.connect_latency");
+  slots_.resize(connection_count_);
   for (uint32_t i = 0; i < connection_count_; i++) {
-    connections_[i].handler = std::make_shared<Handler>(*this, i);
+    slots_[i].backoff = InitialBackoff;
+    slots_[i].retry_timer = dispatcher_.createTimer([this, i]() { connectNext(i); });
   }
 }
 
@@ -40,94 +55,184 @@ void TcpBenchmarkClientImpl::prepare() {
       "an echoed TCP message cannot be empty: its bytes are what the echo is matched by");
 
   for (uint32_t i = 0; i < connection_count_; i++) {
-    open(i);
+    open(i, Role::Active, /*initial=*/true);
   }
-  if (pending_opens_ == 0) {
-    return;
-  }
-  waiting_for_ = WaitingFor::Opens;
-  wait_timer_ = dispatcher_.createTimer([this]() {
-    ENVOY_LOG(warn, "Timed out waiting for {} of {} TCP connections.", pending_opens_,
-              connection_count_);
-    dispatcher_.exit();
-  });
-  wait_timer_->enableTimer(open_timeout_);
-  dispatcher_.run(Envoy::Event::Dispatcher::RunType::RunUntilExit);
-  wait_timer_.reset();
-  waiting_for_ = WaitingFor::Nothing;
-  // A connection still connecting when the wait expired is a connect failure, and closed: the
-  // run starts with what it has, and nothing joins it partway through the measurement.
-  for (uint32_t i = 0; i < connection_count_; i++) {
-    if (connections_[i].state == State::Connecting) {
-      counters_.tcp_connect_failures_.inc();
-      closeConnection(i, Envoy::Network::ConnectionCloseType::NoFlush);
-    }
+  if (pending_opens_ > 0) {
+    // Every connect is bounded by the timeout, so this ends. It waits for each slot's first
+    // attempt only: the run starts with what it has then, and a slot that is still retrying
+    // joins when it connects.
+    waiting_for_ = WaitingFor::Opens;
+    dispatcher_.run(Envoy::Event::Dispatcher::RunType::RunUntilExit);
+    waiting_for_ = WaitingFor::Nothing;
   }
   ENVOY_LOG(info, "Opened {} of {} TCP connections.", openConnections(), connection_count_);
 }
 
-void TcpBenchmarkClientImpl::open(uint32_t index) {
-  Connection& connection = connections_[index];
+void TcpBenchmarkClientImpl::open(uint32_t slot_index, Role role, bool initial) {
+  Slot& slot = slots_[slot_index];
   const auto thread_local_cluster = cluster_manager_->getThreadLocalCluster(cluster_name_);
   Envoy::Upstream::Host::CreateConnectionData data =
       thread_local_cluster == nullptr
           ? Envoy::Upstream::Host::CreateConnectionData{nullptr, nullptr}
           : thread_local_cluster->tcpConn(nullptr);
   if (data.connection_ == nullptr) {
-    connection.state = State::Closed;
     counters_.tcp_connect_failures_.inc();
+    scheduleRetry(slot_index);
     return;
   }
-  connection.connection = std::move(data.connection_);
-  connection.connection->addConnectionCallbacks(*connection.handler);
-  connection.connection->addReadFilter(connection.handler);
-  connection.connection->noDelay(true);
-  pending_opens_++;
-  connection.connection->connect();
+  auto owned = std::make_unique<Link>();
+  Link* link = owned.get();
+  link->slot = slot_index;
+  link->initial = initial;
+  link->initial_pending = initial;
+  link->handler = std::make_shared<Handler>(*this, *link);
+  link->connection = std::move(data.connection_);
+  link->connection->addConnectionCallbacks(*link->handler);
+  link->connection->addReadFilter(link->handler);
+  link->connection->noDelay(true);
+  link->timer = dispatcher_.createTimer([this, link]() { onTimer(*link); });
+  link->timer->enableTimer(timeout_);
+  link->connect_started = api_.timeSource().monotonicTime();
+  if (initial) {
+    pending_opens_++;
+  }
+  // In its slot before it connects: the events connect() may raise look it up there.
+  (role == Role::Standby ? slot.standby : slot.active) = std::move(owned);
+  link->connection->connect();
 }
 
-void TcpBenchmarkClientImpl::onEvent(uint32_t index, Envoy::Network::ConnectionEvent event) {
-  Connection& connection = connections_[index];
+void TcpBenchmarkClientImpl::connectNext(uint32_t slot_index) {
+  Slot& slot = slots_[slot_index];
+  if (finished_) {
+    return;
+  }
+  if (slot.active == nullptr) {
+    // A replacement that is already connecting will do.
+    if (slot.standby == nullptr) {
+      open(slot_index, Role::Active, /*initial=*/false);
+    }
+  } else if (slot.standby == nullptr && slot.active->state == State::Open &&
+             rotationDue(*slot.active)) {
+    open(slot_index, Role::Standby, /*initial=*/false);
+  }
+}
+
+void TcpBenchmarkClientImpl::scheduleRetry(uint32_t slot_index) {
+  Slot& slot = slots_[slot_index];
+  if (finished_ || slot.retry_timer->enabled()) {
+    return;
+  }
+  const Envoy::MonotonicTime now = api_.timeSource().monotonicTime();
+  if (slot.last_retry.has_value() && now - slot.last_retry.value() >= BackoffStartsOverAfter) {
+    slot.backoff = InitialBackoff;
+  }
+  slot.last_retry = now;
+  slot.retry_timer->enableTimer(slot.backoff);
+  slot.backoff = std::min(slot.backoff * 2, MaxBackoff);
+}
+
+void TcpBenchmarkClientImpl::initialAttemptDone(Link& link) {
+  if (link.initial_pending) {
+    link.initial_pending = false;
+    pending_opens_--;
+  }
+}
+
+void TcpBenchmarkClientImpl::onEvent(Link& link, Envoy::Network::ConnectionEvent event) {
+  Slot& slot = slots_[link.slot];
   switch (event) {
   case Envoy::Network::ConnectionEvent::Connected:
-    if (connection.state == State::Connecting) {
-      connection.state = State::Open;
-      counters_.tcp_connections_opened_.inc();
-      pending_opens_--;
-      maybeExitWaitLoop();
+    if (link.state != State::Connecting) {
+      break;
     }
+    link.state = State::Open;
+    link.timer->disableTimer();
+    counters_.tcp_connections_opened_.inc();
+    connect_latency_statistic_->addValue(
+        (api_.timeSource().monotonicTime() - link.connect_started).count());
+    initialAttemptDone(link);
+    if (slot.standby.get() == &link) {
+      promote(slot);
+    } else if (!link.initial) {
+      counters_.tcp_reconnects_.inc();
+    }
+    maybeExitWaitLoop();
     break;
   case Envoy::Network::ConnectionEvent::ConnectedZeroRtt:
     break;
   case Envoy::Network::ConnectionEvent::RemoteClose:
-  case Envoy::Network::ConnectionEvent::LocalClose:
-    if (connection.state == State::Connecting) {
+  case Envoy::Network::ConnectionEvent::LocalClose: {
+    const State previous = link.state;
+    link.state = State::Closed;
+    link.timer->disableTimer();
+    initialAttemptDone(link);
+    if (previous == State::Connecting) {
       counters_.tcp_connect_failures_.inc();
-      pending_opens_--;
-    } else if (connection.state == State::Open) {
+    } else if (previous == State::Open || previous == State::Retiring) {
       counters_.tcp_connection_closed_.inc();
     }
-    if (connection.state != State::Closed) {
-      connection.state = State::Closed;
-      completeInflight(connection, /*success=*/false);
-      maybeExitWaitLoop();
+    completeInflight(link, /*success=*/false);
+    const Role role = release(link);
+    // A link closed by closeLink() arrives here Closed: whoever closed it decides what follows.
+    if (previous != State::Closed && (role == Role::Active || role == Role::Standby)) {
+      scheduleRetry(link.slot);
     }
+    maybeExitWaitLoop();
     break;
+  }
+  }
+}
+
+void TcpBenchmarkClientImpl::promote(Slot& slot) {
+  std::unique_ptr<Link> retired = std::move(slot.active);
+  slot.active = std::move(slot.standby);
+  if (retired == nullptr) {
+    // The connection it was to replace closed in the meantime.
+    counters_.tcp_reconnects_.inc();
+    return;
+  }
+  counters_.tcp_connections_rotated_.inc();
+  Link& link = *retired;
+  slot.retiring.push_back(std::move(retired));
+  if (link.state != State::Open) {
+    return;
+  }
+  link.state = State::Retiring;
+  if (link.inflight.empty()) {
+    closeLink(link, Envoy::Network::ConnectionCloseType::FlushWrite);
+  } else {
+    link.timer->enableTimer(timeout_);
+  }
+}
+
+void TcpBenchmarkClientImpl::onTimer(Link& link) {
+  if (link.state == State::Connecting) {
+    // A connect is an attempt until it completes; this one did not.
+    const uint32_t slot_index = link.slot;
+    counters_.tcp_connect_failures_.inc();
+    closeLink(link, Envoy::Network::ConnectionCloseType::NoFlush);
+    scheduleRetry(slot_index);
+    maybeExitWaitLoop();
+  } else if (link.state == State::Retiring) {
+    // The echoes it waited for did not come: lost.
+    closeLink(link, Envoy::Network::ConnectionCloseType::NoFlush);
   }
 }
 
 bool TcpBenchmarkClientImpl::tryStartRequest(CompletionCallback caller_completion_callback) {
   // Open-loop contract: this always "starts" the scheduled message. One that cannot be sent
   // right now is dropped (never queued or retried) and completes immediately.
-  Connection& connection = connections_[next_connection_];
-  next_connection_ = (next_connection_ + 1) % connection_count_;
+  const uint32_t slot_index = next_slot_;
+  next_slot_ = (next_slot_ + 1) % connection_count_;
+  Slot& slot = slots_[slot_index];
 
-  if (connection.state != State::Open) {
+  if (slot.active == nullptr || slot.active->state != State::Open) {
     counters_.tcp_unavailable_.inc();
     dispatcher_.post([cb = std::move(caller_completion_callback)]() { cb(true, false); });
     return true;
   }
-  if (connection.write_blocked || connection.inflight.size() >= max_inflight_per_connection_) {
+  Link& link = *slot.active;
+  if (link.write_blocked || link.inflight.size() >= max_inflight_per_connection_) {
     counters_.tcp_deferred_.inc();
     dispatcher_.post([cb = std::move(caller_completion_callback)]() { cb(true, false); });
     return true;
@@ -135,78 +240,110 @@ bool TcpBenchmarkClientImpl::tryStartRequest(CompletionCallback caller_completio
 
   Envoy::Buffer::OwnedImpl buffer(message_);
   if (expect_echo_) {
-    connection.inflight.push_back(
+    link.inflight.push_back(
         {api_.timeSource().monotonicTime(), std::move(caller_completion_callback)});
   }
-  connection.connection->write(buffer, /*end_stream=*/false);
+  link.connection->write(buffer, /*end_stream=*/false);
+  link.sent++;
   counters_.tcp_messages_sent_.inc();
   if (!expect_echo_) {
     dispatcher_.post([cb = std::move(caller_completion_callback)]() { cb(true, true); });
   }
+  // Last, and nothing of the link is used after it: a replacement that connects at once retires
+  // the link here.
+  if (rotationDue(link) && !slot.retry_timer->enabled()) {
+    connectNext(slot_index);
+  }
   return true;
 }
 
-void TcpBenchmarkClientImpl::onData(uint32_t index, Envoy::Buffer::Instance& data) {
-  Connection& connection = connections_[index];
-  if (!expect_echo_ || connection.state != State::Open) {
+void TcpBenchmarkClientImpl::onData(Link& link, Envoy::Buffer::Instance& data) {
+  if (!expect_echo_ || (link.state != State::Open && link.state != State::Retiring)) {
     data.drain(data.length());
     return;
   }
   // A stream of echoes, each exactly the message, possibly split or coalesced by TCP.
-  connection.received.move(data);
-  while (connection.received.length() >= message_.size()) {
+  link.received.move(data);
+  while (link.received.length() >= message_.size() &&
+         (link.state == State::Open || link.state == State::Retiring)) {
     std::string bytes(message_.size(), '\0');
-    connection.received.copyOut(0, message_.size(), bytes.data());
-    connection.received.drain(message_.size());
-    onEcho(connection, bytes);
+    link.received.copyOut(0, message_.size(), bytes.data());
+    link.received.drain(message_.size());
+    onEcho(link, bytes);
   }
 }
 
-void TcpBenchmarkClientImpl::onEcho(Connection& connection, const std::string& bytes) {
+void TcpBenchmarkClientImpl::onEcho(Link& link, const std::string& bytes) {
   // In order on one connection: the echo is for the oldest outstanding message.
-  if (bytes != message_ || connection.inflight.empty()) {
+  if (bytes != message_ || link.inflight.empty()) {
     counters_.tcp_echo_mismatch_.inc();
     return;
   }
-  InflightMessage message = std::move(connection.inflight.front());
-  connection.inflight.pop_front();
+  InflightMessage message = std::move(link.inflight.front());
+  link.inflight.pop_front();
   counters_.tcp_messages_received_.inc();
   if (measure_latencies_) {
     message_latency_statistic_->addValue(
         (api_.timeSource().monotonicTime() - message.sent_at).count());
   }
   message.completion_callback(true, true);
+  if (link.state == State::Retiring && link.inflight.empty()) {
+    // That was the last echo a rotated connection waited for.
+    closeLink(link, Envoy::Network::ConnectionCloseType::FlushWrite);
+  }
   maybeExitWaitLoop();
 }
 
-void TcpBenchmarkClientImpl::onWriteBlocked(uint32_t index, bool blocked) {
-  Connection& connection = connections_[index];
-  if (blocked && !connection.write_blocked) {
+void TcpBenchmarkClientImpl::onWriteBlocked(Link& link, bool blocked) {
+  if (blocked && !link.write_blocked) {
     counters_.tcp_write_blocked_.inc();
   }
-  connection.write_blocked = blocked;
+  link.write_blocked = blocked;
 }
 
-void TcpBenchmarkClientImpl::closeConnection(uint32_t index,
-                                             Envoy::Network::ConnectionCloseType type) {
-  Connection& connection = connections_[index];
-  if (connection.state == State::Closed || connection.connection == nullptr) {
-    connection.state = State::Closed;
+void TcpBenchmarkClientImpl::closeLink(Link& link, Envoy::Network::ConnectionCloseType type) {
+  if (link.state == State::Closed) {
     return;
   }
-  if (connection.state == State::Connecting) {
-    pending_opens_--;
-  }
-  connection.state = State::Closed;
-  completeInflight(connection, /*success=*/false);
-  // The close event that follows finds the connection already Closed and does nothing.
-  connection.connection->close(type);
+  link.state = State::Closed;
+  link.timer->disableTimer();
+  initialAttemptDone(link);
+  completeInflight(link, /*success=*/false);
+  // The close event, now or when the flush is done, finds the link Closed and lets go of it.
+  link.connection->close(type);
 }
 
-void TcpBenchmarkClientImpl::completeInflight(Connection& connection, bool success) {
-  while (!connection.inflight.empty()) {
-    InflightMessage message = std::move(connection.inflight.front());
-    connection.inflight.pop_front();
+TcpBenchmarkClientImpl::Role TcpBenchmarkClientImpl::release(Link& link) {
+  Slot& slot = slots_[link.slot];
+  std::unique_ptr<Link> owned;
+  Role role = Role::None;
+  if (slot.active.get() == &link) {
+    owned = std::move(slot.active);
+    role = Role::Active;
+  } else if (slot.standby.get() == &link) {
+    owned = std::move(slot.standby);
+    role = Role::Standby;
+  } else {
+    auto it =
+        std::find_if(slot.retiring.begin(), slot.retiring.end(),
+                     [&link](const std::unique_ptr<Link>& other) { return other.get() == &link; });
+    if (it != slot.retiring.end()) {
+      owned = std::move(*it);
+      slot.retiring.erase(it);
+      role = Role::Retiring;
+    }
+  }
+  if (owned != nullptr) {
+    // Not deleted here: this runs inside the callbacks of the connection the link owns.
+    dispatcher_.deferredDelete(std::move(owned));
+  }
+  return role;
+}
+
+void TcpBenchmarkClientImpl::completeInflight(Link& link, bool success) {
+  while (!link.inflight.empty()) {
+    InflightMessage message = std::move(link.inflight.front());
+    link.inflight.pop_front();
     if (!success) {
       counters_.tcp_inflight_lost_.inc();
     }
@@ -214,9 +351,25 @@ void TcpBenchmarkClientImpl::completeInflight(Connection& connection, bool succe
   }
 }
 
+std::vector<TcpBenchmarkClientImpl::Link*> TcpBenchmarkClientImpl::links() const {
+  std::vector<Link*> all;
+  for (const Slot& slot : slots_) {
+    if (slot.active != nullptr) {
+      all.push_back(slot.active.get());
+    }
+    if (slot.standby != nullptr) {
+      all.push_back(slot.standby.get());
+    }
+    for (const std::unique_ptr<Link>& link : slot.retiring) {
+      all.push_back(link.get());
+    }
+  }
+  return all;
+}
+
 bool TcpBenchmarkClientImpl::anyInflight() const {
-  for (const Connection& connection : connections_) {
-    if (!connection.inflight.empty()) {
+  for (const Link* link : links()) {
+    if (!link->inflight.empty()) {
       return true;
     }
   }
@@ -242,8 +395,8 @@ void TcpBenchmarkClientImpl::maybeExitWaitLoop() {
 
 uint32_t TcpBenchmarkClientImpl::openConnections() const {
   uint32_t open = 0;
-  for (const Connection& connection : connections_) {
-    if (connection.state == State::Open) {
+  for (const Slot& slot : slots_) {
+    if (slot.active != nullptr && slot.active->state == State::Open) {
       open++;
     }
   }
@@ -254,24 +407,34 @@ void TcpBenchmarkClientImpl::finish() {
   if (finished_) {
     return;
   }
+  // From here on nothing is opened: retries are off, and a connect still under way is dropped,
+  // which is not a failure of the target's.
   finished_ = true;
+  for (Slot& slot : slots_) {
+    slot.retry_timer->disableTimer();
+  }
+  for (Link* link : links()) {
+    if (link->state == State::Connecting) {
+      closeLink(*link, Envoy::Network::ConnectionCloseType::NoFlush);
+    }
+  }
   if (anyInflight()) {
     waiting_for_ = WaitingFor::Echoes;
-    wait_timer_ = dispatcher_.createTimer([this]() { dispatcher_.exit(); });
-    wait_timer_->enableTimer(std::chrono::ceil<std::chrono::milliseconds>(drain_duration_));
+    drain_timer_ = dispatcher_.createTimer([this]() { dispatcher_.exit(); });
+    drain_timer_->enableTimer(std::chrono::ceil<std::chrono::milliseconds>(drain_duration_));
     dispatcher_.run(Envoy::Event::Dispatcher::RunType::RunUntilExit);
-    wait_timer_.reset();
+    drain_timer_.reset();
     waiting_for_ = WaitingFor::Nothing;
   }
   // Echoes the drain window did not bring are lost; account for them before the worker
   // snapshots its counters, then close with what is written flushed.
   uint32_t incomplete = 0;
-  for (Connection& connection : connections_) {
-    if (!connection.inflight.empty()) {
+  for (Link* link : links()) {
+    if (!link->inflight.empty()) {
       incomplete++;
       counters_.tcp_drain_incomplete_.inc();
-      completeInflight(connection, /*success=*/false);
     }
+    closeLink(*link, Envoy::Network::ConnectionCloseType::FlushWrite);
   }
   if (incomplete > 0) {
     ENVOY_LOG(info,
@@ -280,31 +443,22 @@ void TcpBenchmarkClientImpl::finish() {
               incomplete,
               std::chrono::duration_cast<std::chrono::milliseconds>(drain_duration_).count());
   }
-  for (uint32_t i = 0; i < connection_count_; i++) {
-    closeConnection(i, Envoy::Network::ConnectionCloseType::FlushWrite);
-  }
 }
 
 void TcpBenchmarkClientImpl::terminate() {
   finish();
   setShouldMeasureLatencies(false);
-  // finish() closed with FlushWrite and marked the connections Closed; a flush that has not
-  // completed is cut short here, whatever the state says.
-  for (Connection& connection : connections_) {
-    if (connection.state == State::Connecting) {
-      pending_opens_--;
-    }
-    connection.state = State::Closed;
-    completeInflight(connection, /*success=*/false);
-    if (connection.connection != nullptr) {
-      connection.connection->close(Envoy::Network::ConnectionCloseType::NoFlush);
-    }
+  // finish() closed with FlushWrite; a flush that has not completed is cut short here. These
+  // are the links whose close event has not come, so Closed already, whatever the socket says.
+  for (Link* link : links()) {
+    link->connection->close(Envoy::Network::ConnectionCloseType::NoFlush);
   }
 }
 
 StatisticPtrMap TcpBenchmarkClientImpl::statistics() const {
   StatisticPtrMap statistics;
   statistics[message_latency_statistic_->id()] = message_latency_statistic_.get();
+  statistics[connect_latency_statistic_->id()] = connect_latency_statistic_.get();
   return statistics;
 }
 

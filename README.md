@@ -405,6 +405,7 @@ scenarios:
     tcp:
       connections: 4          # per worker; default 1
       expect_echo: true       # default; false for a sink that answers nothing
+      max_messages_per_connection: 600   # a new connection every 600 messages; default 0, never
     executor: {type: constant-rate, rate: 2000, duration: 60s}
     thresholds:
       - "benchmark_tcp.message_latency.p99 < 20ms"
@@ -425,12 +426,47 @@ message's worth of bytes that is not the message counts in
 nothing is read or timed: a write only queues bytes locally. `tls` works with
 `tcps://`.
 `method`, `headers`, `protocol`, `grpc` and `websocket` are errors with a tcp
-target. Counters: `benchmark.tcp_connections_opened`, `tcp_connect_failures`,
-`tcp_messages_sent`, `tcp_messages_received`, `tcp_deferred`,
-`tcp_unavailable`, `tcp_connection_closed`, `tcp_echo_mismatch`,
-`tcp_inflight_lost`, `tcp_drain_incomplete`, `tcp_write_blocked`. Envoy's
-`echo` network filter on `nighthawk_test_server` is the target the e2e test
-uses.
+target.
+
+**A connection that closes is reopened.** Whether the peer closed or reset it
+or a connect failed, the worker connects again after a backoff: 10 ms,
+doubling with each consecutive retry up to 1 s, and back to 10 ms once the
+connection has gone 2 s without needing one. So a target that is rolled is
+picked up again within a second of coming back, and a dead one is tried once a
+second per connection, not in a loop. The run stays open-loop meanwhile:
+messages that come due while a connection is away are dropped and counted in
+`benchmark.tcp_unavailable`, not held back and sent in a burst, and messages
+unanswered on the connection when it closed are `benchmark.tcp_inflight_lost`.
+`tcp_connection_closed` counts the closes, `tcp_reconnects` the times a
+connection came back.
+
+**`max_messages_per_connection`** makes a run keep setting connections up:
+once a connection has sent that many messages it is replaced. The replacement
+is opened while the old connection goes on sending, and takes over when it has
+connected, so rotating neither drops nor delays a message -- and a connection
+carries the configured number plus whatever came due while its replacement
+connected (none, or a few). The old connection is sent nothing more, is given
+up to the scenario's `timeout` for its outstanding echoes (still missing then:
+`tcp_inflight_lost`), and is closed. A replacement that fails to connect is
+retried with the same backoff while the old connection keeps serving. At 100
+messages a second per connection, `600` is a new connection every 6 s. There
+is no time-based lifetime; at a constant rate the message count is one.
+
+Every successful connect -- the first ones, reconnects, rotations -- is timed
+from `connect()` to connected, TLS handshake included, in
+`benchmark_tcp.connect_latency`. To read connection setup from the counters:
+`tcp_connections_opened` is every connect that succeeded (the workers' first
+connections + `tcp_reconnects` + `tcp_connections_rotated`) and
+`tcp_connect_failures` every attempt that did not (refused, reset, or not
+connected within `timeout`), so the success rate is opened / (opened +
+failures).
+
+Counters: `benchmark.tcp_connections_opened`, `tcp_connect_failures`,
+`tcp_reconnects`, `tcp_connections_rotated`, `tcp_messages_sent`,
+`tcp_messages_received`, `tcp_deferred`, `tcp_unavailable`,
+`tcp_connection_closed`, `tcp_echo_mismatch`, `tcp_inflight_lost`,
+`tcp_drain_incomplete`, `tcp_write_blocked`. Envoy's `echo` network filter on
+`nighthawk_test_server` is the target the e2e test uses.
 
 ## UDP
 
