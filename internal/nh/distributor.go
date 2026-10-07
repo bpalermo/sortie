@@ -2,6 +2,7 @@ package nh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,13 @@ import (
 	client "github.com/bpalermo/sortie/engine/api/client"
 	distributor "github.com/bpalermo/sortie/engine/api/distributor"
 )
+
+// TargetError is one target of a distributed execution that did not finish
+// cleanly: it reported an error, or the distributor returned nothing for it.
+type TargetError struct {
+	Target string
+	Err    error
+}
 
 // Distribute sends one execution request to a nighthawk_distributor, which
 // fans it out to targets and streams back one response per target.
@@ -39,11 +47,41 @@ func Distribute(
 	opts *client.CommandLineOptions,
 	targets []string,
 ) ([]string, []*client.Output, error) {
+	names, outputs, failed, err := DistributePartial(ctx, conn, opts, targets)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(failed) > 0 {
+		// All or nothing, for a caller that wants the whole pool or an error.
+		problems := make([]string, 0, len(failed))
+		for _, f := range failed {
+			problems = append(problems, fmt.Sprintf("backend %s: %v", f.Target, f.Err))
+		}
+		return nil, nil, fmt.Errorf("distributor did not run the pool as requested: %s", strings.Join(problems, "; "))
+	}
+	return names, outputs, nil
+}
+
+// DistributePartial is Distribute without the all-or-nothing rule: it returns
+// the targets that answered with an output, in the order they answered, and
+// names the ones that did not finish cleanly beside them. A target that
+// reported an error but still returned what it counted is in both. So one
+// target going away does not cost the run every other target's results.
+//
+// The error return is for what leaves nothing to trust: the request could not
+// be sent, or what came back does not match the pool -- a target answered
+// twice, or something answered that was never targeted.
+func DistributePartial(
+	ctx context.Context,
+	conn *grpc.ClientConn,
+	opts *client.CommandLineOptions,
+	targets []string,
+) ([]string, []*client.Output, []TargetError, error) {
 	addrs := make([]*corev3.Address, 0, len(targets))
 	for _, t := range targets {
 		addr, err := socketAddress(t)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		addrs = append(addrs, addr)
 	}
@@ -51,7 +89,7 @@ func Distribute(
 	stub := distributor.NewNighthawkDistributorClient(conn)
 	stream, err := stub.DistributedRequestStream(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("opening distributor stream: %w", err)
+		return nil, nil, nil, fmt.Errorf("opening distributor stream: %w", err)
 	}
 
 	req := &distributor.DistributedRequest{
@@ -63,48 +101,87 @@ func Distribute(
 		Services: addrs,
 	}
 	if err := stream.Send(req); err != nil {
-		return nil, nil, fmt.Errorf("sending distributed request: %w", err)
+		return nil, nil, nil, fmt.Errorf("sending distributed request: %w", err)
 	}
 	if err := stream.CloseSend(); err != nil {
-		return nil, nil, fmt.Errorf("closing send direction: %w", err)
+		return nil, nil, nil, fmt.Errorf("closing send direction: %w", err)
 	}
 
-	var names []string
+	// answered is every target heard from, with or without an output: it is
+	// what the pool is checked against. names and outputs are the ones with
+	// something to judge.
+	var answered, names []string
 	var outputs []*client.Output
+	var failed []TargetError
+	var streamErr error
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, nil, fmt.Errorf("awaiting distributed response: %w", err)
+			// The stream broke. What arrived before it did still counts; the
+			// targets not heard from are reported with this as the reason.
+			streamErr = fmt.Errorf("awaiting distributed response: %w", err)
+			break
 		}
 		for _, sr := range resp.GetServiceResponse() {
 			name := formatAddress(sr.GetService())
+			answered = append(answered, name)
 			if e := sr.GetError(); e != nil && e.GetCode() != 0 {
-				return nil, nil, fmt.Errorf("backend %s: %s", name, e.GetMessage())
+				failed = append(failed, TargetError{Target: name, Err: errors.New(e.GetMessage())})
+				continue
 			}
 			er := sr.GetExecutionResponse()
 			if detail := er.GetErrorDetail(); detail != nil && detail.GetCode() != 0 {
-				return nil, nil, fmt.Errorf("backend %s: %s", name, detail.GetMessage())
+				failed = append(failed, TargetError{Target: name, Err: errors.New(detail.GetMessage())})
+			}
+			out := er.GetOutput()
+			if len(out.GetResults()) == 0 {
+				// Answered, with nothing to judge. Without an error of its
+				// own that is still a failed target: silently leaving it out
+				// would let the others' thresholds pass a pool one member of
+				// which reported nothing.
+				if er.GetErrorDetail().GetCode() == 0 {
+					failed = append(failed, TargetError{Target: name, Err: errors.New("returned no results")})
+				}
+				continue
 			}
 			names = append(names, name)
-			outputs = append(outputs, er.GetOutput())
+			outputs = append(outputs, out)
 		}
 	}
 	// The pool that ran has to be the pool the plan described. Counting results
 	// is not enough: two results for one target and none for another would
 	// satisfy a count check while a backend never ran at all, and thresholds
-	// would then pass on a pool that was never fully exercised. Match identities.
-	if err := checkTargetsAnswered(targets, names); err != nil {
-		return nil, nil, err
+	// would then pass on a pool that was never fully exercised. Match
+	// identities. A target answering twice, or an untargeted one answering,
+	// means the answers cannot be attributed and is an error outright; a
+	// target that did not answer is a failed target.
+	missing, problems := matchTargets(targets, answered)
+	if len(problems) > 0 {
+		// Say the whole of what went wrong, the silent targets included.
+		if len(missing) > 0 {
+			problems = append([]string{"no result from " + strings.Join(missing, ", ")}, problems...)
+		}
+		return nil, nil, nil, fmt.Errorf("distributor did not run the pool as requested: %s",
+			strings.Join(problems, "; "))
 	}
-	return names, outputs, nil
+	for _, target := range missing {
+		reason := errors.New("no result")
+		if streamErr != nil {
+			reason = streamErr
+		}
+		failed = append(failed, TargetError{Target: target, Err: reason})
+	}
+	return names, outputs, failed, nil
 }
 
-// checkTargetsAnswered reports whether every requested target answered exactly
-// once, naming what was missing or duplicated rather than only the counts.
-func checkTargetsAnswered(targets, answered []string) error {
+// matchTargets compares the targets that answered with the ones requested. It
+// returns the requested targets that did not answer, and a description of
+// anything that makes the answers unattributable: a target that answered more
+// than once, or an answer from something that was not targeted.
+func matchTargets(targets, answered []string) (missing, problems []string) {
 	// Compare canonical forms: what comes back is whatever the distributor
 	// echoed, which need not be spelled the way the plan wrote it.
 	wanted := make(map[string]string, len(targets))
@@ -123,7 +200,7 @@ func checkTargetsAnswered(targets, answered []string) error {
 		seen[key]++
 	}
 
-	var missing, duplicated []string
+	var duplicated []string
 	for _, target := range targets {
 		switch seen[canonicalAddress(target)] {
 		case 1:
@@ -133,22 +210,13 @@ func checkTargetsAnswered(targets, answered []string) error {
 			duplicated = append(duplicated, fmt.Sprintf("%s (x%d)", target, seen[canonicalAddress(target)]))
 		}
 	}
-
-	var problems []string
-	if len(missing) > 0 {
-		problems = append(problems, "no result from "+strings.Join(missing, ", "))
-	}
 	if len(duplicated) > 0 {
 		problems = append(problems, "repeated results from "+strings.Join(duplicated, ", "))
 	}
 	if len(unexpected) > 0 {
 		problems = append(problems, "results from untargeted "+strings.Join(unexpected, ", "))
 	}
-	if len(problems) > 0 {
-		return fmt.Errorf("distributor did not run the pool as requested: %s",
-			strings.Join(problems, "; "))
-	}
-	return nil
+	return missing, problems
 }
 
 func socketAddress(hostPort string) (*corev3.Address, error) {

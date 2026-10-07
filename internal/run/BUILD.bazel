@@ -12,8 +12,8 @@ go_library(
         "//internal/plan",
         "//internal/result",
         "//internal/threshold",
+        "@org_golang_google_grpc//:grpc",
         "@org_golang_google_protobuf//proto",
-        "@org_golang_x_sync//errgroup",
     ],
 )
 

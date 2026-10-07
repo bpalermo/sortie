@@ -3,6 +3,7 @@ package report_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -325,5 +326,74 @@ func TestReportsSayNothingAboutDnsForAServicesPool(t *testing.T) {
 	}
 	if strings.Contains(text.String(), "resolved to") || strings.Contains(text.String(), "per backend") {
 		t.Errorf("a services pool has nothing to resolve:\n%s", text.String())
+	}
+}
+
+// The JSON carries what each backend counted and the pool's totals, and
+// names a backend that did not finish cleanly; the text report names it too.
+func TestReportsCarryPerBackendTotalsAndBackendErrors(t *testing.T) {
+	backend := func(addr string, ok uint64) result.Backend {
+		global := &client.Result{
+			Name:              "global",
+			ExecutionDuration: durationpb.New(10 * time.Second),
+			Counters: []*client.Counter{
+				{Name: "benchmark.http_2xx", Value: ok},
+				{Name: "upstream_cx_total", Value: 2},
+			},
+		}
+		return result.Backend{Addr: addr, Output: &client.Output{Results: []*client.Result{global}}, Global: global}
+	}
+	set := &result.Set{Backends: []result.Backend{backend("10.0.0.1:8443", 600), backend("10.0.0.2:8443", 599)}}
+	r := &run.Report{Executions: []run.ExecutionReport{{
+		Label: "soak", Pool: "nodes", Rate: 60, Duration: 10 * time.Second, Set: set,
+		Backends:      []string{"10.0.0.1:8443", "10.0.0.2:8443", "10.0.0.3:8443"},
+		BackendErrors: []run.BackendError{{Addr: "10.0.0.3:8443", Err: errors.New("connection refused")}},
+	}}}
+
+	var text bytes.Buffer
+	if err := report.Text(&text, r); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), "10.0.0.3:8443: error: connection refused") {
+		t.Errorf("the text report does not name the lost backend:\n%s", text.String())
+	}
+	if !strings.Contains(text.String(), "10.0.0.1:8443: 600 requests in 10s") {
+		t.Errorf("the text report lost a surviving backend's line:\n%s", text.String())
+	}
+
+	var buf bytes.Buffer
+	if err := report.JSON(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Executions []struct {
+			Totals  map[string]uint64 `json:"totals"`
+			Results []struct {
+				Backend   string            `json:"backend"`
+				ElapsedMS int64             `json:"elapsed_ms"`
+				Counters  map[string]uint64 `json:"counters"`
+			} `json:"results"`
+			BackendErrors []struct {
+				Backend string `json:"backend"`
+				Error   string `json:"error"`
+			} `json:"backend_errors"`
+		} `json:"executions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("%v\n%s", err, buf.String())
+	}
+	e := got.Executions[0]
+	if e.Totals["benchmark.http_2xx"] != 1199 {
+		t.Errorf("totals = %v, want http_2xx 1199", e.Totals)
+	}
+	if _, ok := e.Totals["upstream_cx_total"]; ok {
+		t.Errorf("totals carry a counter that is not the engine's own: %v", e.Totals)
+	}
+	if len(e.Results) != 2 || e.Results[0].Backend != "10.0.0.1:8443" || e.Results[0].Counters["benchmark.http_2xx"] != 600 ||
+		e.Results[1].Counters["benchmark.http_2xx"] != 599 || e.Results[0].ElapsedMS != 10000 {
+		t.Errorf("results = %+v", e.Results)
+	}
+	if len(e.BackendErrors) != 1 || e.BackendErrors[0].Backend != "10.0.0.3:8443" || e.BackendErrors[0].Error != "connection refused" {
+		t.Errorf("backend_errors = %+v", e.BackendErrors)
 	}
 }

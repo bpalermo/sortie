@@ -106,6 +106,13 @@ func execution(w io.Writer, e run.ExecutionReport) error {
 		return nil
 	}
 
+	// Backends that did not finish cleanly, before the results: the counts
+	// below are then read knowing which backends they do not include, or
+	// which of them stopped early.
+	for _, be := range e.BackendErrors {
+		fmt.Fprintf(w, "       %s: error: %v\n", be.Addr, be.Err)
+	}
+
 	for _, b := range e.Set.Backends {
 		counters := map[string]uint64{}
 		for _, c := range b.Global.GetCounters() {
@@ -205,6 +212,38 @@ type jsonExecution struct {
 	// Failures is present only when some backend reported a non-zero failure
 	// class, so a clean run's JSON is unchanged.
 	Failures []jsonBackendFailures `json:"failures,omitempty"`
+	// Totals are the pool's counters, summed over the backends that returned
+	// results -- what counter and rate thresholds are judged against -- and
+	// Results are the same per backend. Only the engine's own benchmark.*
+	// counters: Envoy's cluster counters are in the engine's output, not here.
+	Totals  map[string]uint64   `json:"totals,omitempty"`
+	Results []jsonBackendResult `json:"results,omitempty"`
+	// BackendErrors are the backends that did not finish cleanly. One listed
+	// here and absent from Results returned nothing.
+	BackendErrors []jsonBackendError `json:"backend_errors,omitempty"`
+}
+
+// jsonBackendResult is what one backend counted.
+type jsonBackendResult struct {
+	Backend   string            `json:"backend"`
+	ElapsedMS int64             `json:"elapsed_ms"`
+	Counters  map[string]uint64 `json:"counters"`
+}
+
+type jsonBackendError struct {
+	Backend string `json:"backend"`
+	Error   string `json:"error"`
+}
+
+// benchmarkCounters are a result's benchmark.* counters by name.
+func benchmarkCounters(counters []*client.Counter) map[string]uint64 {
+	out := map[string]uint64{}
+	for _, c := range counters {
+		if strings.HasPrefix(c.GetName(), "benchmark.") {
+			out[c.GetName()] = c.GetValue()
+		}
+	}
+	return out
 }
 
 // jsonBackendFailures is one backend's non-zero failure counters, keyed by
@@ -241,7 +280,11 @@ func JSON(w io.Writer, r *run.Report) error {
 		if e.Err != nil {
 			je.Error = e.Err.Error()
 		}
+		for _, be := range e.BackendErrors {
+			je.BackendErrors = append(je.BackendErrors, jsonBackendError{Backend: be.Addr, Error: be.Err.Error()})
+		}
 		if e.Set != nil {
+			je.Totals = benchmarkCounters(e.Set.Totals().GetCounters())
 			// The dispatch list is normally there; only a report assembled
 			// without it, as some tests do, takes its backends from the results.
 			fromSet := je.Backends == nil
@@ -249,6 +292,11 @@ func JSON(w io.Writer, r *run.Report) error {
 				if fromSet {
 					je.Backends = append(je.Backends, b.Addr)
 				}
+				je.Results = append(je.Results, jsonBackendResult{
+					Backend:   b.Addr,
+					ElapsedMS: b.Global.GetExecutionDuration().AsDuration().Milliseconds(),
+					Counters:  benchmarkCounters(b.Global.GetCounters()),
+				})
 				if fs := failures(b.Global.GetCounters()); len(fs) > 0 {
 					bf := jsonBackendFailures{Backend: b.Addr, Counters: map[string]uint64{}}
 					for _, c := range fs {

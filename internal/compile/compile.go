@@ -379,6 +379,18 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 		o = proto.Clone(tmpl).(*client.CommandLineOptions)
 	}
 
+	// A run ends when its duration is up, not at its first failed request.
+	// The engine's own defaults stop an execution the moment it counts one
+	// 4xx, 5xx, failed connection or reset -- right for a benchmark that is
+	// meaningless once the target misbehaves, wrong here: a threshold is what
+	// judges failures, and it can only judge a run that went the distance and
+	// kept counting. A plan that does want an early stop says so in its
+	// template (failure_predicates, or no_default_failure_predicates: false),
+	// and what it says is left alone.
+	if len(o.GetFailurePredicates()) == 0 && o.GetNoDefaultFailurePredicates() == nil {
+		o.NoDefaultFailurePredicates = wrapperspb.Bool(true)
+	}
+
 	// sortie owns the load shape and the identity of the execution.
 	o.RequestsPerSecond = wrapperspb.UInt32(rate)
 	o.OneofDurationOptions = &client.CommandLineOptions_Duration{Duration: durationpb.New(dur)}
