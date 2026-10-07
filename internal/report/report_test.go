@@ -333,6 +333,49 @@ func TestReportsSayNothingAboutDnsForAServicesPool(t *testing.T) {
 
 // The JSON carries what each backend counted and the pool's totals, and
 // names a backend that did not finish cleanly; the text report names it too.
+// A TCP run against a target that is not an exact echo says so under the
+// backend's line, whatever thresholds the plan has; a clean run says nothing.
+func TestTextWarnsOfTcpEchoMismatches(t *testing.T) {
+	text := func(sent, mismatches uint64) string {
+		// As the engine reports them: a counter at zero is left out.
+		var counters []*client.Counter
+		if sent > 0 {
+			counters = append(counters, &client.Counter{Name: "benchmark.tcp_messages_sent", Value: sent})
+		}
+		if mismatches > 0 {
+			counters = append(counters, &client.Counter{Name: "benchmark.tcp_echo_mismatch", Value: mismatches})
+		}
+		global := &client.Result{
+			Name:              "global",
+			ExecutionDuration: durationpb.New(10 * time.Second),
+			Counters:          counters,
+		}
+		set := &result.Set{Backends: []result.Backend{{Addr: "10.0.0.1:8443", Output: &client.Output{Results: []*client.Result{global}}, Global: global}}}
+		r := &run.Report{Executions: []run.ExecutionReport{{
+			Label: "raw", Pool: "nodes", Rate: 60, Duration: 10 * time.Second, Set: set,
+			Backends: []string{"10.0.0.1:8443"},
+		}}}
+		var out bytes.Buffer
+		if err := report.Text(&out, r); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if got := text(40, 9); !strings.Contains(got, "10.0.0.1:8443: 40 messages sent, 0 echoed in 10s") ||
+		!strings.Contains(got, "10.0.0.1:8443: warning: 9 connection(s) closed on a reply that was not the message") {
+		t.Errorf("the text report does not warn of the mismatches:\n%s", got)
+	}
+	if got := text(40, 0); strings.Contains(got, "warning") {
+		t.Errorf("a run without mismatches is warned about:\n%s", got)
+	}
+	// A peer that speaks first: closed on its banner before anything is sent,
+	// every time, so there is no sent counter to know the run as TCP by.
+	if got := text(0, 9); !strings.Contains(got, "10.0.0.1:8443: 0 messages sent, 0 echoed in 10s") ||
+		!strings.Contains(got, "10.0.0.1:8443: warning: 9 connection(s) closed on a reply that was not the message") {
+		t.Errorf("the text report does not warn of mismatches when nothing was sent:\n%s", got)
+	}
+}
+
 func TestReportsCarryPerBackendTotalsAndBackendErrors(t *testing.T) {
 	backend := func(addr string, ok uint64) result.Backend {
 		global := &client.Result{

@@ -90,6 +90,11 @@ public:
    */
   virtual bool tcpExpectEcho() const PURE;
   /**
+   * @return uint32_t messages after which a TCP connection is replaced by a new one; 0 never
+   * replaces it.
+   */
+  virtual uint32_t tcpMaxMessagesPerConnection() const PURE;
+  /**
    * @return bool whether UDP load generation is selected (a udp:// URI).
    */
   virtual bool udp() const PURE;

@@ -763,12 +763,15 @@ func TestTcpTargetOptions(t *testing.T) {
 	s.Target = "tcp://127.0.0.1:9000"
 	s.Concurrency = "2"
 	s.Body = "ping"
-	s.Tcp = &plan.Tcp{Connections: proto.Uint32(3), ExpectEcho: proto.Bool(false)}
+	s.Tcp = &plan.Tcp{Connections: proto.Uint32(3), ExpectEcho: proto.Bool(false), MaxMessagesPerConnection: proto.Uint32(600)}
 	execs, err := Expand(s)
 	if err != nil {
 		t.Fatal(err)
 	}
 	o := execs[0].Options
+	if got := o.GetTcp().GetMaxMessagesPerConnection().GetValue(); got != 600 {
+		t.Errorf("tcp.max_messages_per_connection = %d, want 600", got)
+	}
 	if o.GetUri().GetValue() != "tcp://127.0.0.1:9000" {
 		t.Errorf("uri = %q", o.GetUri().GetValue())
 	}

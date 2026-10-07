@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -1155,6 +1156,378 @@ func TestTcpPlanAgainstTheEngine(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
 		t.Errorf("sortie output lacks the PASS verdict")
+	}
+}
+
+// tcpEcho is a TCP echo server the test can take away: the test server's echo
+// filter never closes a connection, and what a run does when its connections
+// go is the point of the tests below.
+type tcpEcho struct {
+	t    *testing.T
+	addr string
+
+	mu       sync.Mutex
+	listener net.Listener
+	conns    map[net.Conn]struct{}
+	accepted int
+	echoed   int
+	// Called, once, when this many bytes have been echoed.
+	trigger   int
+	onTrigger func()
+	// Written before everything it sends back: with one, not an echo. Set
+	// before the server serves and never after: connections read it unlocked.
+	prefix []byte
+}
+
+// startTcpEcho starts the server; a prefix makes it not an echo.
+func startTcpEcho(t *testing.T, prefix string) *tcpEcho {
+	t.Helper()
+	e := &tcpEcho{t: t, conns: map[net.Conn]struct{}{}, prefix: []byte(prefix)}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.addr = l.Addr().String()
+	e.serve(l)
+	t.Cleanup(func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.listener != nil {
+			e.listener.Close()
+		}
+		for c := range e.conns {
+			c.Close()
+		}
+	})
+	return e
+}
+
+func (e *tcpEcho) port() int {
+	_, port, _ := net.SplitHostPort(e.addr)
+	n := 0
+	fmt.Sscanf(port, "%d", &n)
+	return n
+}
+
+func (e *tcpEcho) serve(l net.Listener) {
+	e.mu.Lock()
+	e.listener = l
+	e.mu.Unlock()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			e.mu.Lock()
+			e.conns[c] = struct{}{}
+			e.accepted++
+			e.mu.Unlock()
+			go e.echo(c)
+		}
+	}()
+}
+
+func (e *tcpEcho) echo(c net.Conn) {
+	defer func() {
+		c.Close()
+		e.mu.Lock()
+		delete(e.conns, c)
+		e.mu.Unlock()
+	}()
+	buf := make([]byte, 4096)
+	for {
+		n, err := c.Read(buf)
+		if n > 0 {
+			if _, werr := c.Write(append(append([]byte{}, e.prefix...), buf[:n]...)); werr != nil {
+				return
+			}
+			e.mu.Lock()
+			before := e.echoed
+			e.echoed += n
+			var fire func()
+			if e.onTrigger != nil && before < e.trigger && e.echoed >= e.trigger {
+				fire, e.onTrigger = e.onTrigger, nil
+			}
+			e.mu.Unlock()
+			if fire != nil {
+				go fire()
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// outage is what a rollout of the target looks like from outside: the
+// listener goes and every connection is closed, connects are refused for a
+// while, and then the same address answers again.
+func (e *tcpEcho) outage(d time.Duration) {
+	e.mu.Lock()
+	e.listener.Close()
+	e.listener = nil
+	for c := range e.conns {
+		c.Close()
+	}
+	e.mu.Unlock()
+	time.Sleep(d)
+	l, err := net.Listen("tcp", e.addr)
+	if err != nil {
+		e.t.Errorf("listen again on %s: %v", e.addr, err)
+		return
+	}
+	e.serve(l)
+}
+
+func (e *tcpEcho) acceptedConnections() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.accepted
+}
+
+// syncBuffer collects a process's output while it is still writing it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// runTcpPlan runs a plan against a target port through a fresh
+// nighthawk_service and returns what sortie printed.
+func runTcpPlan(t *testing.T, planTemplate string, targetPort int) string {
+	t.Helper()
+	out, _ := runTcpPlanWithServiceLog(t, planTemplate, targetPort)
+	return out
+}
+
+// runTcpPlanWithServiceLog also returns what the engine logged.
+func runTcpPlanWithServiceLog(t *testing.T, planTemplate string, targetPort int) (string, string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tmp := t.TempDir()
+	servicePath := filepath.Join(tmp, "service_address")
+	serviceLog := &syncBuffer{}
+	service := exec.CommandContext(ctx, rlocation(t, "_main/engine/nighthawk_service"),
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath)
+	service.Stdout = io.MultiWriter(testWriter{t, "nighthawk_service"}, serviceLog)
+	service.Stderr = service.Stdout
+	if err := service.Start(); err != nil {
+		t.Fatalf("start nighthawk_service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Process.Kill(); _ = service.Wait() })
+	serviceAddr := waitForAddress(t, servicePath)
+	assertHealthy(t, ctx, serviceAddr)
+
+	planPath := filepath.Join(tmp, "plan.yaml")
+	if err := os.WriteFile(planPath, []byte(fmt.Sprintf(planTemplate, serviceAddr, targetPort)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath)
+	out, err := cmd.CombinedOutput()
+	t.Logf("sortie run:\n%s", out)
+	if err != nil {
+		t.Fatalf("sortie run failed: %v", err)
+	}
+	return string(out), serviceLog.String()
+}
+
+// One worker, two connections, 200 messages a second for 6 s: 1200 messages.
+// After a second the target goes away for a second. Both connections are
+// closed, connects are refused while it is away and back off (10 ms, doubling:
+// the attempt that finds it back is the one 1.27 s after the close), and both
+// are reopened -- so about a quarter of a second more than the outage's worth
+// of messages is unavailable, and the rest of the run is delivered.
+const tcpReconnectPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+defaults:
+  pool: local
+  target: tcp://127.0.0.1:%d
+  concurrency: "1"
+  body: "ping\\n"
+  tcp:
+    connections: 2
+scenarios:
+  - name: tcp
+    executor:
+      type: constant-rate
+      rate: 200
+      duration: 6s
+    thresholds:
+      - "counter:benchmark.tcp_reconnects == 2"
+      - "counter:benchmark.tcp_connection_closed == 2"
+      - "counter:benchmark.tcp_connections_opened == 4"
+      # Six refused attempts a connection when the timers are on time and the
+      # target is back within the second; the ranges allow for a machine
+      # where neither is quite so.
+      - "counter:benchmark.tcp_connect_failures >= 4"
+      - "counter:benchmark.tcp_connect_failures <= 16"
+      - "counter:benchmark.tcp_unavailable >= 180"
+      - "counter:benchmark.tcp_unavailable <= 520"
+      - "counter:benchmark.tcp_messages_sent >= 650"
+      - "counter:benchmark.tcp_messages_sent <= 1020"
+      - "counter:benchmark.tcp_messages_received >= 640"
+      # What was on its way when the connections were closed, and no more.
+      - "counter:benchmark.tcp_inflight_lost <= 6"
+      - "counter:benchmark.tcp_echo_mismatch == 0"
+      - "counter:benchmark.tcp_deferred == 0"
+      - "benchmark_tcp.message_latency.p99 < 500ms"
+`
+
+func TestTcpConnectionsAreReopenedWhenTheTargetComesBack(t *testing.T) {
+	echo := startTcpEcho(t, "")
+	// 200 messages echoed: a second into the run. The message is the plan's
+	// body as YAML reads it: ping, a backslash and an n.
+	done := make(chan struct{})
+	echo.mu.Lock()
+	echo.trigger = 200 * len(`ping\n`)
+	echo.onTrigger = func() {
+		echo.outage(time.Second)
+		close(done)
+	}
+	echo.mu.Unlock()
+
+	out := runTcpPlan(t, tcpReconnectPlanTemplate, echo.port())
+	select {
+	case <-done:
+	default:
+		t.Fatal("the run ended before the target was taken away")
+	}
+	if !strings.Contains(out, "PASS  1/1 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict")
+	}
+	if got := echo.acceptedConnections(); got != 4 {
+		t.Errorf("the target accepted %d connections, want 4: two, and two again", got)
+	}
+}
+
+// One worker, two connections, 200 messages a second for 5 s, and a
+// connection replaced after 100 messages: one new connection a second on each
+// of the two. Rotating costs nothing: nothing unavailable, nothing lost, no
+// failed connect, and the run's messages all sent and echoed. The last
+// rotation falls on the run's last message, which the WAIT idle strategy may
+// not send, so the count is a range.
+const tcpRotationPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+defaults:
+  pool: local
+  target: tcp://127.0.0.1:%d
+  concurrency: "1"
+  body: "ping\\n"
+  tcp:
+    connections: 2
+    max_messages_per_connection: 100
+scenarios:
+  - name: tcp
+    executor:
+      type: constant-rate
+      rate: 200
+      duration: 5s
+    thresholds:
+      - "counter:benchmark.tcp_connections_rotated >= 8"
+      - "counter:benchmark.tcp_connections_rotated <= 10"
+      - "counter:benchmark.tcp_connections_opened >= 10"
+      - "counter:benchmark.tcp_connections_opened <= 12"
+      - "counter:benchmark.tcp_reconnects == 0"
+      - "counter:benchmark.tcp_connect_failures == 0"
+      - "counter:benchmark.tcp_connection_closed == 0"
+      - "counter:benchmark.tcp_unavailable == 0"
+      - "counter:benchmark.tcp_inflight_lost == 0"
+      - "counter:benchmark.tcp_deferred == 0"
+      - "counter:benchmark.tcp_echo_mismatch == 0"
+      - "counter:benchmark.tcp_messages_sent >= 950"
+      - "counter:benchmark.tcp_messages_sent <= 1000"
+      - "counter:benchmark.tcp_messages_received >= 940"
+      - "benchmark_tcp.message_latency.p99 < 500ms"
+      - "benchmark_tcp.connect_latency.p99 < 500ms"
+`
+
+func TestTcpConnectionsAreRotatedWithoutLosingMessages(t *testing.T) {
+	echo := startTcpEcho(t, "")
+	out := runTcpPlan(t, tcpRotationPlanTemplate, echo.port())
+	if !strings.Contains(out, "PASS  1/1 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict")
+	}
+	// A replacement still connecting when the run ends is dropped, but the
+	// target has it all the same.
+	if got := echo.acceptedConnections(); got < 10 || got > 12 {
+		t.Errorf("the target accepted %d connections, want 10 to 12: two, and one more for each rotation", got)
+	}
+}
+
+// One connection, 100 messages a second for 4 s, against a target that
+// answers "hello:" and then the message: not an echo, though cut into
+// message-sized pieces its replies would line up with the message now and
+// then. The first piece that is not the message closes the connection, so
+// each connection gets a message or two out before it is closed and reopened
+// after a growing backoff (ten connections in 4 s, when the timers are on
+// time); nothing counts as echoed, nothing is timed, and nearly all of the
+// run's 400 messages find no connection. Both sortie and the engine say why.
+const tcpNotAnEchoPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+defaults:
+  pool: local
+  target: tcp://127.0.0.1:%d
+  concurrency: "1"
+  body: "ping\\n"
+  tcp:
+    connections: 1
+scenarios:
+  - name: tcp
+    executor:
+      type: constant-rate
+      rate: 100
+      duration: 4s
+    thresholds:
+      - "counter:benchmark.tcp_messages_received == 0"
+      - "counter:benchmark.tcp_echo_mismatch >= 4"
+      - "counter:benchmark.tcp_echo_mismatch <= 12"
+      - "counter:benchmark.tcp_reconnects >= 3"
+      - "counter:benchmark.tcp_reconnects <= 11"
+      - "counter:benchmark.tcp_inflight_lost >= 4"
+      - "counter:benchmark.tcp_messages_sent >= 4"
+      - "counter:benchmark.tcp_messages_sent <= 40"
+      - "counter:benchmark.tcp_unavailable >= 340"
+      - "counter:benchmark.tcp_deferred == 0"
+      - "counter:benchmark.tcp_connect_failures == 0"
+`
+
+func TestTcpTargetThatIsNotAnEchoIsNotTimed(t *testing.T) {
+	echo := startTcpEcho(t, "hello:")
+	out, serviceLog := runTcpPlanWithServiceLog(t, tcpNotAnEchoPlanTemplate, echo.port())
+	if !strings.Contains(out, "PASS  1/1 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict")
+	}
+	if !regexp.MustCompile(`(?m)^\s+\S+: \d+ messages sent, 0 echoed in \S+$`).MatchString(out) {
+		t.Errorf("sortie output lacks the backend line with nothing echoed")
+	}
+	if !regexp.MustCompile(`(?m)^\s+\S+: warning: \d+ connection\(s\) closed on a reply that was not the message`).MatchString(out) {
+		t.Errorf("sortie output does not warn that the target is not an exact echo")
+	}
+	// Once, however many connections went the same way.
+	if got := strings.Count(serviceLog, "TCP echo mismatch"); got != 1 {
+		t.Errorf("the engine logged the echo mismatch %d times, want once", got)
 	}
 }
 

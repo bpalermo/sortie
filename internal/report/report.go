@@ -150,9 +150,21 @@ func execution(w io.Writer, e run.ExecutionReport) error {
 				b.Addr, sent, counters["benchmark.udp_datagrams_received"], counters["benchmark.udp_lost"], elapsed)
 			continue
 		}
-		if sent, ok := counters["benchmark.tcp_messages_sent"]; ok {
+		// A counter at zero is not in the results, so a TCP run that sent
+		// nothing -- a peer that speaks first is closed on its banner, every
+		// time -- is known by its mismatches alone.
+		sent, tcp := counters["benchmark.tcp_messages_sent"]
+		if mismatches := counters["benchmark.tcp_echo_mismatch"]; tcp || mismatches > 0 {
 			fmt.Fprintf(w, "       %s: %d messages sent, %d echoed in %s\n",
 				b.Addr, sent, counters["benchmark.tcp_messages_received"], elapsed)
+			// Said here, not left to a threshold someone may not have
+			// written: the echoed count and the latency of such a run cover
+			// next to nothing, and look like a slow target if not explained.
+			if mismatches > 0 {
+				fmt.Fprintf(w, "       %s: warning: %d connection(s) closed on a reply that was not the message: "+
+					"the target is not an exact echo, and only exact echoes are counted and timed "+
+					"(tcp.expect_echo: false sends without expecting one)\n", b.Addr, mismatches)
+			}
 			continue
 		}
 		fmt.Fprintf(w, "       %s: %d requests in %s%s\n",

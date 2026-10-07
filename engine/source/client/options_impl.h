@@ -72,6 +72,7 @@ public:
   uint32_t tcpConnections() const override { return tcp_connections_; }
   uint32_t tcpMaxInflightPerConnection() const override { return tcp_max_inflight_; }
   bool tcpExpectEcho() const override { return tcp_expect_echo_; }
+  uint32_t tcpMaxMessagesPerConnection() const override { return tcp_max_messages_; }
   bool udp() const override { return udp_; }
   uint32_t udpMaxInflight() const override { return udp_max_inflight_; }
   std::chrono::nanoseconds udpTimeout() const override { return udp_timeout_; }
@@ -197,6 +198,7 @@ private:
   uint32_t tcp_connections_{1};
   uint32_t tcp_max_inflight_{256};
   bool tcp_expect_echo_{true};
+  uint32_t tcp_max_messages_{0};
   // Derived from the URI's scheme (udp) when the options are validated.
   bool udp_{false};
   uint32_t udp_max_inflight_{256};

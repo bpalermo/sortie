@@ -532,6 +532,9 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 			if t.GetDrainDuration() != nil {
 				to.DrainDuration = t.GetDrainDuration()
 			}
+			if t.MaxMessagesPerConnection != nil {
+				to.MaxMessagesPerConnection = wrapperspb.UInt32(t.GetMaxMessagesPerConnection())
+			}
 			o.Tcp = to
 		}
 	}

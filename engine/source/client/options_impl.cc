@@ -271,8 +271,20 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
       false, 256, "uint32_t", cmd);
   TCLAP::SwitchArg tcp_no_echo("", "tcp-no-echo",
                                "With a tcp:// URI: the peer does not echo; a write completes at "
-                               "once and nothing is read or timed.",
+                               "once and nothing is read or timed. Without this the peer must "
+                               "echo byte for byte: a reply that is not the message closes the "
+                               "connection, to be reopened, and counts in "
+                               "benchmark.tcp_echo_mismatch.",
                                cmd, false);
+  TCLAP::ValueArg<uint32_t> tcp_max_messages(
+      "", "tcp-max-messages-per-connection",
+      "With a tcp:// URI: messages after which a connection is replaced. Once a connection has "
+      "sent this many, a new one is opened while it goes on sending, and takes over when it has "
+      "connected; the old one is sent nothing more, is given up to --timeout for its outstanding "
+      "echoes, and is closed. Counted in benchmark.tcp_connections_rotated; every connect is "
+      "timed in benchmark_tcp.connect_latency. A connection the peer closes is reopened "
+      "whatever this is (benchmark.tcp_reconnects). 0 never replaces a connection (default: 0).",
+      false, 0, "uint32_t", cmd);
   TCLAP::ValueArg<uint32_t> udp_max_inflight(
       "", "udp-max-inflight",
       "With a udp:// URI (UDP load: the request body is sent as one datagram per scheduled "
@@ -590,6 +602,7 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
   TCLAP_SET_IF_SPECIFIED(tcp_connections, tcp_connections_);
   TCLAP_SET_IF_SPECIFIED(tcp_max_inflight, tcp_max_inflight_);
   tcp_expect_echo_ = !tcp_no_echo.getValue();
+  TCLAP_SET_IF_SPECIFIED(tcp_max_messages, tcp_max_messages_);
   TCLAP_SET_IF_SPECIFIED(udp_max_inflight, udp_max_inflight_);
   if (udp_timeout.isSet()) {
     Envoy::Protobuf::Duration duration;
@@ -1024,6 +1037,8 @@ OptionsImpl::OptionsImpl(const nighthawk::client::CommandLineOptions& options) {
     tcp_max_inflight_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(tcp_options, max_inflight_per_connection,
                                                         tcp_max_inflight_);
     tcp_expect_echo_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(tcp_options, expect_echo, tcp_expect_echo_);
+    tcp_max_messages_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(tcp_options, max_messages_per_connection,
+                                                        tcp_max_messages_);
     if (tcp_options.has_drain_duration()) {
       stream_drain_duration_ = std::chrono::nanoseconds(
           Envoy::Protobuf::util::TimeUtil::DurationToNanoseconds(tcp_options.drain_duration()));
@@ -1545,6 +1560,7 @@ CommandLineOptionsPtr OptionsImpl::toCommandLineOptionsInternal() const {
     tcp_options->mutable_connections()->set_value(tcp_connections_);
     tcp_options->mutable_max_inflight_per_connection()->set_value(tcp_max_inflight_);
     tcp_options->mutable_expect_echo()->set_value(tcp_expect_echo_);
+    tcp_options->mutable_max_messages_per_connection()->set_value(tcp_max_messages_);
     *tcp_options->mutable_drain_duration() =
         Envoy::Protobuf::util::TimeUtil::NanosecondsToDuration(stream_drain_duration_.count());
   }

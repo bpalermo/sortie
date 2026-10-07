@@ -100,7 +100,9 @@ bazel-bin/engine/nighthawk_client  [--user-defined-plugin-config <string>] ...
 [--stream-drain-duration <string>]
 [--max-inflight-per-stream <uint32_t>]
 [--streams <uint32_t>] [--udp-timeout <string>]
-[--udp-max-inflight <uint32_t>] [--tcp-no-echo]
+[--udp-max-inflight <uint32_t>]
+[--tcp-max-messages-per-connection <uint32_t>]
+[--tcp-no-echo]
 [--tcp-max-inflight-per-connection <uint32_t>]
 [--tcp-connections <uint32_t>] [--websocket-binary] [--websocket]
 [--grpc-mode <unary
@@ -318,9 +320,21 @@ number and matched by it when echoed): unanswered datagrams allowed
 before scheduled sends are dropped and counted in benchmark.udp_deferred
 (default: 256).
 
+--tcp-max-messages-per-connection <uint32_t>
+With a tcp:// URI: messages after which a connection is replaced. Once a
+connection has sent this many, a new one is opened while it goes on
+sending, and takes over when it has connected; the old one is sent
+nothing more, is given up to --timeout for its outstanding echoes, and
+is closed. Counted in benchmark.tcp_connections_rotated; every connect
+is timed in benchmark_tcp.connect_latency. A connection the peer closes
+is reopened whatever this is (benchmark.tcp_reconnects). 0 never
+replaces a connection (default: 0).
+
 --tcp-no-echo
 With a tcp:// URI: the peer does not echo; a write completes at once
-and nothing is read or timed.
+and nothing is read or timed. Without this the peer must echo byte for
+byte: a reply that is not the message closes the connection, to be
+reopened, and counts in benchmark.tcp_echo_mismatch.
 
 --tcp-max-inflight-per-connection <uint32_t>
 With a tcp:// URI: unanswered messages a connection may hold before
