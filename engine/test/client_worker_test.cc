@@ -125,6 +125,8 @@ TEST_F(ClientWorkerTest, BasicTest) {
     EXPECT_CALL(*benchmark_client_, finish());
     EXPECT_CALL(*benchmark_client_, terminate());
   }
+  // An execution that ran to its end leaves the client to wait for what is outstanding.
+  EXPECT_CALL(*benchmark_client_, abandonOutstandingWork()).Times(0);
   int worker_number = 12345;
 
   std::vector<UserDefinedOutputNamePluginPair> user_defined_output_plugins;
@@ -148,6 +150,68 @@ TEST_F(ClientWorkerTest, BasicTest) {
   std::vector<nighthawk::client::UserDefinedOutput> outputs = worker->getUserDefinedOutputResults();
   EXPECT_TRUE(outputs.empty());
 
+  worker->shutdown();
+}
+
+// A cancelled execution must not wait for outstanding responses: the client is told, on the
+// worker thread, by the same job that bumps the counter the termination predicate watches.
+TEST_F(ClientWorkerTest, CancellationTellsTheClientToAbandonOutstandingWork) {
+  EXPECT_CALL(*benchmark_client_, setShouldMeasureLatencies(_)).Times(AnyNumber());
+  EXPECT_CALL(*benchmark_client_, prepare());
+  EXPECT_CALL(*sequencer_, start);
+  EXPECT_CALL(*sequencer_, waitForCompletion);
+  {
+    InSequence dummy;
+    EXPECT_CALL(*benchmark_client_, abandonOutstandingWork()).WillOnce([this]() {
+      EXPECT_NE(thread_id_, std::this_thread::get_id());
+    });
+    EXPECT_CALL(*benchmark_client_, finish());
+    EXPECT_CALL(*benchmark_client_, terminate());
+  }
+  const int worker_number = 12345;
+  auto worker = std::make_unique<ClientWorkerImpl>(
+      *api_, tls_, cluster_manager_ptr_, benchmark_client_factory_, termination_predicate_factory_,
+      sequencer_factory_, request_generator_factory_, store_, worker_number,
+      time_system_.monotonicTime(), tracer_, ClientWorkerImpl::HardCodedWarmupStyle::OFF,
+      std::vector<UserDefinedOutputNamePluginPair>{});
+
+  // Requested before the worker thread exists: the job is picked up by the first thing that
+  // thread does, which is to run its dispatcher once.
+  worker->requestExecutionCancellation();
+  worker->start();
+  worker->waitForCompletion();
+  EXPECT_EQ(
+      1, store_.rootScope()
+             ->counterFromString(fmt::format("cluster.{}.graceful_stop_requested", worker_number))
+             .value());
+  worker->shutdown();
+}
+
+// An execution that a failure predicate ended does not wait either.
+TEST_F(ClientWorkerTest, FailedTerminationTellsTheClientToAbandonOutstandingWork) {
+  const int worker_number = 12345;
+  EXPECT_CALL(*benchmark_client_, setShouldMeasureLatencies(_)).Times(AnyNumber());
+  EXPECT_CALL(*benchmark_client_, prepare());
+  EXPECT_CALL(*sequencer_, start);
+  // What a sequencer does when its termination predicate says FAIL.
+  EXPECT_CALL(*sequencer_, waitForCompletion).WillOnce([this, worker_number]() {
+    store_.rootScope()
+        ->counterFromString(fmt::format("cluster.{}.sequencer.failed_terminations", worker_number))
+        .inc();
+  });
+  {
+    InSequence dummy;
+    EXPECT_CALL(*benchmark_client_, abandonOutstandingWork());
+    EXPECT_CALL(*benchmark_client_, finish());
+    EXPECT_CALL(*benchmark_client_, terminate());
+  }
+  auto worker = std::make_unique<ClientWorkerImpl>(
+      *api_, tls_, cluster_manager_ptr_, benchmark_client_factory_, termination_predicate_factory_,
+      sequencer_factory_, request_generator_factory_, store_, worker_number,
+      time_system_.monotonicTime(), tracer_, ClientWorkerImpl::HardCodedWarmupStyle::OFF,
+      std::vector<UserDefinedOutputNamePluginPair>{});
+  worker->start();
+  worker->waitForCompletion();
   worker->shutdown();
 }
 

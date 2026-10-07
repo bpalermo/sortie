@@ -233,6 +233,86 @@ public:
   Client::BenchmarkClientStatistic statistic_;
   std::shared_ptr<Envoy::Http::RequestHeaderMap> default_header_map_;
   std::vector<UserDefinedOutputNamePluginPair> user_defined_output_plugins_{};
+
+  // What the pool does with a request in the finish() tests below.
+  enum class PoolBehavior {
+    // The request gets a connection and is sent; its decoder is kept in decoders_ for the test
+    // to answer.
+    Send,
+    // The request stays queued in the pool for a connection. Nothing ever comes of it; the
+    // decoder is kept in decoders_ for the test to delete.
+    Queue,
+    // The pool refuses the request on the spot.
+    Overflow,
+  };
+
+  // Sets the client up and issues `amount` requests that the pool treats as told, the way a
+  // sequencer would have done before it stopped.
+  void issueRequests(const PoolBehavior behavior, const uint64_t amount,
+                     Client::CompletionCallback completion_callback) {
+    if (client_ == nullptr) {
+      setupBenchmarkClient(getDefaultRequestGenerator());
+    }
+    client_->setMaxPendingRequests(amount);
+    EXPECT_CALL(stream_encoder_, encodeHeaders(_, _)).Times(AnyNumber());
+    EXPECT_CALL(pool_, newStream(_, _, _))
+        .Times(amount)
+        .WillRepeatedly([this,
+                         behavior](Envoy::Http::ResponseDecoder& decoder,
+                                   Envoy::Http::ConnectionPool::Callbacks& callbacks,
+                                   const Envoy::Http::ConnectionPool::Instance::StreamOptions&)
+                            -> Envoy::Http::ConnectionPool::Cancellable* {
+          switch (behavior) {
+          case PoolBehavior::Send: {
+            decoders_.push_back(&decoder);
+            NiceMock<Envoy::StreamInfo::MockStreamInfo> stream_info;
+            callbacks.onPoolReady(stream_encoder_, Envoy::Upstream::HostDescriptionConstSharedPtr{},
+                                  stream_info, {});
+            break;
+          }
+          case PoolBehavior::Queue:
+            decoders_.push_back(&decoder);
+            break;
+          case PoolBehavior::Overflow:
+            callbacks.onPoolFailure(Envoy::Http::ConnectionPool::PoolFailureReason::Overflow, "",
+                                    Envoy::Upstream::HostDescriptionConstSharedPtr{});
+            break;
+          }
+          return nullptr;
+        });
+    for (uint64_t i = 0; i < amount; i++) {
+      ASSERT_TRUE(client_->tryStartRequest(completion_callback));
+    }
+  }
+
+  // Answers every request in decoders_ with a complete 200.
+  void respondToAll() {
+    for (Envoy::Http::ResponseDecoder* decoder : decoders_) {
+      Envoy::Http::ResponseHeaderMapPtr response_headers{
+          new Envoy::Http::TestResponseHeaderMapImpl{{":status", "200"}}};
+      decoder->decodeHeaders(std::move(response_headers), false);
+      Envoy::Buffer::OwnedImpl buffer(std::string(97, 'a'));
+      decoder->decodeData(buffer, true);
+    }
+    decoders_.clear();
+  }
+
+  // The stream decoders of requests that never complete delete themselves in no code path.
+  void deleteDecoders() {
+    for (Envoy::Http::ResponseDecoder* decoder : decoders_) {
+      delete decoder;
+    }
+    decoders_.clear();
+  }
+
+  // @return how long finish() took, in milliseconds.
+  int64_t timedFinish() {
+    const Envoy::MonotonicTime start_time = time_system_.monotonicTime();
+    client_->finish();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(time_system_.monotonicTime() -
+                                                                 start_time)
+        .count();
+  }
 };
 
 TEST_F(BenchmarkClientHttpTest, BasicTestH1200) {
@@ -691,6 +771,125 @@ TEST_F(BenchmarkClientHttpTest, TerminateReturnsPromptlyWhenRequestCompletesDuri
   // rather than by the hard-shutdown drain timer path. While the bug exists the idle
   // callback is never invoked (the pool is never drained, so it never goes idle).
   EXPECT_TRUE(idle_callback_invoked);
+}
+
+// The sequencer has stopped with requests in flight. finish() waits for them, and they are
+// counted and timed like any other.
+TEST_F(BenchmarkClientHttpTest, FinishWaitsForInflightRequestsAndCountsThem) {
+  setupBenchmarkClient(getDefaultRequestGenerator());
+  client_->setShouldMeasureLatencies(true);
+  client_->setTimeout(std::chrono::seconds(30));
+  uint64_t completions = 0;
+  issueRequests(PoolBehavior::Send, 2, [&completions](bool complete, bool success) {
+    EXPECT_TRUE(complete);
+    EXPECT_TRUE(success);
+    completions++;
+  });
+  ASSERT_EQ(2, decoders_.size());
+  // What a sequencer leaves behind when it stopped without the dispatcher having run: an exit
+  // that nobody consumed. It must not be taken for the end of the wait.
+  dispatcher_->exit();
+
+  Envoy::Event::TimerPtr response_timer = dispatcher_->createTimer([this]() { respondToAll(); });
+  response_timer->enableTimer(std::chrono::milliseconds(250));
+  const int64_t finish_duration_ms = timedFinish();
+
+  EXPECT_GE(finish_duration_ms, 200);
+  // Nowhere near the 30 s cap: the wait ended with the last response.
+  EXPECT_LT(finish_duration_ms, 10000);
+  EXPECT_EQ(2, completions);
+  EXPECT_EQ(2, getCounter("http_2xx"));
+  EXPECT_EQ(0, getCounter("http_inflight_lost"));
+  EXPECT_EQ(0, getCounter("stream_resets"));
+  EXPECT_EQ(2, client_->statistics()["benchmark_http_client.request_to_response"]->count());
+  EXPECT_EQ(2, client_->statistics()["benchmark_http_client.latency_2xx"]->count());
+  dispatcher_->run(Envoy::Event::Dispatcher::RunType::NonBlock);
+}
+
+// Requests that the pool refused or failed are not outstanding: there is nothing to wait for.
+TEST_F(BenchmarkClientHttpTest, FinishDoesNotWaitForRequestsThatFailedInThePool) {
+  issueRequests(PoolBehavior::Overflow, 3, [](bool complete, bool success) {
+    EXPECT_FALSE(complete);
+    EXPECT_FALSE(success);
+  });
+  client_->setTimeout(std::chrono::seconds(30));
+  EXPECT_LT(timedFinish(), 10000);
+  EXPECT_EQ(3, getCounter("pool_overflow"));
+  EXPECT_EQ(0, getCounter("http_inflight_lost"));
+  dispatcher_->run(Envoy::Event::Dispatcher::RunType::NonBlock);
+}
+
+// A request that never completes -- here one still queued in the pool for a connection, and one
+// that was sent and never answered -- is waited for for the timeout and then counted as lost.
+// Nothing reset it, so it is not a stream reset. terminate() does not wait for it a second time.
+TEST_F(BenchmarkClientHttpTest, FinishCountsRequestsStillOutstandingAfterTheTimeoutAsLost) {
+  Client::CompletionCallback never = [](bool, bool) { ADD_FAILURE() << "must not complete"; };
+  issueRequests(PoolBehavior::Queue, 1, never);
+  Mock::VerifyAndClearExpectations(&pool_);
+  issueRequests(PoolBehavior::Send, 1, never);
+  client_->setTimeout(std::chrono::seconds(1));
+
+  const int64_t finish_duration_ms = timedFinish();
+  EXPECT_GE(finish_duration_ms, 900);
+  EXPECT_LT(finish_duration_ms, 10000);
+  EXPECT_EQ(2, getCounter("http_inflight_lost"));
+  EXPECT_EQ(0, getCounter("stream_resets"));
+  EXPECT_EQ(0, getCounter("stream_resets_before_headers"));
+  EXPECT_EQ(0, getCounter("http_2xx"));
+
+  // Counted once: finish() is not repeatable.
+  EXPECT_LT(timedFinish(), 500);
+  EXPECT_EQ(2, getCounter("http_inflight_lost"));
+
+  // terminate() still drains the pool, and its hard cap still ends it; having been waited for
+  // for the whole timeout already, the cap is immediate.
+  EXPECT_CALL(pool_, hasActiveConnections()).WillOnce(Return(true));
+  EXPECT_CALL(pool_, addIdleCallback(_));
+  EXPECT_CALL(pool_, drainConnections(Envoy::ConnectionPool::DrainBehavior::DrainAndDelete))
+      .Times(AtMost(1));
+  const Envoy::MonotonicTime start_time = time_system_.monotonicTime();
+  client_->terminate();
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(time_system_.monotonicTime() -
+                                                                  start_time)
+                .count(),
+            500);
+  deleteDecoders();
+}
+
+// A cancelled or failed execution does not wait: what is outstanding is counted as lost at once.
+TEST_F(BenchmarkClientHttpTest, FinishDoesNotWaitAfterAbandonOutstandingWork) {
+  issueRequests(PoolBehavior::Send, 2, [](bool, bool) { ADD_FAILURE() << "must not complete"; });
+  client_->setTimeout(std::chrono::seconds(30));
+  client_->abandonOutstandingWork();
+  EXPECT_LT(timedFinish(), 5000);
+  EXPECT_EQ(2, getCounter("http_inflight_lost"));
+  EXPECT_EQ(0, getCounter("stream_resets"));
+  deleteDecoders();
+}
+
+// A cancellation that arrives while finish() is waiting ends the wait.
+TEST_F(BenchmarkClientHttpTest, AbandonOutstandingWorkEndsTheWaitInFinish) {
+  issueRequests(PoolBehavior::Send, 1, [](bool, bool) { ADD_FAILURE() << "must not complete"; });
+  client_->setTimeout(std::chrono::seconds(30));
+  Envoy::Event::TimerPtr cancel_timer =
+      dispatcher_->createTimer([this]() { client_->abandonOutstandingWork(); });
+  cancel_timer->enableTimer(std::chrono::milliseconds(250));
+  const int64_t finish_duration_ms = timedFinish();
+  EXPECT_GE(finish_duration_ms, 200);
+  EXPECT_LT(finish_duration_ms, 10000);
+  EXPECT_EQ(1, getCounter("http_inflight_lost"));
+  EXPECT_EQ(0, getCounter("stream_resets"));
+  deleteDecoders();
+}
+
+// With nothing outstanding finish() returns without running the dispatcher at all, and telling
+// the client to abandon outside of finish() does not exit a dispatcher somebody else is running.
+TEST_F(BenchmarkClientHttpTest, FinishWithNothingOutstandingReturnsAtOnce) {
+  setupBenchmarkClient(getDefaultRequestGenerator());
+  client_->setTimeout(std::chrono::seconds(30));
+  EXPECT_LT(timedFinish(), 5000);
+  EXPECT_EQ(0, getCounter("http_inflight_lost"));
+  client_->abandonOutstandingWork();
 }
 
 UserDefinedOutputPluginPtr

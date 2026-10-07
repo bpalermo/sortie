@@ -538,16 +538,22 @@ TEST_P(ProcessTest, SnapshotCarriesSummariesUnlessAskedForFullStatistics) {
 // the connection pool to drain. The wedged server below never responds, so the pool never
 // goes idle and every worker's drain hits the full timeout; shutdown() now signals all
 // workers before joining any, so the drains overlap.
+//
+// The execution is cancelled rather than left to run out its duration. An execution that ends on
+// its duration waits for its in-flight requests before it reports (BenchmarkClientHttpImpl::
+// finish()), for the same --timeout, and the drain at shutdown does not wait for them a second
+// time; a cancelled one does not wait, which leaves the whole timeout to the drain. That makes
+// this the test for a cancellation staying quick with requests in flight as well.
 TEST_P(ProcessTest, ShutdownDrainsWorkersConcurrently) {
   constexpr int kConcurrency = 3;
   constexpr int kDrainTimeoutSeconds = 2;
   WedgedTcpServer wedged_server(GetParam());
-  // The failure predicate wipes the stock ones, so that execution terminates on --duration only
-  // and requests are guaranteed to still be in flight when shutdown starts. Note the plain http
-  // scheme: TCP connects to the wedged server succeed immediately (--timeout doubles as the
+  // The failure predicate wipes the stock ones, so that execution terminates on the cancellation
+  // only and requests are guaranteed to still be in flight when shutdown starts. Note the plain
+  // http scheme: TCP connects to the wedged server succeed immediately (--timeout doubles as the
   // connect timeout), requests are then written and never answered.
   options_ = TestUtility::createOptionsImpl(
-      fmt::format("foo --duration 1 --rps 5 --timeout {} --concurrency {} --failure-predicate "
+      fmt::format("foo --duration 100 --rps 5 --timeout {} --concurrency {} --failure-predicate "
                   "foo:0 -v error http://{}:{}/",
                   kDrainTimeoutSeconds, kConcurrency, loopback_address_, wedged_server.port()));
 
@@ -559,21 +565,44 @@ TEST_P(ProcessTest, ShutdownDrainsWorkersConcurrently) {
   ASSERT_TRUE(process_or_status.ok());
   ProcessPtr process = std::move(process_or_status.value());
   OutputCollectorImpl collector(time_system_, *options_);
+  Envoy::MonotonicTime cancelled_at;
+  std::thread cancel_thread([this, &process, &cancelled_at] {
+    // Time for every worker to have requests in flight, sanitizer runs included.
+    sleep(3);
+    cancelled_at = time_system_.monotonicTime();
+    process->requestExecutionCancellation();
+  });
   EXPECT_TRUE(process->run(collector));
+  cancel_thread.join();
+  const std::chrono::duration<double> cancellation_duration =
+      time_system_.monotonicTime() - cancelled_at;
   output_proto_ = collector.toProto();
+  // The cancellation was not held up by the requests in flight: nowhere near the --timeout an
+  // execution that ran to its end would have waited for them.
+  EXPECT_LT(cancellation_duration.count(), 0.5 * kDrainTimeoutSeconds);
 
   // Sanity check: every worker issued at least one request against the wedged server. The server
   // never responds, so all issued requests are still in flight at shutdown, forcing each worker's
-  // connection pool drain to run into the full --timeout.
+  // connection pool drain to run into the full --timeout. Every one of them is accounted for as
+  // lost, and as nothing else.
   int workers_with_in_flight_requests = 0;
   for (const auto& result : output_proto_.results()) {
-    if (result.name() == "global") {
-      continue;
-    }
+    uint64_t issued = 0;
+    uint64_t lost = 0;
     for (const auto& counter : result.counters()) {
-      if (counter.name() == "upstream_rq_total" && counter.value() > 0) {
-        workers_with_in_flight_requests++;
+      if (counter.name() == "upstream_rq_total") {
+        issued = counter.value();
+      } else if (counter.name() == "benchmark.http_inflight_lost") {
+        lost = counter.value();
+      } else {
+        EXPECT_NE(counter.name(), "benchmark.stream_resets");
       }
+    }
+    EXPECT_GT(issued, 0) << result.name();
+    // Not less; one more when the cancellation found a request waiting for its connection.
+    EXPECT_GE(lost, issued) << result.name();
+    if (result.name() != "global" && issued > 0) {
+      workers_with_in_flight_requests++;
     }
   }
   EXPECT_EQ(workers_with_in_flight_requests, kConcurrency);

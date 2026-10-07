@@ -20,7 +20,10 @@ import (
 // stream_resets and, for request/response load, in one stream_resets_<phase>
 // and one stream_resets_<reason> counter; a failed unary gRPC call is in
 // grpc_error as well as in what stopped it. The engine omits a counter that
-// never incremented, so a clean run prints none of these.
+// never incremented, so a clean run prints none of these. The last one is
+// not a failure the engine saw: http_inflight_lost counts the requests that
+// had no outcome when the execution was over, which is why a backend's
+// responses can fall short of its requests with every other class at zero.
 var failureCounters = []string{
 	"benchmark.http_4xx",
 	"benchmark.http_5xx",
@@ -33,6 +36,7 @@ var failureCounters = []string{
 	"benchmark.pool_failure_local_connection_failure",
 	"benchmark.pool_failure_remote_connection_failure",
 	"benchmark.pool_failure_timeout",
+	"benchmark.http_inflight_lost",
 }
 
 // failures lists a backend's non-zero failure counters: the classes above in

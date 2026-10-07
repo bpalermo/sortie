@@ -33,6 +33,15 @@ public:
    */
   virtual void finish() PURE;
   /**
+   * Called on the worker thread when the execution is cancelled, or right before finish() when a
+   * failure predicate ended it: whatever is still outstanding is not worth waiting for. A client
+   * whose finish() waits on nothing but the responses to what it sent must return from it without
+   * waiting, and end a wait that is underway; it still accounts for what it leaves behind. May be
+   * called more than once, and at any point in the client's life. The default does nothing, which
+   * suits the clients whose finish() only waits for a drain window that was asked for.
+   */
+  virtual void abandonOutstandingWork() {}
+  /**
    * Terminate will be called on the worker thread before it ends.
    */
   virtual void terminate() PURE;

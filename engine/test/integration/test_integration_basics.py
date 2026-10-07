@@ -79,7 +79,11 @@ def _mini_stress_test(fixture, args):
   # We set a reasonably low expectation of 100 requests. We set it low, because we want this
   # test to succeed on a reasonable share of setups (hopefully practically all).
   MIN_EXPECTED_REQUESTS = 100
-  asserts.assertCounterEqual(counters, "benchmark.http_2xx", MIN_EXPECTED_REQUESTS)
+  # The termination predicate stops the execution at the 100th response. The requests that are in
+  # flight at that moment are waited for and counted: at most one per connection plus the
+  # client-side queue, which is 1 + 10 for the largest of the callers.
+  asserts.assertCounterBetweenInclusive(counters, "benchmark.http_2xx", MIN_EXPECTED_REQUESTS,
+                                        MIN_EXPECTED_REQUESTS + 11)
   if "--h2" in args:
     asserts.assertCounterEqual(counters, "upstream_cx_http2_total", 1)
   else:
@@ -1101,6 +1105,59 @@ def test_client_bad_arg():
   (exit_code, output) = _run_client_with_args("127.0.0.1 --foo")
   asserts.assertEqual(exit_code, 1)
   asserts.assertIn("PARSE ERROR: Argument: --foo", output)
+
+
+def test_http_h1_requests_in_flight_at_the_end_are_waited_for(http_test_server_fixture):
+  """Test that every request that was issued is reported, also the ones the duration cut across.
+
+  The test server answers after 1.5 seconds and the execution lasts 2, so most of the requests are
+  still waiting for their response when the duration ends. They must be waited for and counted as
+  what they turn out to be, and that wait must not be reported as execution time.
+  """
+  parsed_json, _ = http_test_server_fixture.runNighthawkClient([
+      http_test_server_fixture.getTestServerRootUri(), "--rps", "4", "--duration", "2",
+      "--connections", "10", "--request-header",
+      "x-nighthawk-test-server-config: {static_delay: \"1.5s\"}"
+  ])
+  counters = http_test_server_fixture.getNighthawkCounterMapFromJson(parsed_json)
+  asserts.assertCounterGreaterEqual(counters, "upstream_rq_total", 6)
+  asserts.assertCounterEqual(counters, "benchmark.http_2xx", counters["upstream_rq_total"])
+  asserts.assertNotIn("benchmark.http_inflight_lost", counters)
+  asserts.assertNotIn("benchmark.stream_resets", counters)
+  global_histograms = http_test_server_fixture.getNighthawkGlobalHistogramsbyIdFromJson(parsed_json)
+  asserts.assertEqual(int(global_histograms["benchmark_http_client.latency_2xx"]["count"]),
+                      counters["upstream_rq_total"])
+  actual_duration = utility.get_execution_duration_from_global_result_json(
+      http_test_server_fixture.getGlobalResults(parsed_json))
+  asserts.assertBetweenInclusive(actual_duration, 2, 3)
+
+
+def test_http_h1_requests_never_answered_are_counted_as_lost(http_test_server_fixture):
+  """Test that a request that is still unanswered --timeout after the end is counted as lost.
+
+  The test server answers after 100 seconds. The execution waits for the two seconds of the
+  timeout, reports the requests in benchmark.http_inflight_lost and in no other counter, and does
+  not wait for them a second time when it shuts the connection pool down.
+  """
+  start = time.time()
+  parsed_json, logs = http_test_server_fixture.runNighthawkClient([
+      http_test_server_fixture.getTestServerRootUri(), "--rps", "4", "--duration", "1",
+      "--connections", "10", "--timeout", "2", "--request-header",
+      "x-nighthawk-test-server-config: {static_delay: \"100s\"}"
+  ])
+  elapsed = time.time() - start
+  counters = http_test_server_fixture.getNighthawkCounterMapFromJson(parsed_json)
+  asserts.assertCounterGreaterEqual(counters, "upstream_rq_total", 3)
+  # Not less; one more if the end found a request still waiting for its connection.
+  asserts.assertCounterGreaterEqual(counters, "benchmark.http_inflight_lost",
+                                    counters["upstream_rq_total"])
+  asserts.assertNotIn("benchmark.http_2xx", counters)
+  asserts.assertNotIn("benchmark.stream_resets", counters)
+  asserts.assertIn("counted in benchmark.http_inflight_lost", logs)
+  # One second of execution and two of waiting; a second wait in the pool drain would make it five.
+  asserts.assertGreaterEqual(elapsed, 3)
+  if not utility.isSanitizerRun():
+    asserts.assertLessEqual(elapsed, 4.5)
 
 
 def test_client_cli_bad_uri(http_test_server_fixture):

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "envoy/common/pure.h"
 #include "envoy/common/time.h"
 #include "envoy/event/dispatcher.h"
@@ -74,7 +76,16 @@ public:
    */
   void waitForCompletion() override;
 
-  std::chrono::nanoseconds executionDuration() const override { return rate_limiter_->elapsed(); }
+  /**
+   * @return std::chrono::nanoseconds the time the rate limiter has been running for; once the
+   * sequencer has stopped, the time it had been running for when it did. The dispatcher may be
+   * run again after that, by a benchmark client finishing outstanding work, and that moves the
+   * clock the rate limiter reads: without the latch that wait would be reported as execution
+   * time and would lower every rate derived from it.
+   */
+  std::chrono::nanoseconds executionDuration() const override {
+    return stopped_after_.has_value() ? stopped_after_.value() : rate_limiter_->elapsed();
+  }
 
   const RateLimiter& rate_limiter() const override { return *rate_limiter_; }
 
@@ -143,6 +154,8 @@ private:
   uint64_t targets_initiated_{0};
   uint64_t targets_completed_{0};
   bool running_{};
+  // Set by stop(): executionDuration() at that moment.
+  std::optional<std::chrono::nanoseconds> stopped_after_;
   bool blocked_{};
   Envoy::MonotonicTime blocked_start_;
   nighthawk::client::SequencerIdleStrategy::SequencerIdleStrategyOptions idle_strategy_;

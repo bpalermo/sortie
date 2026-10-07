@@ -40,6 +40,12 @@ using namespace std::chrono_literals;
 // pool_failure_<reason> counters, where the overflow reason is the pre-existing pool_overflow.
 // pool_failure_timeout (the connect timeout, --timeout) is the one reason that was previously
 // not counted under benchmark.* at all; it stays outside pool_connection_failure.
+// http_inflight_lost is not a failure class of its own making: it counts the requests that were
+// issued and had neither completed nor failed when finish() stopped waiting for them (after
+// --timeout, or at once when the execution was cancelled or failed). Nothing is known about how
+// they would have ended, so they are in no other counter: not in stream_resets, since nothing
+// reset them, and in no status class. With it, every request tryStartRequest() accepted is
+// accounted for in the counters of the run it was issued in.
 #define ALL_BENCHMARK_CLIENT_COUNTERS(COUNTER)                                                     \
   COUNTER(stream_resets)                                                                           \
   COUNTER(stream_resets_before_headers)                                                            \
@@ -50,6 +56,7 @@ using namespace std::chrono_literals;
   COUNTER(http_4xx)                                                                                \
   COUNTER(http_5xx)                                                                                \
   COUNTER(http_xxx)                                                                                \
+  COUNTER(http_inflight_lost)                                                                      \
   COUNTER(pool_overflow)                                                                           \
   COUNTER(grpc_error)                                                                              \
   COUNTER(pool_connection_failure)                                                                 \
@@ -147,7 +154,15 @@ public:
 
   // BenchmarkClient
   void prepare() override {}
-  void finish() override {}
+  /**
+   * Waits for the requests that are still outstanding -- issued through tryStartRequest() and
+   * neither completed nor failed, those queued in the pool for a connection included -- by running
+   * the dispatcher until there are none or the timeout (setTimeout()) has passed. What completes
+   * meanwhile is counted and timed as during the run. What is left is counted in
+   * http_inflight_lost. Does not wait after abandonOutstandingWork().
+   */
+  void finish() override;
+  void abandonOutstandingWork() override;
   void terminate() override;
   StatisticPtrMap statistics() const override;
   bool shouldMeasureLatencies() const override { return measure_latencies_; }
@@ -189,6 +204,10 @@ private:
   bool trackGrpcStatus(GrpcStatusOpt grpc_status);
   Envoy::Stats::Counter& grpcStatusCounter(GrpcStatusOpt grpc_status);
   Envoy::Stats::Counter& streamResetReasonCounter(Envoy::Http::StreamResetReason reason);
+  /**
+   * Takes one request off the outstanding ones, and ends the wait in finish() with the last.
+   */
+  void onRequestDone();
 
   Envoy::Api::Api& api_;
   Envoy::Event::Dispatcher& dispatcher_;
@@ -204,6 +223,18 @@ private:
   Envoy::Random::RandomGeneratorImpl generator_;
   uint64_t requests_completed_{};
   uint64_t requests_initiated_{};
+  // Requests tryStartRequest() handed to the pool that have neither completed nor failed in it.
+  // Kept apart from requests_initiated_ - requests_completed_, which the closed-loop backpressure
+  // in tryStartRequest() is computed from and which does not see pool failures.
+  uint64_t requests_outstanding_{};
+  Envoy::Event::TimerPtr finish_timer_;
+  bool finished_{false};
+  bool waiting_in_finish_{false};
+  bool finish_timed_out_{false};
+  bool abandon_outstanding_{false};
+  // How long finish() waited. terminate() takes it off its own wait: both are bound by timeout_
+  // and wait for the same requests.
+  std::chrono::milliseconds finish_waited_{0};
   bool measure_latencies_{};
   BenchmarkClientCounters benchmark_client_counters_;
   Envoy::Upstream::ClusterManagerPtr& cluster_manager_;

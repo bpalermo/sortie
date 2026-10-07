@@ -172,6 +172,7 @@ func TestReportsBreakDownFailuresPerBackend(t *testing.T) {
 		&client.Counter{Name: "benchmark.stream_resets_incomplete_body", Value: 3},
 		&client.Counter{Name: "benchmark.stream_resets_remote_reset", Value: 3},
 		&client.Counter{Name: "benchmark.pool_failure_timeout", Value: 1},
+		&client.Counter{Name: "benchmark.http_inflight_lost", Value: 2},
 		&client.Counter{Name: "benchmark.pool_overflow", Value: 0},
 		&client.Counter{Name: "upstream_cx_destroy_remote", Value: 12},
 	)
@@ -194,7 +195,7 @@ func TestReportsBreakDownFailuresPerBackend(t *testing.T) {
 	if !strings.Contains(out, "10.0.0.1:8443: 1000 requests in 10s\n") {
 		t.Errorf("a clean backend's line must be unchanged:\n%s", out)
 	}
-	want := "10.0.0.2:8443: 997 requests in 10s  (stream_resets 3, stream_resets_incomplete_body 3, pool_failure_timeout 1, stream_resets_remote_reset 3)"
+	want := "10.0.0.2:8443: 997 requests in 10s  (stream_resets 3, stream_resets_incomplete_body 3, pool_failure_timeout 1, http_inflight_lost 2, stream_resets_remote_reset 3)"
 	if !strings.Contains(out, want) {
 		t.Errorf("text report is missing %q:\n%s", want, out)
 	}
@@ -230,6 +231,7 @@ func TestReportsBreakDownFailuresPerBackend(t *testing.T) {
 		"benchmark.stream_resets_incomplete_body": 3,
 		"benchmark.stream_resets_remote_reset":    3,
 		"benchmark.pool_failure_timeout":          1,
+		"benchmark.http_inflight_lost":            2,
 	}
 	if len(e.Failures[0].Counters) != len(wantCounters) {
 		t.Errorf("counters = %v, want %v", e.Failures[0].Counters, wantCounters)
