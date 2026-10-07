@@ -88,12 +88,16 @@ engine:
   # backendNameFrom takes the name from the pod, through the downward API:
   #   none  no name (the default)
   #   node  the node the pod runs on. Stable across installs and restarts,
-  #         and unique in a DaemonSet -- one pod per node. Two replicas of a
-  #         Deployment on one node would share it, and their series merge.
+  #         and one per pod in a DaemonSet. Two replicas of a Deployment on
+  #         one node would share it, and their series merge.
   #   pod   the pod's name. Unique always; a DaemonSet's or Deployment's pod
   #         gets a new one whenever it is replaced, so its series start over.
   # backendName is a literal name and wins over backendNameFrom. Every pod of
   # the workload gets the same one, so it suits a single engine.
+  #
+  # The engine lowercases the name and reduces it to [a-z0-9_], and what
+  # matters is that names are still distinct after that: node-a and node.a
+  # both become node_a and would share their series. Nothing checks this.
   backendNameFrom: none
   backendName: ""
   # The generated load runs on this pod's CPUs: give it the cores a plan's

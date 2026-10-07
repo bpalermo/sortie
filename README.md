@@ -532,11 +532,15 @@ stats:
 Two things follow from sortie not knowing the names. An engine started without
 one refuses the execution rather than emit the placeholder as a metric name,
 and the report shows that backend's error. And nothing can check that two
-engines of a pool are named differently: two with one name write one series,
-so give each its own. The chart does both with `engine.backendNameFrom: node`
-(the node's name, right for a DaemonSet) or `pod` (the pod's name, which is
-unique among a Deployment's replicas but new whenever a pod is replaced);
-`engine.backendName` is a literal for a single engine.
+engines of a pool end up named differently: two with one name write one
+series. "Differently" means after the name is reduced to `[a-z0-9_]`, which
+is many-to-one: nodes called `node-a` and `node.a` are both `node_a`. So the
+names have to stay distinct once punctuation and case are gone, which most
+naming schemes satisfy and none guarantees. The chart supplies a name with
+`engine.backendNameFrom: node` (the node's name, right for a DaemonSet) or
+`pod` (the pod's name, unique among a Deployment's replicas but new whenever a
+pod is replaced), and `engine.backendName` is a literal for a single engine;
+it cannot check the result either. A name must be ASCII.
 
 Three limits, each deliberate:
 

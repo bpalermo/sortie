@@ -525,9 +525,10 @@ Where:
 What this service is called in the metric names of its executions'
 stats sinks: a statsd or dog_statsd sink prefix containing %BACKEND%
 is emitted with the name in its place, so that series are keyed by
-something that outlives an address -- a node name, say. Lowercased and
-reduced to [a-z0-9_] (Node-A.example is node_a_example). Without a
-name, an execution whose sinks ask for one is refused. Default empty.
+something that outlives an address -- a node name, say. ASCII;
+lowercased and reduced to [a-z0-9_] (Node-A.example is
+node_a_example). Without a name, an execution whose sinks ask for one
+is refused. Default empty.
 
 --max-concurrent-executions <uint32_t>
 How many executions the traffic-generator-service runs at once, each

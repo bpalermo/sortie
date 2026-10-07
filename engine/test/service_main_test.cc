@@ -53,6 +53,14 @@ TEST_F(ServiceMainTest, BackendNameIsAccepted) {
 
 // A name nothing survives of would be an empty component in every metric name. It is what
 // an unset environment variable expands to, so it is refused at startup, where it is seen.
+// The name is reduced byte-wise here and with Unicode lowercasing by sortie, and the two would
+// disagree on a few non-ASCII characters; such a name is refused instead.
+TEST_F(ServiceMainTest, NonAsciiBackendNameIsRejected) {
+  std::vector<const char*> argv = {"foo", "--backend-name", "\xE2\x84\xAAube"}; // Kelvin sign
+  EXPECT_THROW_WITH_REGEX(ServiceMain(argv.size(), argv.data()), MalformedArgvException,
+                          "--backend-name must be ASCII");
+}
+
 TEST_F(ServiceMainTest, BackendNameThatReducesToNothingIsRejected) {
   for (const char* name : {"", "-.-", "%"}) {
     std::vector<const char*> argv = {"foo", "--backend-name", name};
