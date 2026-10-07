@@ -642,8 +642,8 @@ func TestStatsJudgesASinkByItsConfigType(t *testing.T) {
 		}
 	}
 	ok := &Stats{Sinks: []*metricsv3.StatsSink{{
-		Name:       "envoy.stat_sinks.dog_statsd",
-		ConfigType: &metricsv3.StatsSink_TypedConfig{TypedConfig: &anypb.Any{TypeUrl: "type.googleapis.com/envoy.config.metrics.v3.DogStatsdSink"}},
+		Name:       "envoy.stat_sinks.hystrix",
+		ConfigType: &metricsv3.StatsSink_TypedConfig{TypedConfig: &anypb.Any{TypeUrl: "type.googleapis.com/envoy.config.metrics.v3.HystrixSink"}},
 	}}}
 	if err := validateStats(ok); err != nil {
 		t.Errorf("an ordinary sink was refused: %v", err)
@@ -655,13 +655,20 @@ func TestStatsJudgesASinkByItsConfigType(t *testing.T) {
 // fails at parse, as the schema says.
 func TestStatsSinksAcceptTheMetricsV3ConfigTypesOnly(t *testing.T) {
 	plan := func(typ string) string {
+		// The two statsd sinks need somewhere to send; the others take no
+		// required field.
+		address := ""
+		if strings.HasSuffix(typ, "StatsdSink") && strings.HasPrefix(typ, "envoy.config.metrics.v3.") {
+			address = `
+        address: {socket_address: {address: 10.0.0.1, port_value: 8125}}`
+		}
 		return `
 version: v1
 stats:
   sinks:
     - name: a-sink
       typed_config:
-        "@type": type.googleapis.com/` + typ + `
+        "@type": type.googleapis.com/` + typ + address + `
 pools:
   - name: local
     services: ["127.0.0.1:1"]
@@ -684,5 +691,64 @@ scenarios:
 	}
 	if _, err := Parse([]byte(plan("envoy.extensions.stat_sinks.graphite_statsd.v3.GraphiteStatsdSink"))); err == nil {
 		t.Error("an extension's config type parsed; the schema and README say it cannot")
+	}
+}
+
+// A statsd sink written out in stats.sinks is held to the statsd shortcut's
+// rules: what would only fail on the backend is refused when the plan loads.
+func TestStatsPassthroughStatsdFollowsTheShortcutsRules(t *testing.T) {
+	plan := func(sink string) string {
+		return `
+version: v1
+stats:
+  sinks:
+    - name: envoy.stat_sinks.statsd
+      typed_config:
+` + sink + `
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+scenarios:
+  - name: s
+    pool: local
+    target: http://127.0.0.1:1/
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+`
+	}
+	const statsd = `        "@type": type.googleapis.com/envoy.config.metrics.v3.StatsdSink
+`
+	const dog = `        "@type": type.googleapis.com/envoy.config.metrics.v3.DogStatsdSink
+`
+	for name, c := range map[string]struct{ sink, want string }{
+		"tcp": {statsd + `        tcp_cluster_name: statsd
+`, "tcp_cluster_name"},
+		"a hostname": {statsd + `        address: {socket_address: {address: collector.monitoring, port_value: 8125}}
+`, "not an IP address"},
+		"a named port": {statsd + `        address: {socket_address: {address: 10.0.0.1, named_port: statsd}}
+`, "named_port"},
+		"no port": {statsd + `        address: {socket_address: {address: 10.0.0.1}}
+`, "not in 1..65535"},
+		"a pipe": {statsd + `        address: {pipe: {path: /tmp/statsd.sock}}
+`, "needs a socket_address"},
+		"no address at all": {statsd, "needs a socket_address"},
+		"dog_statsd by hostname": {dog + `        address: {socket_address: {address: agent.datadog, port_value: 8125}}
+`, "not an IP address"},
+	} {
+		_, err := Parse([]byte(plan(c.sink)))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want one containing %q", name, err, c.want)
+		}
+	}
+	for name, sink := range map[string]string{
+		"statsd by ip": statsd + `        address: {socket_address: {address: 10.0.0.1, port_value: 8125}}
+`,
+		"statsd by ipv6": statsd + `        address: {socket_address: {address: "2001:db8::1", port_value: 8125}}
+`,
+		"dog_statsd by ip": dog + `        address: {socket_address: {address: 10.0.0.1, port_value: 8125}}
+`,
+	} {
+		if _, err := Parse([]byte(plan(sink))); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

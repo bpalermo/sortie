@@ -2,6 +2,8 @@ package plan
 
 import (
 	"fmt"
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	metricsv3 "github.com/envoyproxy/go-control-plane/envoy/config/metrics/v3"
 	"net"
 	"strconv"
 	"strings"
@@ -496,6 +498,11 @@ func validateStats(st *Stats) error {
 			return fmt.Errorf("sinks[%d]: name the Envoy sink itself, not %s: sortie adds the adapter",
 				i, envoyStatsSinkAdapter)
 		}
+		// A statsd sink written out in full is held to what the statsd
+		// shortcut is held to, for the same reasons: see passthroughStatsd.
+		if err := passthroughStatsd(sink); err != nil {
+			return fmt.Errorf("sinks[%d]: %w", i, err)
+		}
 	}
 	if st.GetStatsd() == nil {
 		return nil
@@ -506,12 +513,71 @@ func validateStats(st *Stats) error {
 	}
 	// SplitHostPort only separates the two; the range is checked here so that
 	// validate and compile, which builds a socket address from it, agree.
-	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
 		return fmt.Errorf("statsd.address: port %q is not in 1..65535", port)
 	}
+	if err := statsdEndpoint(host, uint32(n)); err != nil {
+		return fmt.Errorf("statsd.address: %w", err)
+	}
+	return nil
+}
+
+// statsdEndpoint is the rule for where a statsd sink may send: an IP literal
+// and a real port. Envoy's statsd sinks resolve the address with its IP
+// resolver, which takes no name, so a hostname would fail on the backend, at
+// sink creation, with the plan already dispatched.
+func statsdEndpoint(host string, port uint32) error {
+	if port == 0 || port > 65535 {
+		return fmt.Errorf("port %d is not in 1..65535", port)
+	}
 	if net.ParseIP(host) == nil {
-		return fmt.Errorf("statsd.address: %q is not an IP address; the engine's statsd sink "+
+		return fmt.Errorf("%q is not an IP address; the engine's statsd sink "+
 			"does not resolve names, so use the server's IP (a Service's clusterIP)", host)
+	}
+	return nil
+}
+
+// passthroughStatsd checks a stats.sinks entry that is Envoy's StatsdSink or
+// DogStatsdSink, found by the type of its configuration. They are the same
+// sink the statsd shortcut configures, reached the long way round, and what
+// the shortcut cannot express must not get through here either: a TCP statsd
+// sink names a cluster of the bootstrap, which the engine writes itself and
+// puts no such cluster in, and an address that is not an IP literal with a
+// numeric port cannot be resolved. Both would fail on the backend, after
+// dispatch. Any other sink is not this function's business.
+func passthroughStatsd(sink *metricsv3.StatsSink) error {
+	cfg := sink.GetTypedConfig()
+	var address *corev3.Address
+	switch {
+	case cfg.MessageIs(&metricsv3.StatsdSink{}):
+		var sd metricsv3.StatsdSink
+		if err := cfg.UnmarshalTo(&sd); err != nil {
+			return fmt.Errorf("typed_config: %w", err)
+		}
+		if sd.GetTcpClusterName() != "" {
+			return fmt.Errorf("tcp_cluster_name %q: the engine has no such cluster, because it writes "+
+				"its own bootstrap; use address, which sends over UDP", sd.GetTcpClusterName())
+		}
+		address = sd.GetAddress()
+	case cfg.MessageIs(&metricsv3.DogStatsdSink{}):
+		var dd metricsv3.DogStatsdSink
+		if err := cfg.UnmarshalTo(&dd); err != nil {
+			return fmt.Errorf("typed_config: %w", err)
+		}
+		address = dd.GetAddress()
+	default:
+		return nil
+	}
+	sa := address.GetSocketAddress()
+	if sa == nil {
+		return fmt.Errorf("address: a statsd sink needs a socket_address with an IP and a port")
+	}
+	if sa.GetNamedPort() != "" {
+		return fmt.Errorf("address: named_port %q cannot be resolved; set port_value", sa.GetNamedPort())
+	}
+	if err := statsdEndpoint(sa.GetAddress(), sa.GetPortValue()); err != nil {
+		return fmt.Errorf("address: %w", err)
 	}
 	return nil
 }

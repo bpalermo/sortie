@@ -47,8 +47,11 @@ message Plan {
   // declares itself.
   repeated string thresholds = 5;
 
-  // Live metrics for every scenario that does not set its own stats block.
-  // A scenario's stats replaces this wholesale rather than merging with it.
+  // Live metrics for every scenario that sets no stats block of its own and
+  // finds none in defaults. There are three levels, each replacing the one
+  // before it wholesale rather than merging with it: this field, then
+  // defaults.stats, then the scenario's own stats. So a scenario without a
+  // block does not always get this one: defaults.stats, when set, wins.
   Stats stats = 6;
 }
 
@@ -112,7 +115,9 @@ message Stats {
   // links those types and no extension's. A sink the engine links but whose
   // config lives elsewhere -- graphite_statsd, wasm -- fails when the plan is
   // parsed. envoy.stat_sinks.open_telemetry is refused outright (see the note
-  // on field 4), and so is the adapter itself.
+  // on field 4), and so is the adapter itself. A StatsdSink or DogStatsdSink
+  // here is held to the statsd shortcut's rules: an IP literal and a port, and
+  // no tcp_cluster_name.
   repeated envoy.config.metrics.v3.StatsSink sinks = 5;
 }
 
