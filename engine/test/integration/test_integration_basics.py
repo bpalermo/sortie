@@ -1129,7 +1129,9 @@ def test_http_h1_requests_in_flight_at_the_end_are_waited_for(http_test_server_f
                       counters["upstream_rq_total"])
   actual_duration = utility.get_execution_duration_from_global_result_json(
       http_test_server_fixture.getGlobalResults(parsed_json))
-  asserts.assertBetweenInclusive(actual_duration, 2, 3)
+  # Not the 1.5 seconds of waiting on top. A little under 2 is possible: the duration is counted
+  # from when the rate limiter's clock started, which is after the termination predicate's.
+  asserts.assertBetweenInclusive(actual_duration, 1.9, 3)
 
 
 def test_http_h1_requests_never_answered_are_counted_as_lost(http_test_server_fixture):
@@ -1154,10 +1156,10 @@ def test_http_h1_requests_never_answered_are_counted_as_lost(http_test_server_fi
   asserts.assertNotIn("benchmark.http_2xx", counters)
   asserts.assertNotIn("benchmark.stream_resets", counters)
   asserts.assertIn("counted in benchmark.http_inflight_lost", logs)
-  # One second of execution and two of waiting; a second wait in the pool drain would make it five.
+  # One second of execution and two of waiting. That the pool drain does not wait a second time
+  # is checked in benchmark_http_client_test.cc: the wall time here includes starting the
+  # process, which on a loaded machine is longer than the two seconds that would tell.
   asserts.assertGreaterEqual(elapsed, 3)
-  if not utility.isSanitizerRun():
-    asserts.assertLessEqual(elapsed, 4.5)
 
 
 def test_client_cli_bad_uri(http_test_server_fixture):
