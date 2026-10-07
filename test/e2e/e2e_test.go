@@ -237,13 +237,16 @@ func TestSmokePlanAgainstTheEngine(t *testing.T) {
 		t.Error("a progress line carries a p99: snapshots are copying histograms by default")
 	}
 	// Anchored on the count, so that 1000 requests (the rate forwarded to each
-	// worker rather than divided) cannot satisfy it. Not exact: a request still
-	// in flight when the clock runs out makes it 499 on a slow runner. The
+	// worker rather than divided) cannot satisfy it. Not exact, and not tight:
+	// a request still in flight when the clock runs out makes it 499, and a
+	// loaded runner that overflows the pool while its connections open has
+	// been seen at 489. Anything from 470 is still unmistakably 500 and not
+	// 1000, which is all this distinguishes. The
 	// duration is the backend's measured one and may read 5.001s.
 	// The line may go on: the report appends a backend's non-zero failure
 	// counters, and one pool overflow while the connections are still opening
 	// is not unusual on a loaded runner.
-	if !regexp.MustCompile(`(?m)^\s+\S+: (49[0-9]|50[0-9]) requests in \S+(  \(.*\))?$`).Match(out) {
+	if !regexp.MustCompile(`(?m)^\s+\S+: (4[7-9][0-9]|50[0-9]) requests in \S+(  \(.*\))?$`).Match(out) {
 		t.Errorf("sortie output lacks the backend line with about 500 requests")
 	}
 	if !strings.Contains(string(out), "PASS  1/1 executions passed") {
