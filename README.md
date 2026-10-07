@@ -455,16 +455,28 @@ counters (`upstream_cx_total`, `upstream_rq_total`, and so on), and every
 latency sample as a statsd timer in milliseconds. Names are
 
 ```
-<prefix>.<scenario>.cluster.<worker>.benchmark.http_2xx                   counter
-<prefix>.<scenario>.cluster.<worker>.benchmark_http_client.latency_2xx   timer, ms
+<prefix>.<scenario>.<backend>.cluster.<worker>.benchmark.http_2xx                   counter
+<prefix>.<scenario>.<backend>.cluster.<worker>.benchmark_http_client.latency_2xx   timer, ms
 ```
 
 `prefix` defaults to `sortie`. The scenario's label is lowercased and reduced
 to `[a-z0-9_]`, with a `/` becoming a level of its own, so `Live Metrics`
 is `sortie.live_metrics` and stage 2 of a staircase named `ramp` is
 `sortie.ramp.stage_2`. That is what tells scenarios, stages and targets apart
-on a dashboard. Counters are per worker; sum over the worker to get a
-backend's total, and over backends to get the pool's.
+on a dashboard.
+
+`<backend>` is the engine the metric came from: its address without the port,
+sanitized the same way, so `10.0.0.11:8443` is `10_0_0_11`, or host and port
+together when two engines share a host. Should two still read alike after
+that, as two IPv6 addresses can, each gets its position in the pool appended
+(`_b0`, `_b1`), so no two backends ever share a series. This is for pools
+sortie dispatches to itself, listed or found through DNS. Behind a distributor
+every target is sent the same options, so their metrics keep the prefix
+without a backend and land on one series. Every backend of a pool runs the same
+execution, and without this they would all write the same series, which a
+statsd server would show as one backend's worth. With it there is a series per
+node. Counters are per worker: sum over workers for a backend's total, and
+over backends for the pool's, which is what the report's totals are.
 
 Three limits, each deliberate:
 

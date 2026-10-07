@@ -245,3 +245,118 @@ func TestStatsRejectsABadAddress(t *testing.T) {
 		})
 	}
 }
+
+// statsdPrefix is the prefix of the statsd sink at index i of an options'
+// stats sinks.
+func statsdPrefix(t *testing.T, o *client.CommandLineOptions, i int) string {
+	t.Helper()
+	var sd metricsv3.StatsdSink
+	if err := unwrap(t, o.GetStatsSinks()[i]).GetTypedConfig().UnmarshalTo(&sd); err != nil {
+		t.Fatal(err)
+	}
+	return sd.GetPrefix()
+}
+
+// Every backend of a pool emits under a prefix that names it. Without that a
+// statsd server holds one series fed by all of them, which reads as a single
+// backend's worth; with it the series sum, over backends, to the report.
+func TestForPoolGivesEachBackendItsOwnStatsPrefix(t *testing.T) {
+	s := statsScenario(&plan.Stats{Statsd: &plan.Statsd{Address: "10.0.0.5:8125"}})
+	s.NighthawkTemplate = &client.CommandLineOptions{
+		StatsSinks: []*metricsv3.StatsSink{{Name: "nighthawk.fake_stats_sink"}},
+	}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := statsdPrefix(t, execs[0].Options, 1); got != "sortie.smoke" {
+		t.Errorf("before the pool is known the prefix = %q, want sortie.smoke", got)
+	}
+
+	_, opts, err := ForPool(execs[0], &plan.Pool{Name: "nodes", Services: []string{"10.0.0.11:8443", "10.0.0.12:8443"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"sortie.smoke.10_0_0_11", "sortie.smoke.10_0_0_12"} {
+		sinks := opts[i].GetStatsSinks()
+		if len(sinks) != 2 || sinks[0].GetName() != "nighthawk.fake_stats_sink" {
+			t.Fatalf("backend %d: sinks = %v, want the template's sink kept, then the statsd one", i, sinks)
+		}
+		if got := statsdPrefix(t, opts[i], 1); got != want {
+			t.Errorf("backend %d: prefix = %q, want %q", i, got, want)
+		}
+	}
+	// The execution's own options are not touched by dispatching it.
+	if got := statsdPrefix(t, execs[0].Options, 1); got != "sortie.smoke" {
+		t.Errorf("ForPool changed the execution's options: prefix = %q", got)
+	}
+
+	// Engines sharing a host are told apart by port; IPv6 is sanitized.
+	_, opts, err = ForPool(execs[0], &plan.Pool{Name: "local", Services: []string{"127.0.0.1:8443", "127.0.0.1:8444", "[2001:db8::1]:8443"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"sortie.smoke.127_0_0_1_8443", "sortie.smoke.127_0_0_1_8444", "sortie.smoke.2001_db8_1"} {
+		if got := statsdPrefix(t, opts[i], 1); got != want {
+			t.Errorf("backend %d: prefix = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// A scenario without a stats block is dispatched as before.
+func TestForPoolLeavesOptionsWithoutStatsAlone(t *testing.T) {
+	s := statsScenario(nil)
+	s.NighthawkTemplate = &client.CommandLineOptions{
+		StatsSinks: []*metricsv3.StatsSink{{Name: "nighthawk.fake_stats_sink"}},
+	}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, opts, err := ForPool(execs[0], &plan.Pool{Name: "nodes", Services: []string{"10.0.0.11:8443", "10.0.0.12:8443"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range opts {
+		if sinks := opts[i].GetStatsSinks(); len(sinks) != 1 || sinks[0].GetName() != "nighthawk.fake_stats_sink" {
+			t.Errorf("backend %d: sinks = %v", i, sinks)
+		}
+	}
+}
+
+// Distinct backends never share a segment, even when sanitizing makes their
+// names alike: the two IPv6 addresses below both reduce to 2001_db8_1, with
+// the same port, so only their position in the pool is left to tell them
+// apart.
+func TestBackendSegmentsAreUniqueAfterSanitizing(t *testing.T) {
+	for name, addrs := range map[string][]string{
+		"distinct hosts":           {"10.0.0.11:8443", "10.0.0.12:8443"},
+		"one host, two ports":      {"127.0.0.1:8443", "127.0.0.1:8444"},
+		"ipv6 alike, ports differ": {"[2001:db8::1]:8443", "[2001:db8:1::]:8444"},
+		"ipv6 alike, same port":    {"[2001:db8::1]:8443", "[2001:db8:1::]:8443"},
+		"three alike and one not":  {"[2001:db8::1]:8443", "[2001:db8:1::]:8443", "[2001:db8::1]:8443", "10.0.0.1:8443"},
+		// The third is already named what the first's suffixed name would be.
+		"a suffix that is taken": {"a-b:1", "a.b:1", "a-b-1-b0:2"},
+	} {
+		got := backendSegments(addrs)
+		if len(got) != len(addrs) {
+			t.Fatalf("%s: %d segments for %d addresses", name, len(got), len(addrs))
+		}
+		seen := map[string]bool{}
+		for i, seg := range got {
+			if seg == "" || strings.ContainsAny(seg, ".:[] ") {
+				t.Errorf("%s: segment %d = %q is not a clean prefix component", name, i, seg)
+			}
+			if seen[seg] {
+				t.Errorf("%s: segment %q is used twice in %v", name, seg, got)
+			}
+			seen[seg] = true
+		}
+	}
+	if got := backendSegments([]string{"10.0.0.11:8443", "10.0.0.12:8443"}); got[0] != "10_0_0_11" || got[1] != "10_0_0_12" {
+		t.Errorf("distinct hosts should stay bare hosts, got %v", got)
+	}
+	if got := backendSegments([]string{"[2001:db8::1]:8443", "[2001:db8:1::]:8443"}); got[0] != "2001_db8_1_8443_b0" || got[1] != "2001_db8_1_8443_b1" {
+		t.Errorf("alike after sanitizing with the same port: got %v", got)
+	}
+}

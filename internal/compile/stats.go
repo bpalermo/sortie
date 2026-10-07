@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	metricsv3 "github.com/envoyproxy/go-control-plane/envoy/config/metrics/v3"
@@ -38,7 +39,7 @@ func StatsPrefix(prefix, label string) string { return plan.StatsPrefix(prefix, 
 // applyStats adds a stats block's sinks to the options, after the sinks a
 // template may carry, and sets the flush interval when the block names one.
 func applyStats(o *client.CommandLineOptions, st *plan.Stats, label string) error {
-	sinks, err := statsSinks(st, label)
+	sinks, err := statsSinks(st, label, "")
 	if err != nil {
 		return err
 	}
@@ -53,8 +54,15 @@ func applyStats(o *client.CommandLineOptions, st *plan.Stats, label string) erro
 
 // statsSinks compiles a stats block into the engine's stats_sinks for an
 // execution labelled label.
-func statsSinks(st *plan.Stats, label string) ([]*metricsv3.StatsSink, error) {
+//
+// backend, when set, is appended to the prefix as its last component, so that
+// each backend of a pool emits its own series: `sortie.<label>.<backend>`.
+// The series of one execution then sum, over backends, to the report's totals.
+func statsSinks(st *plan.Stats, label, backend string) ([]*metricsv3.StatsSink, error) {
 	prefix := StatsPrefix(st.GetPrefix(), label)
+	if backend != "" {
+		prefix += "." + backend
+	}
 	var out []*metricsv3.StatsSink
 
 	if sd := st.GetStatsd(); sd != nil {
@@ -127,4 +135,81 @@ func socketAddress(hostPort string) (*corev3.Address, error) {
 		Address:       host,
 		PortSpecifier: &corev3.SocketAddress_PortValue{PortValue: uint32(port)},
 	}}}, nil
+}
+
+// restat replaces the sinks applyStats gave an execution's options with the
+// same sinks under a prefix that names the backend. The stats block's sinks
+// are the last ones in the list -- a template's come first -- and there are as
+// many as the block compiles to, which is how they are found.
+func restat(o *client.CommandLineOptions, e Execution, backend string) error {
+	sinks, err := statsSinks(e.stats, e.Label, backend)
+	if err != nil {
+		return fmt.Errorf("execution %q: %w", e.Label, err)
+	}
+	if len(o.StatsSinks) < len(sinks) {
+		return fmt.Errorf("execution %q: its options carry %d stats sinks, fewer than the %d its stats block compiles to",
+			e.Label, len(o.StatsSinks), len(sinks))
+	}
+	kept := o.StatsSinks[:len(o.StatsSinks)-len(sinks)]
+	o.StatsSinks = append(append([]*metricsv3.StatsSink(nil), kept...), sinks...)
+	return nil
+}
+
+// backendSegments names each backend of a pool for a metric prefix: its host,
+// sanitized like any other label (`10.0.0.11:8443` is `10_0_0_11`). One
+// segment per address, in order, and no two alike -- that is the whole point,
+// and sanitizing can undo it: `2001:db8::1` and `2001:db8:1::` both reduce to
+// `2001_db8_1`. So uniqueness is judged on the sanitized names, in two steps.
+// Backends whose host alone is not unique get host and port, which tells
+// engines on one machine apart. Any still alike after that get their position
+// in the pool appended, checked against every name already in use, which is
+// stable because a pool's order is: listed pools keep the plan's order and dns
+// pools are sorted.
+func backendSegments(addrs []string) []string {
+	sanitize := func(s string) string { return strings.Join(plan.StatsLabel(s), "_") }
+	count := func(names []string) map[string]int {
+		seen := map[string]int{}
+		for _, n := range names {
+			seen[n]++
+		}
+		return seen
+	}
+
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		host, _, err := net.SplitHostPort(a)
+		if err != nil {
+			host = a
+		}
+		out[i] = sanitize(host)
+	}
+	seen := count(out)
+	for i, a := range addrs {
+		if seen[out[i]] > 1 {
+			out[i] = sanitize(a)
+		}
+	}
+	seen = count(out)
+	// Names that are already unique are kept and reserved. The rest get their
+	// position appended, and a candidate is checked against every name in
+	// use -- a backend may happen to be called what another's suffixed name
+	// would be -- and lengthened until it is free.
+	used := map[string]bool{}
+	for _, name := range out {
+		if seen[name] == 1 && name != "" {
+			used[name] = true
+		}
+	}
+	for i, name := range out {
+		if seen[name] == 1 && name != "" {
+			continue
+		}
+		candidate := fmt.Sprintf("%s_b%d", name, i)
+		for used[candidate] {
+			candidate += "_"
+		}
+		used[candidate] = true
+		out[i] = candidate
+	}
+	return out
 }
