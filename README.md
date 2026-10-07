@@ -594,6 +594,19 @@ survivors' totals, so a threshold on a total count will show the gap; the
 execution fails either way. Only when no backend returns anything is there
 nothing to report.
 
+A backend can also be lost without a sound: a node that freezes or drops off
+the network sends nothing at all, and a connection can wait on it for ever.
+So every backend has a deadline, counted from dispatch: the execution's
+duration, plus every wait the plan asks of the engine after it -- the
+`timeout`, and the drain window of a gRPC stream, WebSocket, TCP or UDP run --
+plus two minutes, and counted from its scheduled start when the plan gives it
+one. One that has not
+answered by then is cancelled and reported as silent, and the run ends with
+the others' results instead of hanging with none. The same margin is applied
+to what a backend says of itself: a result that claims to have run far longer
+than planned -- a node frozen halfway and thawed later -- fails that backend
+too. Its numbers stay in the report, marked as not those of the plan.
+
 ### failure classes
 
 These are the counters a failed request shows up in. The finer ones refine
