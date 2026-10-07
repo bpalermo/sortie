@@ -323,3 +323,38 @@ func TestForPoolLeavesOptionsWithoutStatsAlone(t *testing.T) {
 		}
 	}
 }
+
+// Distinct backends never share a segment, even when sanitizing makes their
+// names alike: the two IPv6 addresses below both reduce to 2001_db8_1, with
+// the same port, so only their position in the pool is left to tell them
+// apart.
+func TestBackendSegmentsAreUniqueAfterSanitizing(t *testing.T) {
+	for name, addrs := range map[string][]string{
+		"distinct hosts":           {"10.0.0.11:8443", "10.0.0.12:8443"},
+		"one host, two ports":      {"127.0.0.1:8443", "127.0.0.1:8444"},
+		"ipv6 alike, ports differ": {"[2001:db8::1]:8443", "[2001:db8:1::]:8444"},
+		"ipv6 alike, same port":    {"[2001:db8::1]:8443", "[2001:db8:1::]:8443"},
+		"three alike and one not":  {"[2001:db8::1]:8443", "[2001:db8:1::]:8443", "[2001:db8::1]:8443", "10.0.0.1:8443"},
+	} {
+		got := backendSegments(addrs)
+		if len(got) != len(addrs) {
+			t.Fatalf("%s: %d segments for %d addresses", name, len(got), len(addrs))
+		}
+		seen := map[string]bool{}
+		for i, seg := range got {
+			if seg == "" || strings.ContainsAny(seg, ".:[] ") {
+				t.Errorf("%s: segment %d = %q is not a clean prefix component", name, i, seg)
+			}
+			if seen[seg] {
+				t.Errorf("%s: segment %q is used twice in %v", name, seg, got)
+			}
+			seen[seg] = true
+		}
+	}
+	if got := backendSegments([]string{"10.0.0.11:8443", "10.0.0.12:8443"}); got[0] != "10_0_0_11" || got[1] != "10_0_0_12" {
+		t.Errorf("distinct hosts should stay bare hosts, got %v", got)
+	}
+	if got := backendSegments([]string{"[2001:db8::1]:8443", "[2001:db8:1::]:8443"}); got[0] != "2001_db8_1_8443_b0" || got[1] != "2001_db8_1_8443_b1" {
+		t.Errorf("alike after sanitizing with the same port: got %v", got)
+	}
+}

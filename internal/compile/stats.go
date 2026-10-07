@@ -156,27 +156,43 @@ func restat(o *client.CommandLineOptions, e Execution, backend string) error {
 }
 
 // backendSegments names each backend of a pool for a metric prefix: its host,
-// sanitized like any other label (`10.0.0.11:8443` is `10_0_0_11`), or host
-// and port when two backends share a host, as engines on one machine do. One
-// segment per address, in order.
+// sanitized like any other label (`10.0.0.11:8443` is `10_0_0_11`). One
+// segment per address, in order, and no two alike -- that is the whole point,
+// and sanitizing can undo it: `2001:db8::1` and `2001:db8:1::` both reduce to
+// `2001_db8_1`. So uniqueness is judged on the sanitized names, in two steps.
+// Backends whose host alone is not unique get host and port, which tells
+// engines on one machine apart. Any still alike after that get their position
+// in the pool appended, which is unique by construction and stable because a
+// pool's order is: listed pools keep the plan's order and dns pools are sorted.
 func backendSegments(addrs []string) []string {
-	hosts := make([]string, len(addrs))
-	seen := map[string]int{}
+	sanitize := func(s string) string { return strings.Join(plan.StatsLabel(s), "_") }
+	count := func(names []string) map[string]int {
+		seen := map[string]int{}
+		for _, n := range names {
+			seen[n]++
+		}
+		return seen
+	}
+
+	out := make([]string, len(addrs))
 	for i, a := range addrs {
 		host, _, err := net.SplitHostPort(a)
 		if err != nil {
 			host = a
 		}
-		hosts[i] = host
-		seen[host]++
+		out[i] = sanitize(host)
 	}
-	out := make([]string, len(addrs))
+	seen := count(out)
 	for i, a := range addrs {
-		name := hosts[i]
-		if seen[hosts[i]] > 1 {
-			name = a
+		if seen[out[i]] > 1 {
+			out[i] = sanitize(a)
 		}
-		out[i] = strings.Join(plan.StatsLabel(name), "_")
+	}
+	seen = count(out)
+	for i := range out {
+		if seen[out[i]] > 1 || out[i] == "" {
+			out[i] = fmt.Sprintf("%s_b%d", out[i], i)
+		}
 	}
 	return out
 }
