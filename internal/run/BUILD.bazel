@@ -27,6 +27,7 @@ go_test(
     deps = [
         ":run",
         "//engine/api/client:base_go_proto",
+        "//internal/nh",
         "//internal/plan",
         "@org_golang_google_genproto_googleapis_rpc//status",
         "@org_golang_google_grpc//:grpc",

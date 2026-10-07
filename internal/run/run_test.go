@@ -13,6 +13,7 @@ import (
 	client "github.com/bpalermo/sortie/engine/api/client"
 	"google.golang.org/genproto/googleapis/rpc/status"
 
+	"github.com/bpalermo/sortie/internal/nh"
 	"github.com/bpalermo/sortie/internal/plan"
 	"github.com/bpalermo/sortie/internal/run"
 )
@@ -788,5 +789,94 @@ scenarios:
 	}
 	if e.Set == nil || len(e.Set.Backends) != 1 {
 		t.Errorf("the good backend's results were not kept: %+v", e.Set)
+	}
+}
+
+// A backend that goes silent -- a frozen node: no answer, no FIN, no RST --
+// is given up on once the execution is well past its planned end. Without a
+// deadline the run waited on it for ever and produced no report for any
+// backend. It is named, the execution fails, and the backend that did answer
+// is reported and judged.
+func TestRunGivesUpOnASilentBackend(t *testing.T) {
+	defer nh.SetCancelGraceForTest(100 * time.Millisecond)()
+
+	alive := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		return okResponse(100, 10*time.Millisecond, time.Second)
+	})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	frozen := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		<-release // never, as far as this run is concerned
+		return okResponse(1, time.Millisecond, time.Second)
+	})
+
+	p := planFor(t, `
+scenarios:
+  - name: soak
+    timeout: 1s
+    executor: {type: constant-rate, rate: 100, duration: 1s}
+    thresholds:
+      - "latency_2xx.p95 < 50ms"
+`, alive.addr, frozen.addr)
+
+	started := time.Now()
+	report, err := (&run.Runner{Plan: p, ResponseGrace: 500 * time.Millisecond}).Run(context.Background())
+	waited := time.Since(started)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Planned 1s + timeout 1s + grace 0.5s, then the cancellation's own short
+	// wait: a few seconds, not for ever.
+	if waited > 15*time.Second {
+		t.Errorf("the run took %s to give up on a silent backend", waited)
+	}
+	e := report.Executions[0]
+	if e.Pass || report.Pass {
+		t.Error("a run that lost a backend to silence must not pass")
+	}
+	if len(e.BackendErrors) != 1 || e.BackendErrors[0].Addr != frozen.addr ||
+		!strings.Contains(e.BackendErrors[0].Err.Error(), "went silent") {
+		t.Fatalf("backend errors = %+v, want the frozen backend named as silent", e.BackendErrors)
+	}
+	if e.Set == nil || len(e.Set.Backends) != 1 || e.Set.Backends[0].Addr != alive.addr {
+		t.Fatalf("results = %+v, want the backend that answered", e.Set)
+	}
+	if len(e.Outcomes) != 1 || !e.Outcomes[0].Pass {
+		t.Errorf("the surviving backend's threshold was not judged: %+v", e.Outcomes)
+	}
+}
+
+// A backend that answers with a run far longer than the plan -- frozen
+// halfway and thawed -- is failed, not accepted: twenty minutes of wall clock
+// for a two-minute execution is not the execution that was planned. Its
+// result is kept in the report for whoever reads it.
+func TestRunFailsABackendWhoseExecutionRanFarOverThePlan(t *testing.T) {
+	stalled := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		return okResponse(100, 10*time.Millisecond, 21*time.Minute)
+	})
+	onTime := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		// A second over the plan is an ordinary drain.
+		return okResponse(100, 10*time.Millisecond, 121*time.Second)
+	})
+	p := planFor(t, `
+scenarios:
+  - name: soak
+    executor: {type: constant-rate, rate: 100, duration: 120s}
+`, stalled.addr, onTime.addr)
+
+	report, err := (&run.Runner{Plan: p}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	e := report.Executions[0]
+	if e.Pass {
+		t.Error("the execution passed with a backend that ran ten times its plan")
+	}
+	if len(e.BackendErrors) != 1 || e.BackendErrors[0].Addr != stalled.addr ||
+		!strings.Contains(e.BackendErrors[0].Err.Error(), "stalled") {
+		t.Fatalf("backend errors = %+v, want only the stalled backend", e.BackendErrors)
+	}
+	if e.Set == nil || len(e.Set.Backends) != 2 {
+		t.Errorf("both backends' results should be in the report: %+v", e.Set)
 	}
 }

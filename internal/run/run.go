@@ -92,6 +92,11 @@ type Runner struct {
 	// Zero means nh.Dial's own default.
 	DialTimeout time.Duration
 
+	// ResponseGrace is how long past an execution's planned duration a
+	// backend may take to answer before it is given up on. Zero means
+	// responseGrace. See backendDeadline.
+	ResponseGrace time.Duration
+
 	// Serializes the backends' progress callbacks into the Observer.
 	observerMu sync.Mutex
 }
@@ -377,6 +382,31 @@ func (r *Runner) runExecution(
 	return er
 }
 
+// responseGrace is how long past its planned duration an execution may take
+// to answer. An engine needs some of it honestly: it opens its connections
+// before the clock starts, drains what is in flight when it stops, and
+// assembles the report, which together run to seconds. The rest is margin.
+const responseGrace = 2 * time.Minute
+
+// backendDeadline is how long a backend has, from dispatch, to return an
+// execution's result: the planned duration, the scenario's own timeout (the
+// bound on connecting and on the final drain), and the grace.
+//
+// It exists for the backend that goes SILENT. One that dies audibly -- a
+// deleted pod, a refused connection -- breaks the stream and is reported at
+// once. One whose node freezes or loses its network sends nothing, no FIN and
+// no RST, and a stream with no deadline waits on it for ever: the run then
+// has no report for any backend, long after every other one has finished. An
+// execution has a planned length, so "no answer well past it" is a failure
+// that can be recognised without hearing from the peer at all.
+func (r *Runner) backendDeadline(e compile.Execution) time.Duration {
+	grace := r.ResponseGrace
+	if grace <= 0 {
+		grace = responseGrace
+	}
+	return e.Duration + e.Scenario.GetTimeout().AsDuration() + grace
+}
+
 // dispatch runs the execution on every backend of the pool and returns, in
 // the pool's order, each backend's output (nil when it returned none) and the
 // backends that failed. Backends are independent: one that cannot be reached,
@@ -394,6 +424,23 @@ func (r *Runner) dispatch(
 		return nil, nil, nil, err
 	}
 
+	// Every backend gets the same budget, measured from here. A backend that
+	// has not answered when it runs out is cancelled and reported; the parent
+	// context, which is the caller's, is untouched and tells the two apart.
+	budget := r.backendDeadline(e)
+	parent := ctx
+	ctx, cancel := context.WithTimeout(parent, budget)
+	defer cancel()
+	// silent rewrites the error of a backend the deadline gave up on, so the
+	// report says what happened rather than "context deadline exceeded".
+	silent := func(err error) error {
+		if err == nil || parent.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return fmt.Errorf("no result %s after dispatch, for an execution planned to last %s: "+
+			"the backend went silent or is far behind (%w)", budget, e.Duration, err)
+	}
+
 	if pool.Distributor != "" {
 		conn, err := nh.Dial(ctx, pool.Distributor)
 		if err != nil {
@@ -409,9 +456,9 @@ func (r *Runner) dispatch(
 		}
 		var failed []BackendError
 		for _, b := range bad {
-			failed = append(failed, BackendError{Addr: b.Target, Err: b.Err})
+			failed = append(failed, BackendError{Addr: b.Target, Err: silent(b.Err)})
 		}
-		return targets, outputs, failed, nil
+		return targets, outputs, append(failed, overdue(e, budget, targets, outputs, failed)...), nil
 	}
 
 	outputs := make([]*client.Output, len(addrs))
@@ -429,7 +476,7 @@ func (r *Runner) dispatch(
 				conn, err = nh.Dial(ctx, addr)
 			}
 			if err != nil {
-				errs[i] = err
+				errs[i] = silent(err)
 				return
 			}
 			defer conn.Close()
@@ -445,7 +492,7 @@ func (r *Runner) dispatch(
 				}
 			}
 			resp, err := nh.Execute(ctx, conn, perBackend[i], progress)
-			errs[i] = err
+			errs[i] = silent(err)
 			// An engine that reports a failure still returns what it counted
 			// (a run stopped by a failure predicate the plan asked for, say).
 			// Keep it: the error says the run was not clean, the output says
@@ -468,5 +515,44 @@ func (r *Runner) dispatch(
 			failed = append(failed, BackendError{Addr: addrs[i], Err: err})
 		}
 	}
-	return addrs, outputs, failed, nil
+	var gotAddrs []string
+	var gotOutputs []*client.Output
+	for i, out := range outputs {
+		if out != nil {
+			gotAddrs = append(gotAddrs, addrs[i])
+			gotOutputs = append(gotOutputs, out)
+		}
+	}
+	return addrs, outputs, append(failed, overdue(e, budget, gotAddrs, gotOutputs, failed)...), nil
+}
+
+// overdue names the backends whose own account of the execution is far longer
+// than the plan: a result that says it ran for twenty minutes when two were
+// asked for. That is what a backend frozen mid-run and thawed later returns,
+// and its counters describe a run nobody planned -- its rate over that span is
+// a fraction of the target's, its latencies include the freeze. The result is
+// kept, for whoever reads the report, and the backend is failed. One already
+// in failed is not named twice.
+func overdue(e compile.Execution, budget time.Duration, addrs []string, outputs []*client.Output, failed []BackendError) []BackendError {
+	already := map[string]bool{}
+	for _, f := range failed {
+		already[f.Addr] = true
+	}
+	var out []BackendError
+	for i, o := range outputs {
+		if o == nil || already[addrs[i]] {
+			continue
+		}
+		for _, res := range o.GetResults() {
+			if res.GetName() != "global" {
+				continue
+			}
+			if took := res.GetExecutionDuration().AsDuration(); took > budget {
+				out = append(out, BackendError{Addr: addrs[i], Err: fmt.Errorf(
+					"reported an execution of %s for one planned to last %s: it stalled, and its results are not those of the plan",
+					took.Round(time.Millisecond), e.Duration)})
+			}
+		}
+	}
+	return out
 }

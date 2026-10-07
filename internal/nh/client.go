@@ -83,7 +83,16 @@ func waitReady(ctx context.Context, conn *grpc.ClientConn, timeout time.Duration
 // stream is abandoned.
 // cancelGrace bounds how long a cancelled Execute waits for the service to
 // answer the cancellation with the run's partial response.
-const cancelGrace = 30 * time.Second
+var cancelGrace = 30 * time.Second
+
+// SetCancelGraceForTest shortens the wait for a cancelled execution's answer
+// and returns a function that restores it. A test of what happens when a
+// backend never answers would otherwise take the full half minute.
+func SetCancelGraceForTest(d time.Duration) (restore func()) {
+	old := cancelGrace
+	cancelGrace = d
+	return func() { cancelGrace = old }
+}
 
 // Progress asks the service for interim responses while a run is in flight
 // and receives them: every Interval the service writes a snapshot of the run
