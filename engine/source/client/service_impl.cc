@@ -1,5 +1,6 @@
 #include "engine/source/client/service_impl.h"
 
+#include "engine/source/client/backend_name.h"
 #include "engine/source/client/redaction.h"
 
 #include "source/common/common/cleanup.h"
@@ -82,6 +83,15 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
                         "concurrently, and the log level is process-wide.");
       }
       requested.mutable_verbosity()->set_value(service_verbosity_);
+    }
+    // Before the options are built, so that everything downstream -- validation, the sinks'
+    // factories, the options echoed in the output -- sees the prefix that is emitted.
+    const absl::Status named = expandBackendName(backend_name_, requested);
+    if (!named.ok()) {
+      response.mutable_error_detail()->set_code(grpc::StatusCode::INVALID_ARGUMENT);
+      response.mutable_error_detail()->set_message(std::string(named.message()));
+      write_final(response);
+      return;
     }
     options = std::make_unique<OptionsImpl>(requested);
   } catch (const MalformedArgvException& e) {

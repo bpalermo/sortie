@@ -509,6 +509,37 @@ scenarios:
 	}
 }
 
+// backend is part of the block, so it is inherited and replaced with it.
+func TestStatsBackendTravelsWithItsBlock(t *testing.T) {
+	p, err := Parse([]byte(`
+version: v1
+stats:
+  backend: name
+  statsd: {address: "10.0.0.1:8125"}
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+defaults:
+  pool: local
+  target: http://127.0.0.1:1/
+  executor: {type: constant-rate, rate: 10, duration: 1s}
+scenarios:
+  - name: inherits
+  - name: own
+    stats:
+      statsd: {address: "10.0.0.3:8125"}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Scenarios[0].GetStats().GetBackend(); got != StatsBackendName {
+		t.Errorf("inherits: backend = %q, want %q", got, StatsBackendName)
+	}
+	if got := p.Scenarios[1].GetStats().GetBackend(); got != "" {
+		t.Errorf("own: backend = %q, want the default: a block replaces the one above it whole", got)
+	}
+}
+
 func TestStatsRejectsWhatWouldMisbehaveOnTheBackend(t *testing.T) {
 	const head = `
 version: v1
@@ -579,6 +610,11 @@ scenarios:
   - name: mix
     targets: [{name: a, url: "http://127.0.0.1:1/a"}]
   - name: mix/a`, "same prefix (sortie.mix.a)"},
+		"a backend that is neither address nor name": {`
+stats:
+  backend: node
+  statsd: {address: "10.0.0.1:8125"}
+scenarios: [{name: a}]`, "backend must be address or name"},
 		"a statsd port out of range": {`
 stats:
   statsd: {address: "10.0.0.1:99999"}
@@ -607,6 +643,16 @@ scenarios: [{name: Foo}, {name: foo}]`,
 stats:
   sinks: [{name: envoy.stat_sinks.dog_statsd}]
 scenarios: [{name: Foo}, {name: foo}]`,
+		"backends named by address, spelled out": `
+stats:
+  backend: address
+  statsd: {address: "10.0.0.1:8125"}
+scenarios: [{name: a}]`,
+		"backends named by the engine": `
+stats:
+  backend: name
+  statsd: {address: "10.0.0.1:8125"}
+scenarios: [{name: a}]`,
 		"different prefixes": `
 scenarios:
   - {name: Foo, stats: {prefix: one, statsd: {address: "10.0.0.1:8125"}}}

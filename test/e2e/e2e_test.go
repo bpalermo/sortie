@@ -473,6 +473,120 @@ func TestLiveMetricsReachAStatsdSink(t *testing.T) {
 	}
 }
 
+// A plan whose live metrics name the backend by the engine's own name rather
+// than its address.
+const namedBackendStatsPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+stats:
+  flush_interval: 1s
+  backend: name
+  statsd:
+    address: "%s"
+defaults:
+  pool: local
+  target: http://127.0.0.1:%d/
+  protocol: http1
+  concurrency: "1"
+  connections: 2
+scenarios:
+  - name: Named Backend
+    executor:
+      type: constant-rate
+      rate: 50
+      duration: 4s
+    thresholds:
+      - "counter:benchmark.http_5xx == 0"
+`
+
+// The engine names itself in its metric names. sortie knows a backend only by
+// its address, so it sends a placeholder and the engine, started with
+// --backend-name, puts its own name there -- sanitized like every other
+// component. Both halves have to agree on the placeholder for this to pass,
+// which no unit test on either side can show: a mismatch is the placeholder
+// itself arriving as a metric name.
+func TestLiveMetricsNameTheBackendByItsOwnName(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tmp := t.TempDir()
+
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { udp.Close() })
+	var mu sync.Mutex
+	var lines []string
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, _, err := udp.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			lines = append(lines, strings.Split(strings.TrimSpace(string(buf[:n])), "\n")...)
+			mu.Unlock()
+		}
+	}()
+	configPath := filepath.Join(tmp, "test_server.yaml")
+	if err := os.WriteFile(configPath, []byte(testServerConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adminPath := filepath.Join(tmp, "admin_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_test_server"),
+		"--config-path", configPath, "--admin-address-path", adminPath,
+		"--disable-hot-restart", "--concurrency", "1")
+	targetPort := listenerPort(t, waitForAddress(t, adminPath))
+
+	servicePath := filepath.Join(tmp, "service_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath,
+		// As a node name arrives from the downward API: mixed case, dots
+		// and dashes, none of which may reach a metric name.
+		"--backend-name", "Node-A.example")
+	serviceAddr := waitForAddress(t, servicePath)
+	assertHealthy(t, ctx, serviceAddr)
+
+	planPath := filepath.Join(tmp, "plan.yaml")
+	plan := fmt.Sprintf(namedBackendStatsPlanTemplate, serviceAddr, udp.LocalAddr().String(), targetPort)
+	if err := os.WriteFile(planPath, []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath)
+	out, err := cmd.CombinedOutput()
+	t.Logf("sortie run:\n%s", out)
+	if err != nil {
+		t.Fatalf("sortie run failed: %v", err)
+	}
+
+	// The name is the component right after the scenario's, where the
+	// address would be, and nothing of the address is left beside it.
+	missing := awaitStatsdLines(&mu, &lines, map[string]*regexp.Regexp{
+		"an http_2xx counter": regexp.MustCompile(`^sortie\.named_backend\.node_a_example\.cluster\.\d+\.benchmark\.http_2xx:\d+\|c`),
+		"a latency timer":     regexp.MustCompile(`^sortie\.named_backend\.node_a_example\.cluster\..*latency.*:\d+(\.\d+)?\|ms`),
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	t.Logf("statsd received %d lines; a sample:\n%s", len(lines), strings.Join(lines[:min(len(lines), 40)], "\n"))
+	for _, m := range missing {
+		t.Errorf("%s under sortie.named_backend.node_a_example did not reach the statsd socket", m)
+	}
+	// Every line, not only the two looked for: a sink left unexpanded would
+	// emit all of its metrics under the placeholder.
+	for _, l := range lines {
+		if strings.Contains(l, "%") || strings.Contains(l, "BACKEND") {
+			t.Fatalf("the placeholder reached the statsd socket: %s", l)
+		}
+		if !strings.HasPrefix(l, "sortie.named_backend.node_a_example.") {
+			t.Fatalf("a metric outside the backend's prefix: %s", l)
+		}
+	}
+}
+
 // Weighted targets with live metrics: three executions at once on one backend,
 // each with its own stats sink and its own flush worker inside the engine,
 // each emitting under its own prefix. This is the per-target dashboard a soak

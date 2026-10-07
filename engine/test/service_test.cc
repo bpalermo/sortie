@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <thread>
+#include <tuple>
 
 #include "nighthawk/common/exception.h"
 
@@ -9,7 +10,10 @@
 #include "test/test_common/network_utility.h"
 #include "test/test_common/utility.h"
 
+#include "envoy/config/metrics/v3/stats.pb.h"
+
 #include "engine/api/client/service.pb.h"
+#include "engine/api/stats_sink/envoy_stats_sink_adapter.pb.h"
 
 #include "engine/source/client/service_impl.h"
 
@@ -557,6 +561,32 @@ TEST_P(ServiceTest, ProgressIntervalBelowAMillisecondIsAnError) {
   EXPECT_TRUE(response_.has_error_detail());
   EXPECT_EQ(grpc::StatusCode::INVALID_ARGUMENT, response_.error_detail().code());
   EXPECT_THAT(response_.error_detail().message(), HasSubstr("at least 1ms"));
+  EXPECT_FALSE(r->Read(&response_));
+  EXPECT_TRUE(r->Finish().ok());
+}
+
+// A sink prefix that asks for the backend's name, sent to a service that has none, ends the
+// execution before it starts: the alternative is the placeholder itself in every metric name.
+TEST_P(ServiceTest, BackendNameTokenWithoutANameIsAnError) {
+  envoy::config::metrics::v3::StatsdSink statsd;
+  statsd.set_prefix("sortie.soak.%BACKEND%");
+  statsd.mutable_address()->mutable_socket_address()->set_address("127.0.0.1");
+  statsd.mutable_address()->mutable_socket_address()->set_port_value(8125);
+  nighthawk::EnvoyStatsSinkAdapterConfig adapter;
+  adapter.mutable_sink()->set_name("envoy.stat_sinks.statsd");
+  std::ignore = adapter.mutable_sink()->mutable_typed_config()->PackFrom(statsd);
+  auto* sink = request_.mutable_start_request()->mutable_options()->add_stats_sinks();
+  sink->set_name("nighthawk.envoy_stats_sink_adapter");
+  std::ignore = sink->mutable_typed_config()->PackFrom(adapter);
+
+  auto r = stub_->ExecutionStream(&context_);
+  EXPECT_TRUE(r->Write(request_, {}));
+  EXPECT_TRUE(r->WritesDone());
+  EXPECT_TRUE(r->Read(&response_));
+  EXPECT_TRUE(response_.has_error_detail());
+  EXPECT_FALSE(response_.has_output());
+  EXPECT_EQ(grpc::StatusCode::INVALID_ARGUMENT, response_.error_detail().code());
+  EXPECT_THAT(response_.error_detail().message(), HasSubstr("--backend-name"));
   EXPECT_FALSE(r->Read(&response_));
   EXPECT_TRUE(r->Finish().ok());
 }

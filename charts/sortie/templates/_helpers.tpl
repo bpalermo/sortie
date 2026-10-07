@@ -57,6 +57,19 @@ nothing at all and install a Service pointing at no pods.
 {{- end -}}
 
 {{/*
+Where the engine's --backend-name comes from, checked: a misspelt source would
+otherwise start the engine without a name, and a plan with `stats.backend:
+name` would then be refused by every engine when the run starts.
+*/}}
+{{- define "sortie.engineBackendNameFrom" -}}
+{{- $from := .Values.engine.backendNameFrom | default "none" -}}
+{{- if not (has $from (list "none" "node" "pod")) -}}
+{{- fail (printf "engine.backendNameFrom must be none, node or pod, got %q" $from) -}}
+{{- end -}}
+{{- $from -}}
+{{- end -}}
+
+{{/*
 The engine's pod template, shared by the Deployment and the DaemonSet so the
 two cannot drift. Which one owns it is engine.kind; the pod is the same.
 */}}
@@ -86,6 +99,16 @@ spec:
       imagePullPolicy: {{ .Values.engine.image.pullPolicy }}
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- $nameFrom := include "sortie.engineBackendNameFrom" . }}
+      {{- if and (not .Values.engine.backendName) (ne $nameFrom "none") }}
+      # The image has no shell to read the environment with, so the name
+      # reaches the engine as an argument the kubelet expands from this.
+      env:
+        - name: SORTIE_BACKEND_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: {{ eq $nameFrom "node" | ternary "spec.nodeName" "metadata.name" }}
+      {{- end }}
       # The image's entrypoint is nighthawk_service.
       args:
         - --listen
@@ -94,6 +117,15 @@ spec:
         # every backend; this is how many the engine accepts.
         - --max-concurrent-executions
         - {{ .Values.engine.maxConcurrentExecutions | quote }}
+        {{- /* Two arguments each: the engine's flag parser separates a flag
+        from its value by a space and does not read --flag=value. */}}
+        {{- if .Values.engine.backendName }}
+        - --backend-name
+        - {{ .Values.engine.backendName | quote }}
+        {{- else if ne $nameFrom "none" }}
+        - --backend-name
+        - $(SORTIE_BACKEND_NAME)
+        {{- end }}
       ports:
         - name: grpc
           containerPort: 8443

@@ -495,18 +495,52 @@ is `sortie.live_metrics` and stage 2 of a staircase named `ramp` is
 `sortie.ramp.stage_2`. That is what tells scenarios, stages and targets apart
 on a dashboard.
 
-`<backend>` is the engine the metric came from: its address without the port,
-sanitized the same way, so `10.0.0.11:8443` is `10_0_0_11`, or host and port
-together when two engines share a host. Should two still read alike after
-that, as two IPv6 addresses can, each gets its position in the pool appended
-(`_b0`, `_b1`), so no two backends ever share a series. This is for pools
-sortie dispatches to itself, listed or found through DNS. Behind a distributor
-every target is sent the same options, so their metrics keep the prefix
-without a backend and land on one series. Every backend of a pool runs the same
-execution, and without this they would all write the same series, which a
-statsd server would show as one backend's worth. With it there is a series per
-node. Counters are per worker: sum over workers for a backend's total, and
-over backends for the pool's, which is what the report's totals are.
+`<backend>` is the engine the metric came from. Every backend of a pool runs
+the same execution, and without it they would all write the same series, which
+a statsd server would show as one backend's worth. With it there is a series
+per engine. Counters are per worker: sum over workers for a backend's total,
+and over backends for the pool's, which is what the report's totals are.
+
+What names the engine is `stats.backend`, and there are two answers:
+
+```yaml
+stats:
+  backend: name          # or address, the default
+  statsd:
+    address: "10.96.14.7:8125"
+```
+
+- **`address`**, the default: the engine's address without the port, sanitized
+  the same way, so `10.0.0.11:8443` is `10_0_0_11`, or host and port together
+  when two engines share a host. Should two still read alike after that, as
+  two IPv6 addresses can, each gets its position in the pool appended (`_b0`,
+  `_b1`), so no two backends ever share a series. This is for pools sortie
+  dispatches to itself, listed or found through DNS. Behind a distributor
+  every target is sent the same options, so their metrics keep the prefix
+  without a backend and land on one series.
+- **`name`**: the name the engine was started with, `nighthawk_service
+  --backend-name`, sanitized the same way (`Node-A.example` is
+  `node_a_example`). An address is only as stable as what it belongs to. A
+  pod's changes with every install and every restart, so each run of a
+  DaemonSet of engines writes a whole new set of series into the store, and
+  yesterday's run and today's cannot be laid over each other. A node's name
+  does not change. sortie knows a backend only by its address, so it sends a
+  placeholder (`%BACKEND%`) where the name goes and each engine puts its own
+  in. That works behind a distributor too, whose targets then have a series
+  each.
+
+Two things follow from sortie not knowing the names. An engine started without
+one refuses the execution rather than emit the placeholder as a metric name,
+and the report shows that backend's error. And nothing can check that two
+engines of a pool end up named differently: two with one name write one
+series. "Differently" means after the name is reduced to `[a-z0-9_]`, which
+is many-to-one: nodes called `node-a` and `node.a` are both `node_a`. So the
+names have to stay distinct once punctuation and case are gone, which most
+naming schemes satisfy and none guarantees. The chart supplies a name with
+`engine.backendNameFrom: node` (the node's name, right for a DaemonSet) or
+`pod` (the pod's name, unique among a Deployment's replicas but new whenever a
+pod is replaced), and `engine.backendName` is a literal for a single engine;
+it cannot check the result either. A name must be ASCII.
 
 Three limits, each deliberate:
 
@@ -531,7 +565,8 @@ as `graphite_statsd`, fails when the plan is parsed. The OpenTelemetry sink is
 refused there too, and so is the engine's own adapter: name the Envoy sink and
 sortie wraps it. A `StatsdSink` or `DogStatsdSink` written out there follows
 the same rules as the `statsd` block: an IP and a port, and no
-`tcp_cluster_name`.
+`tcp_cluster_name`. Its `prefix` is yours to write, and `%BACKEND%` in it is
+replaced with the engine's name as above, whatever `stats.backend` says.
 
 Because the statsd prefix is built from sanitized labels, two scenarios can
 land on one: names that differ only in case or punctuation, or a scenario
@@ -806,6 +841,7 @@ leave the other nodes out for the whole soak.
 engine:
   enabled: true
   kind: DaemonSet                       # behind a headless Service, <release>-sortie-engine-nodes
+  backendNameFrom: node                 # live metrics are keyed by node, not by pod IP
   priorityClassName: loadgen            # a class you create; see below
   tolerations: [{operator: Exists}]
   podAnnotations: {mesh.example.com/inject: "true"}
@@ -820,6 +856,10 @@ version: v1
 pools:
   - name: nodes
     dns: nightly-sortie-engine-nodes.loadtest.svc.cluster.local:8443
+stats:
+  backend: name                         # the engine's node; see Live metrics
+  statsd:
+    address: "10.96.14.7:8125"
 scenarios:
   - name: soak
     pool: nodes
@@ -833,6 +873,12 @@ scenarios:
     thresholds:
       - "counter:benchmark.http_5xx == 0"
 ```
+
+To watch the soak node by node, the plan sends [live metrics](#live-metrics)
+with `backend: name` and the engines take their names from their nodes
+(`engine.backendNameFrom: node`). The series are then
+`sortie.soak.<node>.cluster...`, the same ones on every run; named by address
+they would be keyed by pod IP and start over with every install.
 
 The engine is the pod that opens the connections, so it is the one a mesh has
 to inject; `engine.podAnnotations` and `engine.podLabels` are for that, and the

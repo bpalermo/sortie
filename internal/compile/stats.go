@@ -58,6 +58,8 @@ func applyStats(o *client.CommandLineOptions, st *plan.Stats, label string) erro
 // backend, when set, is appended to the prefix as its last component, so that
 // each backend of a pool emits its own series: `sortie.<label>.<backend>`.
 // The series of one execution then sum, over backends, to the report's totals.
+// It is a sanitized address or plan.StatsBackendToken, which the engine
+// replaces with its own name; see backendComponents.
 func statsSinks(st *plan.Stats, label, backend string) ([]*metricsv3.StatsSink, error) {
 	prefix := StatsPrefix(st.GetPrefix(), label)
 	if backend != "" {
@@ -152,6 +154,51 @@ func restat(o *client.CommandLineOptions, e Execution, backend string) error {
 	}
 	kept := o.StatsSinks[:len(o.StatsSinks)-len(sinks)]
 	o.StatsSinks = append(append([]*metricsv3.StatsSink(nil), kept...), sinks...)
+	return nil
+}
+
+// namedByEngine reports whether an execution's stats block asks for the
+// engine's own name in its metric names rather than its address.
+func namedByEngine(e Execution) bool {
+	return e.stats.GetBackend() == plan.StatsBackendName
+}
+
+// backendComponents returns the backend component of the statsd prefix for
+// each of n options objects sent to the backends at addrs, or nil when the
+// options are to be left as Expand compiled them.
+//
+// By address, each backend gets its own sanitized address, which needs one
+// options object per backend: a distributor's single object, and a dns pool
+// nobody has resolved yet, have no address to carry and get none. By name,
+// every object carries the same placeholder and each engine expands it to its
+// own name, so it goes wherever options go. Nothing is disambiguated in that
+// mode: the names are the engines' and are not known here, so keeping them
+// distinct is the operator's job (the chart takes them from the node or pod).
+func backendComponents(e Execution, addrs []string, n int) []string {
+	if e.stats == nil {
+		return nil
+	}
+	if namedByEngine(e) {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = plan.StatsBackendToken
+		}
+		return out
+	}
+	if n != len(addrs) {
+		return nil
+	}
+	return backendSegments(addrs)
+}
+
+// restatAll gives each options object its backend component; see
+// backendComponents for which get one.
+func restatAll(e Execution, addrs []string, opts []*client.CommandLineOptions) error {
+	for i, component := range backendComponents(e, addrs, len(opts)) {
+		if err := restat(opts[i], e, component); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

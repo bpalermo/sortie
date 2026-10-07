@@ -203,6 +203,19 @@ envoy_cc_library(
 )
 
 envoy_cc_library(
+    name = "backend_name_lib",
+    srcs = ["backend_name.cc"],
+    hdrs = ["backend_name.h"],
+    visibility = ["//engine:__subpackages__"],
+    deps = [
+        "//engine/api/client:base_cc_proto",
+        "//engine/api/stats_sink:envoy_stats_sink_adapter_proto_cc_proto",
+        "@envoy//source/common/protobuf:utility_lib_with_external_headers",
+        "@envoy_api//envoy/config/metrics/v3:pkg_cc_proto",
+    ],
+)
+
+envoy_cc_library(
     name = "nighthawk_service_lib",
     srcs = [
         "service_impl.cc",
@@ -214,6 +227,7 @@ envoy_cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":backend_name_lib",
         ":nighthawk_client_lib",
         "//engine/api/client:grpc_service_lib",
         "//engine/api/request_source:grpc_request_source_service_lib",
