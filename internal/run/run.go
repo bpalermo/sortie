@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"math"
 	"net"
 	"sync"
@@ -393,6 +396,10 @@ const responseGrace = 2 * time.Minute
 // connecting and the final drain of an HTTP run, when the options name none.
 const engineTimeout = 30 * time.Second
 
+// engineDrain is the longest wait an engine performs by default at the end of
+// a run when the options set none: see backendDeadline.
+const engineDrain = time.Second
+
 // backendDeadline is how long a backend has, from dispatch, to return an
 // execution's result: the planned duration, every wait the engine was asked
 // to perform after it, and the grace.
@@ -421,18 +428,32 @@ func (r *Runner) backendDeadline(e compile.Execution) time.Duration {
 	if o.GetTimeout() != nil {
 		timeout = o.GetTimeout().AsDuration()
 	}
-	budget := e.Duration
-	for _, wait := range []time.Duration{
-		timeout,
-		o.GetGrpcStream().GetDrainDuration().AsDuration(),
-		o.GetWebsocket().GetDrainDuration().AsDuration(),
-		o.GetTcp().GetDrainDuration().AsDuration(),
-		o.GetUdp().GetTimeout().AsDuration(),
-		grace,
+	// The mode's window, as set -- or, when the options name none, the
+	// engine's own default for it. Those defaults are not zero: 500ms of
+	// drain for a gRPC stream, WebSocket or TCP run, 1s before a UDP datagram
+	// is lost, and a run can be in one of those modes with no tuning block
+	// at all (a tcp:// or udp:// target says enough). engineDrain is the
+	// largest of them, so it covers whichever mode this is without having to
+	// work out which; an HTTP run is given a second it does not need.
+	var windows []time.Duration
+	for _, set := range []*durationpb.Duration{
+		o.GetGrpcStream().GetDrainDuration(),
+		o.GetWebsocket().GetDrainDuration(),
+		o.GetTcp().GetDrainDuration(),
+		o.GetUdp().GetTimeout(),
 	} {
-		budget = addDuration(budget, wait)
+		if set != nil {
+			windows = append(windows, set.AsDuration())
+		}
 	}
-	return budget
+	if len(windows) == 0 {
+		windows = []time.Duration{engineDrain}
+	}
+	budget := addDuration(e.Duration, timeout)
+	for _, w := range windows {
+		budget = addDuration(budget, w)
+	}
+	return addDuration(budget, grace)
 }
 
 // addDuration adds two non-negative durations without wrapping: a plan can
@@ -475,7 +496,12 @@ func (r *Runner) dispatch(
 	// silent rewrites the error of a backend the deadline gave up on, so the
 	// report says what happened rather than "context deadline exceeded".
 	silent := func(err error) error {
-		if err == nil || parent.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+		// The deadline shows up in two shapes: the context's own error, from
+		// code that watched the context, and a gRPC status with the
+		// DeadlineExceeded code, from an RPC the context ended -- which does
+		// not wrap the context's error, so errors.Is alone would miss it.
+		expired := errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded
+		if err == nil || parent.Err() != nil || !expired {
 			return err
 		}
 		return fmt.Errorf("no result %s after dispatch, for an execution planned to last %s: "+

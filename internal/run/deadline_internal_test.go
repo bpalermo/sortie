@@ -21,11 +21,17 @@ func TestBackendDeadlineCoversWhatTheEngineWasAskedToWait(t *testing.T) {
 		opts *client.CommandLineOptions
 		want time.Duration
 	}{
-		"nothing set: the engine's own 30s timeout": {
-			&client.CommandLineOptions{}, time.Minute + 30*time.Second + grace,
+		// With no window set the engine still drains for its own default,
+		// up to a second depending on the mode.
+		"nothing set: the engine's own 30s timeout and default drain": {
+			&client.CommandLineOptions{}, time.Minute + 30*time.Second + time.Second + grace,
+		},
+		"a tcp or udp run with no tuning block": {
+			&client.CommandLineOptions{Tcp: &client.CommandLineOptions_TcpOptions{}, Udp: &client.CommandLineOptions_UdpOptions{}},
+			time.Minute + 30*time.Second + time.Second + grace,
 		},
 		"a timeout, wherever it came from": {
-			&client.CommandLineOptions{Timeout: d(5 * time.Minute)}, time.Minute + 5*time.Minute + grace,
+			&client.CommandLineOptions{Timeout: d(5 * time.Minute)}, time.Minute + 5*time.Minute + time.Second + grace,
 		},
 		"a grpc stream's drain": {
 			&client.CommandLineOptions{GrpcStream: &client.CommandLineOptions_GrpcStreamOptions{DrainDuration: d(10 * time.Minute)}},
@@ -56,7 +62,7 @@ func TestBackendDeadlineCoversWhatTheEngineWasAskedToWait(t *testing.T) {
 		t.Errorf("an overflowing deadline = %d, want it saturated", got)
 	}
 	// A caller's own grace replaces the default.
-	if got := (&Runner{ResponseGrace: time.Second}).backendDeadline(compile.Execution{Duration: time.Minute, Options: &client.CommandLineOptions{}}); got != time.Minute+30*time.Second+time.Second {
+	if got := (&Runner{ResponseGrace: time.Second}).backendDeadline(compile.Execution{Duration: time.Minute, Options: &client.CommandLineOptions{}}); got != time.Minute+30*time.Second+time.Second+time.Second {
 		t.Errorf("with a 1s grace the deadline = %s", got)
 	}
 }
