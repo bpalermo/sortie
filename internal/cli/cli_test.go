@@ -541,3 +541,50 @@ func TestRunRefusesAStreamThatIsStdout(t *testing.T) {
 		t.Errorf("the file was written to: %q (%v)", raw, err)
 	}
 }
+
+// A stream file that can be written and not read cannot be checked for an
+// unfinished last line, which would swallow the first record appended. It is
+// refused before any load, and left as it was.
+func TestRunRefusesAStreamItCannotReadBack(t *testing.T) {
+	if os.Geteuid() == 0 {
+		// Root reads a file whatever its mode, so the refusal is made to
+		// happen the way it does for anyone else.
+		openToRead = func(path string) (*os.File, error) {
+			return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrPermission}
+		}
+		t.Cleanup(func() { openToRead = os.Open })
+	}
+	backend := &fakeBackend{p95: 5 * time.Millisecond, requests: 100}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	client.RegisterNighthawkServiceServer(server, backend)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	plan := writePlan(t, listener.Addr().String(), "")
+
+	stream := filepath.Join(t.TempDir(), "results.jsonl")
+	const left = "{\"label\":\"earlier\"}\n{\"label\":\"cut sho"
+	if err := os.WriteFile(stream, []byte(left), 0o200); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runCLI("run", "--results-stream", stream, plan)
+	if code != exitBadUsage {
+		t.Errorf("exit = %d, want %d\nstderr:\n%s", code, exitBadUsage, stderr)
+	}
+	if !strings.Contains(stderr, "cannot be read") {
+		t.Errorf("the error does not say the file cannot be read:\n%s", stderr)
+	}
+	if n := backend.calls.Load(); n != 0 {
+		t.Errorf("the backend was driven %d times by a run that should not have started", n)
+	}
+	if err := os.Chmod(stream, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(stream); err != nil || string(raw) != left {
+		t.Errorf("the file was changed: %q (%v)", raw, err)
+	}
+}

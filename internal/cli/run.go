@@ -141,20 +141,27 @@ func openStream(path, out string, stdout io.Writer, warn func(string)) (*os.File
 	return f, nil
 }
 
+// openToRead is os.Open, a variable so that a test can have it fail as it
+// does for a file the user may not read: as root, which is what a sandboxed
+// test often runs as, no file mode makes it fail.
+var openToRead = os.Open
+
 // endsMidLine says whether the file has content that does not end in a
-// newline. A file that cannot be read back -- a pipe, a device, one opened
-// write-only by permission -- is taken to end cleanly: there is nothing to
-// look at and nothing to repair.
+// newline. Only a regular file has an end to look at: a pipe or a device is
+// taken to end cleanly. A regular file with content that cannot be read back
+// -- one this user may write and not read -- is an error: an unfinished line
+// in it could not be seen, and the first record appended would be lost to it.
 func endsMidLine(path string) (bool, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return false, nil
-	}
-	defer f.Close()
-	info, err := f.Stat()
+	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return false, nil
 	}
+	f, err := openToRead(path)
+	if err != nil {
+		return false, fmt.Errorf("%s has content and cannot be read, so whether it ends in an unfinished line "+
+			"cannot be checked: %w", path, err)
+	}
+	defer f.Close()
 	last := make([]byte, 1)
 	if _, err := f.ReadAt(last, info.Size()-1); err != nil {
 		return false, fmt.Errorf("reading the end of %s: %w", path, err)

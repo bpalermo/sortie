@@ -876,7 +876,8 @@ apart. Delete or rename the file between runs to keep one run in it. A line
 that cannot be written is reported on stderr and the run carries on, as is
 a line that was written but could not be synced to disk; a file that cannot
 be opened is refused before any load, as are `-`, since stdout carries the
-report, and the report's own file under any name. A file that ends in part
+report, the report's own file under any name, and a file that has content
+this user cannot read back, since its end cannot be checked. A file that ends in part
 of a line, left by a run that died or by a write that failed half way, is not
 repaired: the part is closed off as a line of its own, which does not parse,
 and the lines after it are whole. A reader skips a line it cannot parse. The
