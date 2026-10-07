@@ -875,7 +875,8 @@ adds its lines after the ones already there, and `started_at` tells them
 apart. Delete or rename the file between runs to keep one run in it. A line
 that cannot be written is reported on stderr and the run carries on, as is
 a line that was written but could not be synced to disk; a file that cannot
-be opened is refused before any load, as are `-`, since stdout carries the
+be opened is refused before any load, as are `-` and anything that is stdout
+or stderr under another name, since stdout carries the
 report, the report's own file under any name, and a file that has content
 this user cannot read back, since its end cannot be checked. A file that ends in part
 of a line, left by a run that died or by a write that failed half way, is not

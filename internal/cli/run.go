@@ -87,7 +87,7 @@ func (s syncedFile) Write(b []byte) (int, error) {
 // closed with a newline first: the fragment stays, as a line of its own that
 // does not parse, and every complete record before and after it does. warn is
 // told when that was done.
-func openStream(path, out string, stdout io.Writer, warn func(string)) (*os.File, error) {
+func openStream(path, out string, stdout, stderr io.Writer, warn func(string)) (*os.File, error) {
 	// stdout is the report's: a JSON document, or the text summary. Lines of
 	// JSON interleaved with either would leave it something no parser reads.
 	if path == "-" {
@@ -117,13 +117,28 @@ func openStream(path, out string, stdout io.Writer, warn func(string)) (*os.File
 				return nil, badUsage("--results-stream and --output name the same file, %s", path)
 			}
 		}
-		// stdout under another name: /dev/stdout, /proc/self/fd/1, or the
-		// file stdout was redirected to. Before the end of the file is
-		// looked at, let alone closed off with a newline.
-		if std, ok := stdout.(*os.File); ok {
-			if stdInfo, err := std.Stat(); err == nil && os.SameFile(streamInfo, stdInfo) {
+		// stdout or stderr under another name: /dev/stdout, /proc/self/fd/2,
+		// or the file one of them was redirected to. stdout carries the
+		// report; stderr carries the narration, and written through its own
+		// descriptor, which need not append, that would land on top of the
+		// records. Before the end of the file is looked at, let alone closed
+		// off with a newline.
+		for _, std := range []struct {
+			name string
+			w    io.Writer
+			why  string
+		}{
+			{"stdout", stdout, "stdout carries the report"},
+			{"stderr", stderr, "stderr carries the run's narration, which would overwrite the records"},
+		} {
+			file, ok := std.w.(*os.File)
+			if !ok {
+				continue
+			}
+			if stdInfo, err := file.Stat(); err == nil && os.SameFile(streamInfo, stdInfo) {
 				_ = f.Close()
-				return nil, badUsage("--results-stream names what stdout is, %s: stdout carries the report, and the two cannot share it", path)
+				return nil, badUsage("--results-stream names what %s is, %s: %s, and the two cannot share it",
+					std.name, path, std.why)
 			}
 		}
 	}
@@ -182,7 +197,7 @@ func runPlan(parent context.Context, path string, asJSON bool, out, stream strin
 	// The runner calls it from one goroutine at a time, so neither locks.
 	var observer run.Observer = report.Progress{W: stderr}
 	if stream != "" {
-		f, err := openStream(stream, out, stdout, func(msg string) {
+		f, err := openStream(stream, out, stdout, stderr, func(msg string) {
 			fmt.Fprintf(stderr, "sortie: results stream: %s\n", msg)
 		})
 		if err != nil {

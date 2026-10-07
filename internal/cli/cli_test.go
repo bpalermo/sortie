@@ -501,9 +501,10 @@ func TestRunKeepsItsLinesApartFromAnUnfinishedOne(t *testing.T) {
 	}
 }
 
-// stdout under another name is still stdout: the file it was redirected to,
-// given as the stream, is refused before any load, and nothing is added to it.
-func TestRunRefusesAStreamThatIsStdout(t *testing.T) {
+// stdout or stderr under another name is still that stream: the file one of
+// them was redirected to, given as the results stream, is refused before any
+// load, and nothing is added to it.
+func TestRunRefusesAStreamThatIsStdoutOrStderr(t *testing.T) {
 	backend := &fakeBackend{p95: 5 * time.Millisecond, requests: 100}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -515,30 +516,51 @@ func TestRunRefusesAStreamThatIsStdout(t *testing.T) {
 	t.Cleanup(server.Stop)
 	plan := writePlan(t, listener.Addr().String(), "")
 
-	path := filepath.Join(t.TempDir(), "stdout.json")
-	// Ends mid-line, as a redirected stdout that something already wrote to may.
-	if err := os.WriteFile(path, []byte("{\"earlier\":"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stdout, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stdout.Close()
-
-	var stderr bytes.Buffer
-	code := execute("test", []string{"run", "--json", "--results-stream", path, plan}, stdout, &stderr)
-	if code != exitBadUsage {
-		t.Errorf("exit = %d, want %d\nstderr:\n%s", code, exitBadUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "--results-stream names what stdout is") {
-		t.Errorf("the error does not say the stream is stdout:\n%s", stderr.String())
+	for _, which := range []string{"stdout", "stderr"} {
+		path := filepath.Join(t.TempDir(), which+".out")
+		// Ends mid-line, as a redirected stream something already wrote to may.
+		const left = "{\"earlier\":"
+		if err := os.WriteFile(path, []byte(left), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		redirected, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The other stream is read back for the error; the redirected one
+		// is the file itself, and must be left alone to be compared.
+		var other bytes.Buffer
+		var stdout, stderr io.Writer = &other, &other
+		if which == "stdout" {
+			stdout = redirected
+		} else {
+			stderr = redirected
+		}
+		code := execute("test", []string{"run", "--json", "--results-stream", path, plan}, stdout, stderr)
+		redirected.Close()
+		if code != exitBadUsage {
+			t.Errorf("%s: exit = %d, want %d", which, code, exitBadUsage)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The refusal is written to stderr: into the buffer, or, when
+		// stderr is the file, at its start, over what was there. Either
+		// way no record of the run was added.
+		said := other.String() + string(raw)
+		if !strings.Contains(said, "--results-stream names what "+which+" is") {
+			t.Errorf("%s: the error does not say the stream is %s:\n%s", which, which, said)
+		}
+		if which == "stdout" && string(raw) != left {
+			t.Errorf("stdout's file was written to: %q", raw)
+		}
+		if strings.Contains(string(raw), "\"label\"") {
+			t.Errorf("%s: a record was written to the file: %q", which, raw)
+		}
 	}
 	if n := backend.calls.Load(); n != 0 {
-		t.Errorf("the backend was driven %d times by a run that should not have started", n)
-	}
-	if raw, err := os.ReadFile(path); err != nil || string(raw) != "{\"earlier\":" {
-		t.Errorf("the file was written to: %q (%v)", raw, err)
+		t.Errorf("the backend was driven %d times by runs that should not have started", n)
 	}
 }
 
