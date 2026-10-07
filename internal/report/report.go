@@ -223,11 +223,76 @@ type jsonExecution struct {
 	BackendErrors []jsonBackendError `json:"backend_errors,omitempty"`
 }
 
-// jsonBackendResult is what one backend counted.
+// jsonBackendResult is what one backend counted and measured.
 type jsonBackendResult struct {
 	Backend   string            `json:"backend"`
 	ElapsedMS int64             `json:"elapsed_ms"`
 	Counters  map[string]uint64 `json:"counters"`
+	// Statistics are the backend's statistics that recorded anything, by id:
+	// its latencies above all. There is no pool-wide entry: a percentile over
+	// a pool cannot be had from the backends' percentiles, which is also why
+	// a latency threshold is judged per backend.
+	Statistics map[string]jsonStatistic `json:"statistics,omitempty"`
+}
+
+// jsonStatistic is one statistic's summary and the percentiles a report is
+// usually read for. Unit says what the numbers are: "ns" for a duration,
+// "raw" for a plain quantity such as a response size. A value the engine did
+// not report is absent rather than zero.
+//
+// A percentile is the first of the histogram's own buckets at or above it --
+// the rule thresholds are resolved by, so a p99 here is the p99 a threshold
+// on the same statistic was judged against.
+type jsonStatistic struct {
+	Count  uint64   `json:"count"`
+	Unit   string   `json:"unit"`
+	Mean   *float64 `json:"mean,omitempty"`
+	Pstdev *float64 `json:"pstdev,omitempty"`
+	Min    *float64 `json:"min,omitempty"`
+	Max    *float64 `json:"max,omitempty"`
+	P50    *float64 `json:"p50,omitempty"`
+	P90    *float64 `json:"p90,omitempty"`
+	P99    *float64 `json:"p99,omitempty"`
+	P999   *float64 `json:"p99.9,omitempty"`
+}
+
+// statistics summarises a result's statistics for the JSON report, through
+// the same resolver thresholds use.
+func statistics(result *client.Result) map[string]jsonStatistic {
+	out := map[string]jsonStatistic{}
+	for _, st := range result.GetStatistics() {
+		if st.GetCount() == 0 || st.GetId() == "" {
+			continue
+		}
+		js := jsonStatistic{Count: st.GetCount(), Unit: "raw"}
+		for _, field := range []struct {
+			name string
+			dst  **float64
+		}{
+			{"mean", &js.Mean}, {"pstdev", &js.Pstdev}, {"min", &js.Min}, {"max", &js.Max},
+			{"p50", &js.P50}, {"p90", &js.P90}, {"p99", &js.P99}, {"p99.9", &js.P999},
+		} {
+			sel, err := metric.ParseSelector(st.GetId() + "." + field.name)
+			if err != nil {
+				continue
+			}
+			v, err := metric.Resolve(result, sel)
+			if err != nil {
+				// Not reported by the engine for this statistic: left out.
+				continue
+			}
+			if v.IsDuration {
+				js.Unit = "ns"
+			}
+			num := v.Num
+			*field.dst = &num
+		}
+		out[st.GetId()] = js
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 type jsonBackendError struct {
@@ -293,9 +358,10 @@ func JSON(w io.Writer, r *run.Report) error {
 					je.Backends = append(je.Backends, b.Addr)
 				}
 				je.Results = append(je.Results, jsonBackendResult{
-					Backend:   b.Addr,
-					ElapsedMS: b.Global.GetExecutionDuration().AsDuration().Milliseconds(),
-					Counters:  benchmarkCounters(b.Global.GetCounters()),
+					Backend:    b.Addr,
+					ElapsedMS:  b.Global.GetExecutionDuration().AsDuration().Milliseconds(),
+					Counters:   benchmarkCounters(b.Global.GetCounters()),
+					Statistics: statistics(b.Global),
 				})
 				if fs := failures(b.Global.GetCounters()); len(fs) > 0 {
 					bf := jsonBackendFailures{Backend: b.Addr, Counters: map[string]uint64{}}

@@ -397,3 +397,83 @@ func TestReportsCarryPerBackendTotalsAndBackendErrors(t *testing.T) {
 		t.Errorf("backend_errors = %+v", e.BackendErrors)
 	}
 }
+
+// The JSON carries each backend's latency: the summary and the percentiles,
+// resolved as thresholds resolve them, in nanoseconds. A statistic nothing
+// was recorded into is left out, and so is a value the engine did not report.
+func TestJSONCarriesPerBackendLatencyStatistics(t *testing.T) {
+	pc := func(p float64, d time.Duration) *client.Percentile {
+		return &client.Percentile{Percentile: p, DurationType: &client.Percentile_Duration{Duration: durationpb.New(d)}}
+	}
+	global := &client.Result{
+		Name:              "global",
+		ExecutionDuration: durationpb.New(10 * time.Second),
+		Counters:          []*client.Counter{{Name: "benchmark.http_2xx", Value: 600}},
+		Statistics: []*client.Statistic{
+			{
+				Id:       "benchmark_http_client.latency_2xx",
+				Count:    600,
+				MeanType: &client.Statistic_Mean{Mean: durationpb.New(2 * time.Millisecond)},
+				MinType:  &client.Statistic_Min{Min: durationpb.New(time.Millisecond)},
+				MaxType:  &client.Statistic_Max{Max: durationpb.New(9 * time.Millisecond)},
+				Percentiles: []*client.Percentile{
+					pc(0.5, 1700*time.Microsecond), pc(0.9, 2500*time.Microsecond),
+					// The histogram's own buckets: nothing at exactly 0.99.
+					pc(0.9902, 3300*time.Microsecond), pc(0.9995, 8*time.Millisecond), pc(1, 9*time.Millisecond),
+				},
+			},
+			{
+				Id:       "benchmark_http_client.response_body_size",
+				Count:    600,
+				MeanType: &client.Statistic_RawMean{RawMean: 10},
+			},
+			{Id: "benchmark_http_client.latency_5xx", Count: 0},
+		},
+	}
+	set := &result.Set{Backends: []result.Backend{{
+		Addr: "10.0.0.1:8443", Output: &client.Output{Results: []*client.Result{global}}, Global: global,
+	}}}
+	r := &run.Report{Executions: []run.ExecutionReport{{
+		Label: "soak", Pool: "nodes", Rate: 60, Duration: 10 * time.Second, Set: set,
+		Backends: []string{"10.0.0.1:8443"},
+	}}}
+
+	var buf bytes.Buffer
+	if err := report.JSON(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Executions []struct {
+			Results []struct {
+				Statistics map[string]map[string]any `json:"statistics"`
+			} `json:"results"`
+		} `json:"executions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("%v\n%s", err, buf.String())
+	}
+	stats := got.Executions[0].Results[0].Statistics
+	lat, ok := stats["benchmark_http_client.latency_2xx"]
+	if !ok {
+		t.Fatalf("no latency statistic in %v", stats)
+	}
+	for key, want := range map[string]any{
+		"count": float64(600), "unit": "ns",
+		"mean": 2e6, "min": 1e6, "max": 9e6,
+		"p50": 1.7e6, "p90": 2.5e6, "p99": 3.3e6, "p99.9": 8e6,
+	} {
+		if lat[key] != want {
+			t.Errorf("latency_2xx %s = %v, want %v", key, lat[key], want)
+		}
+	}
+	if _, has := lat["pstdev"]; has {
+		t.Errorf("pstdev was not reported by the engine and must be absent: %v", lat)
+	}
+	size := stats["benchmark_http_client.response_body_size"]
+	if size["unit"] != "raw" || size["mean"] != float64(10) {
+		t.Errorf("response_body_size = %v, want a raw mean of 10", size)
+	}
+	if _, has := stats["benchmark_http_client.latency_5xx"]; has {
+		t.Errorf("an empty statistic was reported: %v", stats)
+	}
+}
