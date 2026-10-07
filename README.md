@@ -443,8 +443,11 @@ stats:
     address: "10.96.14.7:8125"   # an OpenTelemetry collector's statsd receiver
 ```
 
-At the top of a plan it applies to every scenario. A scenario's own `stats`
-replaces it wholesale. The report at the end is unaffected.
+A `stats` block can sit at three levels, and the most specific one wins
+whole: the top of the plan, then `defaults.stats`, then a scenario's own. Each
+replaces the one before it rather than merging with it, so a scenario with no
+block gets `defaults.stats` when there is one and the plan's only when there is
+not. The report at the end is unaffected.
 
 What goes out is everything the engine keeps in its Envoy stats store: the
 `benchmark.*` counters thresholds are written against, Envoy's own cluster
@@ -484,7 +487,9 @@ apply to them. It reaches the sinks whose configuration is an
 links those types only. A sink configured by an extension's own message, such
 as `graphite_statsd`, fails when the plan is parsed. The OpenTelemetry sink is
 refused there too, and so is the engine's own adapter: name the Envoy sink and
-sortie wraps it.
+sortie wraps it. A `StatsdSink` or `DogStatsdSink` written out there follows
+the same rules as the `statsd` block: an IP and a port, and no
+`tcp_cluster_name`.
 
 Because the statsd prefix is built from sanitized labels, two scenarios can
 land on one: names that differ only in case or punctuation, or a scenario
