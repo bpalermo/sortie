@@ -819,7 +819,7 @@ scenarios:
       # Not "== N": under the WAIT idle strategy, which is the default, a
       # worker woken late ends the run without the requests that came due
       # while it slept. Usually none or one; how late a busy executor wakes it
-      # is not bounded, so the floor is a 5% tolerance. Never one too many.
+      # is not bounded, so the floor is a 5 percent tolerance. Never one too many.
       - "counter:benchmark.stream_messages_received >= 475"
       - "counter:benchmark.stream_messages_received <= 500"
       - "benchmark_stream.message_latency.p99 < 500ms"
@@ -1111,7 +1111,7 @@ scenarios:
       # Not "== N": under the WAIT idle strategy, which is the default, a
       # worker woken late ends the run without the requests that came due
       # while it slept. Usually none or one; how late a busy executor wakes it
-      # is not bounded, so the floor is a 5% tolerance. Never one too many.
+      # is not bounded, so the floor is a 5 percent tolerance. Never one too many.
       - "counter:benchmark.tcp_messages_sent >= 950"
       - "counter:benchmark.tcp_messages_sent <= 1000"
       - "counter:benchmark.tcp_messages_received >= 990"
@@ -1199,7 +1199,7 @@ scenarios:
       # Not "== N": under the WAIT idle strategy, which is the default, a
       # worker woken late ends the run without the requests that came due
       # while it slept. Usually none or one; how late a busy executor wakes it
-      # is not bounded, so the floor is a 5% tolerance. Never one too many.
+      # is not bounded, so the floor is a 5 percent tolerance. Never one too many.
       - "counter:benchmark.udp_datagrams_sent >= 950"
       - "counter:benchmark.udp_datagrams_sent <= 1000"
       - "counter:benchmark.udp_datagrams_received >= 990"
