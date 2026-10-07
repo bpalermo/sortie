@@ -3,7 +3,10 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "e2e_test",
     size = "large",
-    srcs = ["e2e_test.go"],
+    srcs = [
+        "cap_test.go",
+        "e2e_test.go",
+    ],
     # The binaries under test, reached through runfiles rather than Go imports,
     # so Gazelle cannot infer them.
     # keep
