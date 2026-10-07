@@ -447,17 +447,42 @@ func (r *Runner) runGroup(
 	reports := make([]ExecutionReport, len(group))
 	if len(group) == 1 {
 		reports[0] = r.runExecution(stage, group[0], pool, thresholds, refused)
-		return reports
+	} else {
+		var wg sync.WaitGroup
+		for i, e := range group {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				reports[i] = r.runExecution(stage, e, pool, thresholds, refused)
+			}()
+		}
+		wg.Wait()
 	}
-	var wg sync.WaitGroup
-	for i, e := range group {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			reports[i] = r.runExecution(stage, e, pool, thresholds, refused)
-		}()
+
+	// An execution that had already returned when a sibling was refused --
+	// one whose backends all failed at once, say -- was reported, and maybe
+	// judged, as a run of its own. The stage was stopped at the cap for all
+	// of them: once they have all joined, each says so and none is judged.
+	var atCap *CapError
+	if errors.As(context.Cause(stage), &atCap) {
+		for i := range reports {
+			if errors.Is(reports[i].Err, atCap) {
+				continue
+			}
+			var refusals []BackendError
+			for _, f := range reports[i].BackendErrors {
+				var busy *nh.BusyError
+				if errors.As(f.Err, &busy) {
+					refusals = append(refusals, f)
+				}
+			}
+			reports[i].BackendErrors = refusals
+			reports[i].Err = atCap
+			reports[i].Pass = false
+			reports[i].Set = nil
+			reports[i].Outcomes = nil
+		}
 	}
-	wg.Wait()
 	return reports
 }
 

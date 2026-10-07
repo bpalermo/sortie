@@ -56,6 +56,15 @@ func untilCancelled(t *testing.T, cancelled *atomic.Int32, stream client.Nightha
 	return stream.Send(okResponse(5, time.Millisecond, time.Second))
 }
 
+// afterStarts holds a refusal back until n other executions have started, so
+// that what a test counts as cancelled does not depend on which stream
+// reached its backend first. It gives up after a while rather than hang.
+func afterStarts(started *atomic.Int32, n int32) {
+	for deadline := time.Now().Add(10 * time.Second); started.Load() < n && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+}
+
 const weightedMinute = `
 scenarios:
   - name: mix
@@ -75,25 +84,29 @@ scenarios:
 // mix for the whole duration, and every execution says what happened and what
 // to change.
 func TestRunStopsAStageWhenABackendIsAtItsExecutionCap(t *testing.T) {
-	var roomyCancelled, fullCancelled atomic.Int32
+	var roomyCancelled, fullCancelled, started atomic.Int32
 	roomy := startFake(t, nil)
 	roomy.serve = func(_ int, _ *client.CommandLineOptions, stream client.NighthawkService_ExecutionStreamServer) error {
+		started.Add(1)
 		return untilCancelled(t, &roomyCancelled, stream)
 	}
 	full := startFake(t, nil)
 	full.serve = func(_ int, opts *client.CommandLineOptions, stream client.NighthawkService_ExecutionStreamServer) error {
 		if strings.HasSuffix(opts.GetUri().GetValue(), "/c") {
+			// Once the other five have their slots.
+			afterStarts(&started, 5)
 			return atCap(stream)
 		}
+		started.Add(1)
 		return untilCancelled(t, &fullCancelled, stream)
 	}
 
-	started := time.Now()
+	began := time.Now()
 	report, err := (&run.Runner{Plan: planFor(t, weightedMinute, roomy.addr, full.addr)}).Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if took := time.Since(started); took > 15*time.Second {
+	if took := time.Since(began); took > 15*time.Second {
 		t.Errorf("the run took %s: the siblings of the refused start were not stopped promptly", took)
 	}
 	if got := roomyCancelled.Load(); got != 3 {
@@ -157,13 +170,15 @@ func TestRunStopsAStageWhenABackendIsAtItsExecutionCap(t *testing.T) {
 // The same for a scenario with one target: a backend whose engine is busy
 // with someone else's run stops the execution on the others too.
 func TestRunStopsASingleExecutionWhenABackendIsAtItsExecutionCap(t *testing.T) {
-	var cancelled atomic.Int32
+	var cancelled, started atomic.Int32
 	roomy := startFake(t, nil)
 	roomy.serve = func(_ int, _ *client.CommandLineOptions, stream client.NighthawkService_ExecutionStreamServer) error {
+		started.Add(1)
 		return untilCancelled(t, &cancelled, stream)
 	}
 	full := startFake(t, nil)
 	full.serve = func(_ int, _ *client.CommandLineOptions, stream client.NighthawkService_ExecutionStreamServer) error {
+		afterStarts(&started, 1)
 		return atCap(stream)
 	}
 	p := planFor(t, `
@@ -362,8 +377,10 @@ scenarios:
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := len(fake.received()); got != 2 {
-		t.Errorf("the backend saw %d starts, want the first stage's 2", got)
+	// One or two: the first stage's sibling may be stopped before its start
+	// reaches the backend. Never the second stage's.
+	if got := len(fake.received()); got < 1 || got > 2 {
+		t.Errorf("the backend saw %d starts, want only the first stage's, 1 or 2", got)
 	}
 	if len(report.Executions) != 4 {
 		t.Fatalf("got %d executions, want 2 targets x 2 stages", len(report.Executions))
@@ -495,5 +512,50 @@ scenarios:
 	}
 	if !report.Executions[1].NotRun() {
 		t.Errorf("stage 2: Err = %v, want it not run", report.Executions[1].Err)
+	}
+}
+
+// A member of the stage that had already finished, and been judged, when a
+// sibling was refused is not left standing as a run of its own: the stage was
+// stopped at the cap for all of them.
+func TestAnExecutionThatFinishedBeforeTheRefusalIsNotJudged(t *testing.T) {
+	var cancelled, started atomic.Int32
+	done := make(chan struct{})
+	backend := startFake(t, nil)
+	backend.serve = func(_ int, opts *client.CommandLineOptions, stream client.NighthawkService_ExecutionStreamServer) error {
+		switch uri := opts.GetUri().GetValue(); {
+		case strings.HasSuffix(uri, "/a"):
+			// Over at once, and well inside its threshold.
+			defer close(done)
+			return stream.Send(okResponse(5, time.Millisecond, time.Second))
+		case strings.HasSuffix(uri, "/c"):
+			// Refused only once /a has answered and been judged.
+			<-done
+			afterStarts(&started, 1)
+			time.Sleep(100 * time.Millisecond)
+			return atCap(stream)
+		}
+		started.Add(1)
+		return untilCancelled(t, &cancelled, stream)
+	}
+
+	report, err := (&run.Runner{Plan: planFor(t, weightedMinute, backend.addr)}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if report.Pass || len(report.Executions) != 3 {
+		t.Fatalf("pass = %v with %d executions, want a failed report of 3", report.Pass, len(report.Executions))
+	}
+	for _, e := range report.Executions {
+		var atCap *run.CapError
+		if !errors.As(e.Err, &atCap) {
+			t.Errorf("%s: err = %v, want the cap error", e.Label, e.Err)
+		}
+		if e.Pass || e.Set != nil || len(e.Outcomes) != 0 {
+			t.Errorf("%s was judged: pass=%v set=%v outcomes=%d", e.Label, e.Pass, e.Set != nil, len(e.Outcomes))
+		}
+	}
+	if got := cancelled.Load(); got != 1 {
+		t.Errorf("%d executions cancelled, want the 1 still running", got)
 	}
 }
