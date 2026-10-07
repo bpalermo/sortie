@@ -253,7 +253,10 @@ message Tcp {
   optional uint32 max_inflight_per_connection = 2 [(buf.validate.field).uint32.gte = 1];
 
   // Whether the peer echoes every message, which is what gets timed. Default
-  // true; false for a sink that answers nothing, where only the writes count.
+  // true; false for a sink that answers nothing, where only the writes count
+  // -- and for a target that answers something other than the message, byte
+  // for byte: with true, the first reply that is not the message closes the
+  // connection (benchmark.tcp_echo_mismatch) and nothing on it is timed.
   optional bool expect_echo = 3;
 
   // How long to wait for outstanding echoes at the end of the run. Default

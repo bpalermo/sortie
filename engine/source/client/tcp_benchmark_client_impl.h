@@ -74,6 +74,15 @@ struct TcpCounters {
  * so they are not held back and sent in a burst -- and messages unanswered on a connection when
  * it closes are tcp_inflight_lost.
  *
+ * With expect_echo, a message's worth of bytes that is not the message -- or that comes with
+ * nothing outstanding -- shows the connection's byte stream is not a stream of echoes, and
+ * after that no boundary in it can be trusted. So the first mismatch on a connection ends the
+ * matching on it: tcp_echo_mismatch is counted, an error is logged (once per worker), and the
+ * connection is closed, its outstanding messages tcp_inflight_lost and untimed, then reopened
+ * with the backoff above. A latency is therefore only ever recorded for an echo before which
+ * every byte the connection returned was exactly what was sent: against a target that prefixes
+ * or reframes its replies the statistic stays empty instead of filling with chance alignments.
+ *
  * With max_messages_per_connection a connection is rotated: once it has sent that many
  * messages, its replacement is opened while it goes on carrying the slot's messages, and takes
  * over when it has connected -- so rotating neither drops nor delays a message, and a
@@ -89,8 +98,8 @@ struct TcpCounters {
  * (a slot connected again after its connection closed or failed to open),
  * tcp_connections_rotated (a replacement took over from a connection that reached its message
  * limit), tcp_messages_sent, tcp_messages_received, tcp_deferred, tcp_unavailable,
- * tcp_connection_closed (the peer closed a connection in use), tcp_echo_mismatch (a message's
- * worth of bytes that is not the message), tcp_inflight_lost, tcp_drain_incomplete,
+ * tcp_connection_closed (the peer closed a connection in use), tcp_echo_mismatch (connections
+ * closed because what came back was not the message), tcp_inflight_lost, tcp_drain_incomplete,
  * tcp_write_blocked. Statistics: benchmark_tcp.message_latency, and
  * benchmark_tcp.connect_latency -- connect() to connected, the TLS handshake included, for
  * every successful connect whether initial, reconnect or rotation.
@@ -250,6 +259,7 @@ private:
   void onWriteBlocked(Link& link, bool blocked);
   void onTimer(Link& link);
   void onEcho(Link& link, const std::string& bytes);
+  void onEchoMismatch(Link& link);
   // The standby has connected: it becomes the active connection, and the one it replaces retires.
   void promote(Slot& slot);
   // Closes a link of our own accord: its unanswered messages are lost, and the close event that
@@ -294,6 +304,7 @@ private:
   WaitingFor waiting_for_{WaitingFor::Nothing};
   Envoy::Event::TimerPtr drain_timer_;
   bool finished_{false};
+  bool echo_mismatch_logged_{false};
 };
 
 } // namespace Client

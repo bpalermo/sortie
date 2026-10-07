@@ -271,7 +271,10 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv) {
       false, 256, "uint32_t", cmd);
   TCLAP::SwitchArg tcp_no_echo("", "tcp-no-echo",
                                "With a tcp:// URI: the peer does not echo; a write completes at "
-                               "once and nothing is read or timed.",
+                               "once and nothing is read or timed. Without this the peer must "
+                               "echo byte for byte: a reply that is not the message closes the "
+                               "connection, to be reopened, and counts in "
+                               "benchmark.tcp_echo_mismatch.",
                                cmd, false);
   TCLAP::ValueArg<uint32_t> tcp_max_messages(
       "", "tcp-max-messages-per-connection",

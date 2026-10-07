@@ -153,6 +153,14 @@ func execution(w io.Writer, e run.ExecutionReport) error {
 		if sent, ok := counters["benchmark.tcp_messages_sent"]; ok {
 			fmt.Fprintf(w, "       %s: %d messages sent, %d echoed in %s\n",
 				b.Addr, sent, counters["benchmark.tcp_messages_received"], elapsed)
+			// Said here, not left to a threshold someone may not have
+			// written: the echoed count and the latency of such a run cover
+			// next to nothing, and look like a slow target if not explained.
+			if mismatches := counters["benchmark.tcp_echo_mismatch"]; mismatches > 0 {
+				fmt.Fprintf(w, "       %s: warning: %d connection(s) closed on a reply that was not the message: "+
+					"the target is not an exact echo, and only exact echoes are counted and timed "+
+					"(tcp.expect_echo: false sends without expecting one)\n", b.Addr, mismatches)
+			}
 			continue
 		}
 		fmt.Fprintf(w, "       %s: %d requests in %s%s\n",

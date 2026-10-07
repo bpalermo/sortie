@@ -276,7 +276,7 @@ void TcpBenchmarkClientImpl::onData(Link& link, Envoy::Buffer::Instance& data) {
 void TcpBenchmarkClientImpl::onEcho(Link& link, const std::string& bytes) {
   // In order on one connection: the echo is for the oldest outstanding message.
   if (bytes != message_ || link.inflight.empty()) {
-    counters_.tcp_echo_mismatch_.inc();
+    onEchoMismatch(link);
     return;
   }
   InflightMessage message = std::move(link.inflight.front());
@@ -290,6 +290,38 @@ void TcpBenchmarkClientImpl::onEcho(Link& link, const std::string& bytes) {
   if (link.state == State::Retiring && link.inflight.empty()) {
     // That was the last echo a rotated connection waited for.
     closeLink(link, Envoy::Network::ConnectionCloseType::FlushWrite);
+  }
+  maybeExitWaitLoop();
+}
+
+void TcpBenchmarkClientImpl::onEchoMismatch(Link& link) {
+  // What came back is not what an exact echo sends, so from here on nothing says where one
+  // reply ends and the next begins on this connection: a later message's worth of bytes that
+  // happens to equal the message would be matched to the wrong send, and timed. Nothing more is
+  // matched on it. It is closed, which loses what it had outstanding without timing any of it,
+  // and reopened like any closed connection, so that an echo that only went wrong once is
+  // measured cleanly again -- and one that is never exact gets a connection a second, backed
+  // off, instead of a full window of unanswerable messages.
+  counters_.tcp_echo_mismatch_.inc();
+  if (!echo_mismatch_logged_) {
+    echo_mismatch_logged_ = true;
+    ENVOY_LOG(
+        error,
+        "TCP echo mismatch: a connection returned bytes that are not the {}-byte message sent "
+        "on it, so the target is not an exact echo -- it prefixes, frames or rewrites its "
+        "reply, or sends something of its own. The connection was closed, to be reopened; its "
+        "{} unanswered message(s) are lost (benchmark.tcp_inflight_lost) and none of them is "
+        "timed. benchmark_tcp.message_latency only holds echoes that were exact up to that "
+        "point on their connection; if the target is not meant to echo, send without expecting "
+        "one (--tcp-no-echo, tcp.expect_echo false). Further mismatches are only counted, in "
+        "benchmark.tcp_echo_mismatch.",
+        message_.size(), link.inflight.size());
+  }
+  const uint32_t slot_index = link.slot;
+  const bool active = slots_[slot_index].active.get() == &link;
+  closeLink(link, Envoy::Network::ConnectionCloseType::NoFlush);
+  if (active) {
+    scheduleRetry(slot_index);
   }
   maybeExitWaitLoop();
 }

@@ -259,7 +259,10 @@ message CommandLineOptions {
   // (10 ms doubling to 1 s; benchmark.tcp_reconnects); messages that come due meanwhile are
   // dropped and counted in benchmark.tcp_unavailable, and those unanswered on the closed
   // connection in benchmark.tcp_inflight_lost. Every successful connect is timed in
-  // benchmark_tcp.connect_latency. Counters: benchmark.tcp_*. Not combinable with grpc_mode,
+  // benchmark_tcp.connect_latency. With expect_echo the peer must echo byte for byte: on the
+  // first message's worth of bytes that is not the message a connection is closed and reopened
+  // (benchmark.tcp_echo_mismatch, an error log), its outstanding messages lost and untimed, so
+  // no latency is recorded from a reply stream that is out of step. Counters: benchmark.tcp_*. Not combinable with grpc_mode,
   // websocket, request headers or a request method.
   message TcpOptions {
     // Connections per worker. Default: 1.

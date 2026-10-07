@@ -332,7 +332,9 @@ replaces a connection (default: 0).
 
 --tcp-no-echo
 With a tcp:// URI: the peer does not echo; a write completes at once
-and nothing is read or timed.
+and nothing is read or timed. Without this the peer must echo byte for
+byte: a reply that is not the message closes the connection, to be
+reopened, and counts in benchmark.tcp_echo_mismatch.
 
 --tcp-max-inflight-per-connection <uint32_t>
 With a tcp:// URI: unanswered messages a connection may hold before

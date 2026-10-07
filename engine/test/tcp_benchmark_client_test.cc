@@ -220,13 +220,18 @@ TEST_F(TcpBenchmarkClientTest, MessagesRoundRobinAndEchoesCompleteThem) {
   EXPECT_EQ(3, completions);
   EXPECT_EQ(3, successes);
   EXPECT_EQ(3, getCounter("tcp_messages_received"));
-  // Bytes that are not the message, and an echo with nothing outstanding.
+  // Bytes that are not the message, and an echo with nothing outstanding: either way the
+  // connection is not a stream of echoes, and is closed.
+  EXPECT_CALL(*connections_[0], close(Envoy::Network::ConnectionCloseType::NoFlush));
+  EXPECT_CALL(*connections_[1], close(Envoy::Network::ConnectionCloseType::NoFlush));
   peerSends(0, "pong");
   echo(1, 1);
   EXPECT_EQ(4, completions);
   peerSends(1, "ping");
   EXPECT_EQ(2, getCounter("tcp_echo_mismatch"));
   EXPECT_EQ(4, completions);
+  EXPECT_EQ(0, client_->openConnections());
+  EXPECT_EQ(0, getCounter("tcp_inflight_lost"));
 }
 
 TEST_F(TcpBenchmarkClientTest, EchoesSplitAcrossReadsAreReassembled) {
@@ -490,6 +495,88 @@ TEST_F(TcpBenchmarkClientTest, WithoutEchoesARotatedConnectionIsClosedAtOnce) {
   EXPECT_EQ("ping", sent_[1].toString());
   EXPECT_EQ(1, getCounter("tcp_connections_rotated"));
   EXPECT_EQ(3, getCounter("tcp_messages_sent"));
+}
+
+// A server that prefixes its reply: a 10-byte message answered with 16 bytes. Cut into
+// message-sized pieces, that stream lines up with the message again every so often -- the
+// eighth piece here -- and matching on would count those as echoes and time them against sends they
+// have nothing to do with. The first piece that is not the message ends it instead: nothing is
+// echoed, nothing is timed, what was outstanding is lost, and the connection is replaced.
+TEST_F(TcpBenchmarkClientTest, AReplyThatIsNotTheMessageEndsTheMatchingOnItsConnection) {
+  message_ = "0123456789";
+  createClient(1);
+  client_->prepare();
+  send(8);
+  std::string replies;
+  for (int i = 0; i < 8; i++) {
+    replies += "HEADER0123456789";
+  }
+  // What matching on would have found: the message, whole, at a piece boundary.
+  ASSERT_EQ(message_, replies.substr(7 * message_.size(), message_.size()));
+  EXPECT_CALL(*connections_[0], close(Envoy::Network::ConnectionCloseType::NoFlush));
+  peerSends(0, replies);
+  EXPECT_EQ(1, getCounter("tcp_echo_mismatch"));
+  EXPECT_EQ(0, getCounter("tcp_messages_received"));
+  EXPECT_EQ(8, getCounter("tcp_inflight_lost"));
+  EXPECT_EQ(8, completions_);
+  EXPECT_EQ(0, successes_);
+  EXPECT_EQ(0, statisticCount("benchmark_tcp.message_latency"));
+  EXPECT_EQ(0, client_->openConnections());
+  // Not a close of the peer's.
+  EXPECT_EQ(0, getCounter("tcp_connection_closed"));
+  send(1);
+  EXPECT_EQ(1, getCounter("tcp_unavailable"));
+
+  // Reopened like any closed connection, and no better the second time; the backoff grows, so
+  // a target like this gets a connection a second in the end, not a stream of them.
+  runFor(15ms);
+  ASSERT_EQ(2, connections_.size());
+  EXPECT_EQ(1, getCounter("tcp_reconnects"));
+  send(2);
+  EXPECT_CALL(*connections_[1], close(Envoy::Network::ConnectionCloseType::NoFlush));
+  peerSends(1, replies.substr(0, 16));
+  EXPECT_EQ(2, getCounter("tcp_echo_mismatch"));
+  EXPECT_EQ(10, getCounter("tcp_inflight_lost"));
+  runFor(15ms);
+  EXPECT_EQ(2, connections_.size());
+  runFor(15ms);
+  EXPECT_EQ(3, connections_.size());
+  EXPECT_EQ(0, getCounter("tcp_messages_received"));
+  EXPECT_EQ(0, statisticCount("benchmark_tcp.message_latency"));
+}
+
+// A reply that begins with the message and goes on: the first message's worth is an exact echo
+// and counts as one -- every byte up to there is what was sent -- and what follows is not.
+TEST_F(TcpBenchmarkClientTest, EchoesBeforeTheFirstMismatchCountAndNoneAfter) {
+  createClient(1);
+  client_->prepare();
+  send(3);
+  peerSends(0, "ping!ping!ping!");
+  EXPECT_EQ(1, getCounter("tcp_messages_received"));
+  EXPECT_EQ(1, statisticCount("benchmark_tcp.message_latency"));
+  EXPECT_EQ(1, getCounter("tcp_echo_mismatch"));
+  EXPECT_EQ(2, getCounter("tcp_inflight_lost"));
+  EXPECT_EQ(3, completions_);
+  EXPECT_EQ(1, successes_);
+}
+
+// A rotated connection waiting for its echoes is held to the same rule; closing it takes
+// nothing from the connection that replaced it.
+TEST_F(TcpBenchmarkClientTest, AMismatchOnARotatedConnectionClosesOnlyThatOne) {
+  createClient(1, 256, true, 50ms, 1s, /*max_messages_per_connection=*/2);
+  client_->prepare();
+  send(3);
+  ASSERT_EQ(2, connections_.size());
+  EXPECT_CALL(*connections_[0], close(Envoy::Network::ConnectionCloseType::NoFlush));
+  peerSends(0, "pong");
+  EXPECT_EQ(1, getCounter("tcp_echo_mismatch"));
+  EXPECT_EQ(2, getCounter("tcp_inflight_lost"));
+  EXPECT_EQ(1, client_->openConnections());
+  echo(1, 1);
+  EXPECT_EQ(1, getCounter("tcp_messages_received"));
+  runFor(30ms);
+  EXPECT_EQ(2, connections_.size());
+  EXPECT_EQ(0, getCounter("tcp_reconnects"));
 }
 
 // finish() stops the reopening: a slot waiting to retry stays closed.
