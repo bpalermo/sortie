@@ -500,3 +500,44 @@ func TestRunKeepsItsLinesApartFromAnUnfinishedOne(t *testing.T) {
 		}
 	}
 }
+
+// stdout under another name is still stdout: the file it was redirected to,
+// given as the stream, is refused before any load, and nothing is added to it.
+func TestRunRefusesAStreamThatIsStdout(t *testing.T) {
+	backend := &fakeBackend{p95: 5 * time.Millisecond, requests: 100}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	client.RegisterNighthawkServiceServer(server, backend)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	plan := writePlan(t, listener.Addr().String(), "")
+
+	path := filepath.Join(t.TempDir(), "stdout.json")
+	// Ends mid-line, as a redirected stdout that something already wrote to may.
+	if err := os.WriteFile(path, []byte("{\"earlier\":"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+
+	var stderr bytes.Buffer
+	code := execute("test", []string{"run", "--json", "--results-stream", path, plan}, stdout, &stderr)
+	if code != exitBadUsage {
+		t.Errorf("exit = %d, want %d\nstderr:\n%s", code, exitBadUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--results-stream names what stdout is") {
+		t.Errorf("the error does not say the stream is stdout:\n%s", stderr.String())
+	}
+	if n := backend.calls.Load(); n != 0 {
+		t.Errorf("the backend was driven %d times by a run that should not have started", n)
+	}
+	if raw, err := os.ReadFile(path); err != nil || string(raw) != "{\"earlier\":" {
+		t.Errorf("the file was written to: %q (%v)", raw, err)
+	}
+}

@@ -246,9 +246,9 @@ type jsonExecution struct {
 	// up on -- StartedAt plus the elapsed time, both by this process's clock,
 	// RFC 3339 in UTC. That brackets the load rather than timing it: a
 	// backend is dialled, and may be told to wait for a scheduled start,
-	// inside it. When each backend released its first request is the
-	// started_at of its entry in Results. Absent when the report carries no
-	// start time.
+	// inside it. Closer to when the load began is the started_at of each
+	// backend's entry in Results. Absent when the report carries no start
+	// time.
 	StartedAt string `json:"started_at,omitempty"`
 	EndedAt   string `json:"ended_at,omitempty"`
 	Pass      bool   `json:"pass"`
@@ -277,9 +277,10 @@ type jsonExecution struct {
 type jsonBackendResult struct {
 	Backend   string `json:"backend"`
 	ElapsedMS int64  `json:"elapsed_ms"`
-	// StartedAt is when the backend released its first request, by the
-	// engine's own clock. Absent when the engine reported none, as one that
-	// never sent a request does.
+	// StartedAt is when the first of the backend's workers started its rate
+	// limiter's clock, by the engine's own clock: just before a request is
+	// asked for, and so not evidence that one was sent. Absent when the
+	// engine supplied no timestamp.
 	StartedAt string            `json:"started_at,omitempty"`
 	Counters  map[string]uint64 `json:"counters"`
 	// Statistics are the backend's statistics that recorded anything, by id:

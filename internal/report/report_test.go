@@ -541,7 +541,7 @@ func TestJSONCarriesPerBackendLatencyStatistics(t *testing.T) {
 
 // A failed stage is matched to what else happened at the time by these: when
 // the execution was dispatched and when it was over, and when each backend
-// says it released its first request.
+// started its clock.
 func TestJSONCarriesWhenAnExecutionStartedAndEnded(t *testing.T) {
 	r := reportWith(t, 10*time.Millisecond, "latency_2xx.p95 < 50ms")
 	// Not UTC, and not a whole millisecond: the report gives both in UTC, to

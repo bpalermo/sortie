@@ -818,9 +818,11 @@ else was happening. `started_at` is when sortie began dispatching it and
 clock of the machine sortie runs on. The text report gives the start on each
 execution's first line. The two bracket the load rather than time it:
 connecting to the backends happens inside them, and so does the wait of an
-execution the plan gave a scheduled start. When the load itself began is each
-backend's own `started_at` in `results`, the moment it released its first
-request by its own clock; it is absent for a backend that never sent one.
+execution the plan gave a scheduled start. Closer to when the load began is
+each backend's own `started_at` in `results`: when the first of its workers
+started its rate limiter's clock, by the engine's clock. That is just before
+a request is asked for, so it is not proof that one was sent; it is absent
+when the engine gave no timestamp.
 
 `statistics` is each statistic that recorded anything, by id, with `count`,
 `mean`, `pstdev`, `min`, `max`, `p50`, `p90`, `p99` and `p99.9`: in
