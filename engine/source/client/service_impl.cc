@@ -49,7 +49,16 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
   // Declared before the Process, so it runs once that is destroyed: an execution's histograms
   // and the copies its final report was assembled from are megabytes each, and would
   // otherwise stay resident in an idle service (see releaseFreeMemory()).
-  Envoy::Cleanup release_memory_on_exit([]() { releaseFreeMemory(); });
+  // Only for an execution that got as far as having a Process: a request refused before
+  // that freed nothing, and releasing is process-wide work that would otherwise be something
+  // a stream of malformed starts could make the service do over and over, at the expense of
+  // the executions that are running.
+  bool process_created = false;
+  Envoy::Cleanup release_memory_on_exit([&process_created]() {
+    if (process_created) {
+      releaseFreeMemory();
+    }
+  });
   // The one way a final response leaves this function, early errors included.
   auto write_final = [this, stream, &release](const nighthawk::client::ExecutionResponse& r) {
     release();
@@ -113,6 +122,7 @@ void ServiceImpl::handleExecutionRequest(const nighthawk::client::ExecutionReque
     return;
   }
   ProcessPtr process = std::move(*process_or_status);
+  process_created = true;
   {
     Envoy::Thread::LockGuard guard(execution->lock);
     execution->process = process.get();
