@@ -24,6 +24,7 @@ go_test(
     name = "run_test",
     size = "small",
     srcs = [
+        "cap_test.go",
         "deadline_internal_test.go",
         "fake_service_test.go",
         "run_test.go",
@@ -36,6 +37,9 @@ go_test(
         "//internal/plan",
         "@org_golang_google_genproto_googleapis_rpc//status",
         "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//metadata",
+        "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//types/known/durationpb",
     ],
 )

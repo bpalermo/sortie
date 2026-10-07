@@ -268,8 +268,13 @@ Two things differ from a per-request weighted draw, both deliberate:
 The backend has to accept one execution per target at a time:
 `nighthawk_service --max-concurrent-executions N`, default 1. The chart sets
 `engine.maxConcurrentExecutions` (default 16). A backend at its limit refuses
-the start and the scenario fails naming it. Every execution has its own worker
-threads, so a ten-target scenario at `concurrency: "2"` runs twenty. An engine
+the start, and the scenario does not run on part of its slots: as soon as one
+start is refused, the executions that did start are cancelled on every backend,
+and the scenario fails at once with an error that names the backend, its limit
+and the setting to raise. The slots are not reserved ahead of the start, so
+for that moment the targets that got one do send load. Every execution has its
+own worker threads, so a ten-target scenario at `concurrency: "2"` runs twenty.
+An engine
 that allows more than one execution logs at its own level throughout: the log
 level is one setting per process, so a `verbosity` passed through
 `nighthawk_template` is not applied there. Concurrent executions are tested

@@ -34,6 +34,10 @@ type fakeService struct {
 	// output means "report a failure", matching how Nighthawk answers when its
 	// failure predicates fire.
 	respond func(n int, opts *client.CommandLineOptions) *client.ExecutionResponse
+
+	// serve, when set, handles the nth start itself instead of respond, with
+	// the stream to read a cancellation from or to end with a status.
+	serve func(n int, opts *client.CommandLineOptions, stream client.NighthawkService_ExecutionStreamServer) error
 }
 
 func (f *fakeService) ExecutionStream(stream client.NighthawkService_ExecutionStreamServer) error {
@@ -55,6 +59,9 @@ func (f *fakeService) ExecutionStream(stream client.NighthawkService_ExecutionSt
 		f.requests = append(f.requests, start.GetOptions())
 		f.mu.Unlock()
 
+		if f.serve != nil {
+			return f.serve(n, start.GetOptions(), stream)
+		}
 		if err := stream.Send(f.respond(n, start.GetOptions())); err != nil {
 			return err
 		}

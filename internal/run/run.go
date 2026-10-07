@@ -58,6 +58,40 @@ type ExecutionReport struct {
 	Err error
 }
 
+// CapError is a stage that was stopped because a backend refused one of its
+// starts: the engine there was already running as many executions as it
+// allows. It is the Err of every execution of the stage, the ones that had
+// started and were stopped included.
+type CapError struct {
+	// Backend is the backend that refused, the first one if several did.
+	Backend string
+	// Max is how many executions that engine runs at once, 0 when it did not
+	// say.
+	Max int
+	// Needed is how many executions the stage starts on every backend at
+	// once: one per target of a weighted scenario, otherwise one.
+	Needed int
+	// Err is the refusal itself.
+	Err error
+}
+
+func (e *CapError) Error() string {
+	limit := "its cap of concurrent executions"
+	if e.Max > 0 {
+		limit = fmt.Sprintf("its cap of %d concurrent executions", e.Max)
+	}
+	needs := "this execution needs one free slot on every backend"
+	if e.Needed > 1 {
+		needs = fmt.Sprintf("this scenario starts %d at once on every backend, one per target", e.Needed)
+	}
+	return fmt.Sprintf("backend %s refused a start because the engine is at %s, and %s; "+
+		"nothing was left running, the executions that had started were stopped. "+
+		"Raise the engine's --max-concurrent-executions (engine.maxConcurrentExecutions in the chart) "+
+		"or wait for the runs holding its slots to end (%v)", e.Backend, limit, needs, e.Err)
+}
+
+func (e *CapError) Unwrap() error { return e.Err }
+
 // BackendError is one backend's failure within an execution.
 type BackendError struct {
 	Addr string
@@ -278,15 +312,43 @@ func emptyAnswer(re *plan.ResolveError) bool {
 
 // runGroup runs the executions concurrently, one goroutine each, and returns
 // their reports in the same order. A single execution runs inline.
+//
+// The group is everything that starts together: the executions of a weighted
+// scenario's targets (or the one execution of any other), on every backend of
+// the pool. A backend refusing one of those starts because its engine is at
+// its execution cap stops them all, on every backend: see refused.
 func (r *Runner) runGroup(
 	ctx context.Context,
 	group []compile.Execution,
 	pool *plan.Pool,
 	thresholds []threshold.Threshold,
 ) []ExecutionReport {
+	stage, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+	// refused is what a backend at its cap triggers. Backends are otherwise
+	// independent -- one that is lost mid-run does not cost the others their
+	// results (see dispatch) -- and this is deliberately the one exception:
+	//
+	//   - It happens at the start, before there is a run worth keeping. A
+	//     node lost eight hours into a soak leaves seven other nodes' worth
+	//     of results; a refused start leaves nothing but the choice between
+	//     failing now and failing after the full duration.
+	//   - What would go on running is not the scenario. With the last slots
+	//     shared out by a race, each backend runs whichever targets happened
+	//     to get in -- a different subset on each -- so the load on the
+	//     targets is neither the planned mix nor the planned rate.
+	//   - It is the same on every backend or it is not the plan: stopping
+	//     only the refusing backend's executions would leave the others
+	//     driving for the whole duration a run that has already failed.
+	//
+	// Only the first refusal is recorded; the cause of a context is set once.
+	refused := func(backend string, err *nh.BusyError) {
+		stop(&CapError{Backend: backend, Max: err.Max, Needed: len(group), Err: err})
+	}
+
 	reports := make([]ExecutionReport, len(group))
 	if len(group) == 1 {
-		reports[0] = r.runExecution(ctx, group[0], pool, thresholds)
+		reports[0] = r.runExecution(stage, group[0], pool, thresholds, refused)
 		return reports
 	}
 	var wg sync.WaitGroup
@@ -294,7 +356,7 @@ func (r *Runner) runGroup(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			reports[i] = r.runExecution(ctx, e, pool, thresholds)
+			reports[i] = r.runExecution(stage, e, pool, thresholds, refused)
 		}()
 	}
 	wg.Wait()
@@ -306,6 +368,7 @@ func (r *Runner) runExecution(
 	e compile.Execution,
 	pool *plan.Pool,
 	thresholds []threshold.Threshold,
+	refused func(backend string, err *nh.BusyError),
 ) ExecutionReport {
 	er := ExecutionReport{
 		Label:      e.Label,
@@ -331,13 +394,32 @@ func (r *Runner) runExecution(
 		r.observerMu.Unlock()
 	}
 
-	addrs, outputs, failed, err := r.dispatch(ctx, e, pool)
+	addrs, outputs, failed, err := r.dispatch(ctx, e, pool, refused)
 	er.Elapsed = time.Since(er.Started)
 	if err != nil {
 		er.Err = err
 		return er
 	}
 	er.BackendErrors = failed
+
+	// The stage was stopped because an engine was at its cap (see runGroup):
+	// this execution was either refused or stopped for a sibling that was.
+	// Say so, once, as the execution's error. Of the backends, only the ones
+	// that refused are worth naming -- every other entry is this stop itself,
+	// reported back as a cancellation -- and nothing is judged, as for any
+	// other run that did not finish.
+	var atCap *CapError
+	if errors.As(context.Cause(ctx), &atCap) {
+		er.BackendErrors = nil
+		for _, f := range failed {
+			var busy *nh.BusyError
+			if errors.As(f.Err, &busy) {
+				er.BackendErrors = append(er.BackendErrors, f)
+			}
+		}
+		er.Err = atCap
+		return er
+	}
 
 	// A run the caller cancelled is not judged. Its backends return what they
 	// had counted along with the cancellation, and partial counts held up to
@@ -474,12 +556,15 @@ func addDuration(a, b time.Duration) time.Duration {
 // backends that failed. Backends are independent: one that cannot be reached,
 // or goes away halfway, does not stop the others -- with one engine per node,
 // a node rebooting mid-soak must not void the run on every other node. Only
-// the caller's context ends them all. The error return is for a plan that
-// could not be dispatched at all.
+// the caller's context ends them all, and that context is the stage's: a
+// backend that refuses the start because its engine is at its execution cap
+// is passed to refused, which ends it (see runGroup). The error return is for
+// a plan that could not be dispatched at all.
 func (r *Runner) dispatch(
 	ctx context.Context,
 	e compile.Execution,
 	pool *plan.Pool,
+	refused func(backend string, err *nh.BusyError),
 ) ([]string, []*client.Output, []BackendError, error) {
 	addrs, perBackend, err := compile.ForPool(e, pool)
 	if err != nil {
@@ -569,6 +654,12 @@ func (r *Runner) dispatch(
 				}
 			}
 			resp, err := nh.Execute(ctx, conn, perBackend[i], progress)
+			// The one failure that is not this backend's alone: its engine
+			// is at its execution cap, so the stage cannot run as planned.
+			var busy *nh.BusyError
+			if errors.As(err, &busy) {
+				refused(addr, busy)
+			}
 			errs[i] = silent(err)
 			// An engine that reports a failure still returns what it counted
 			// (a run stopped by a failure predicate the plan asked for, say).

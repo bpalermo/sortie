@@ -187,7 +187,13 @@ share of the rate), all carrying the same `Group`. The runner starts a group's
 executions together and everything else one at a time. The engine side of
 that is `ServiceImpl`'s per-stream `Execution` and its
 `--max-concurrent-executions` cap: a stream owns at most one running
-execution, and a cancellation only ever reaches the stream's own.
+execution, and a cancellation only ever reaches the stream's own. A start
+refused at the cap ends its stream with `RESOURCE_EXHAUSTED` and the cap in
+the `nighthawk-max-concurrent-executions` trailer; `nh.Execute` returns that
+as a `*nh.BusyError`, and `Runner.runGroup` then cancels the whole group on
+every backend and reports a `*run.CapError` -- the one case where a backend's
+failure stops the others. There is no reservation: slots are taken one start
+at a time.
 
 ## gRPC modes
 

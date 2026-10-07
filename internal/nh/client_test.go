@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	client "github.com/bpalermo/sortie/engine/api/client"
@@ -182,5 +185,83 @@ func TestDialWaitsForTheBackend(t *testing.T) {
 	}
 	if waited := time.Since(started); waited > 5*time.Second {
 		t.Errorf("gave up after %s; want about the 1s bound", waited)
+	}
+}
+
+// fakeRefusingService ends every stream with the given status, setting the
+// engine's execution-cap trailer first when it has one to set.
+type fakeRefusingService struct {
+	client.UnimplementedNighthawkServiceServer
+	trailer string
+	err     error
+}
+
+func (f *fakeRefusingService) ExecutionStream(stream client.NighthawkService_ExecutionStreamServer) error {
+	if _, err := stream.Recv(); err != nil {
+		return err
+	}
+	if f.trailer != "" {
+		stream.SetTrailer(metadata.Pairs(nh.MaxConcurrentExecutionsTrailer, f.trailer))
+	}
+	return f.err
+}
+
+func executeAgainst(t *testing.T, service client.NighthawkServiceServer) error {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	client.RegisterNighthawkServiceServer(server, service)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	conn, err := nh.Dial(context.Background(), listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, err = nh.Execute(context.Background(), conn, &client.CommandLineOptions{}, nil)
+	return err
+}
+
+// A start refused at the service's execution cap comes back as a BusyError
+// that names the cap and still reads as ResourceExhausted.
+func TestExecuteReportsAServiceAtItsExecutionCap(t *testing.T) {
+	err := executeAgainst(t, &fakeRefusingService{
+		trailer: "16",
+		err:     status.Error(codes.ResourceExhausted, "Busy: 16 executions are running, the maximum this service allows (--max-concurrent-executions)."),
+	})
+	var refused *nh.BusyError
+	if !errors.As(err, &refused) {
+		t.Fatalf("err = %v, want a BusyError", err)
+	}
+	if refused.Max != 16 {
+		t.Errorf("Max = %d, want 16", refused.Max)
+	}
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Errorf("code = %s, want ResourceExhausted", status.Code(err))
+	}
+	if !strings.Contains(err.Error(), "cap of 16 concurrent executions") {
+		t.Errorf("the error does not name the cap: %v", err)
+	}
+}
+
+// ResourceExhausted alone is not the cap -- gRPC uses the code for a message
+// over the size limit, among others -- and neither is the trailer on some
+// other failure.
+func TestExecuteDoesNotMistakeOtherFailuresForTheExecutionCap(t *testing.T) {
+	for name, service := range map[string]*fakeRefusingService{
+		"exhausted, no trailer": {err: status.Error(codes.ResourceExhausted, "received message larger than max")},
+		"trailer, other code":   {trailer: "16", err: status.Error(codes.Internal, "boom")},
+	} {
+		err := executeAgainst(t, service)
+		if err == nil {
+			t.Fatalf("%s: no error", name)
+		}
+		var refused *nh.BusyError
+		if errors.As(err, &refused) {
+			t.Errorf("%s: reported as a BusyError: %v", name, err)
+		}
 	}
 }
