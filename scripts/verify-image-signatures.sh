@@ -137,12 +137,18 @@ for ref in "${refs[@]}"; do
 done
 
 echo ""
+# A chart is one manifest: saying "index(es)" of it would misdescribe what was
+# checked, in the failure as much as in the pass.
+if [ "$single" = 1 ]; then
+	if [ "$failed" -gt 0 ]; then
+		echo "FAIL: ${failed} check(s) failed, ${verified} manifest(s) verified, of ${#refs[@]} single manifest(s)"
+		exit 1
+	fi
+	echo "PASS: ${verified} manifest(s) verified, layout ${expect}"
+	exit 0
+fi
 if [ "$failed" -gt 0 ]; then
 	echo "FAIL: ${failed} check(s) failed, ${verified} manifest(s) verified, across ${#refs[@]} index(es)"
 	exit 1
-fi
-if [ "$single" = 1 ]; then
-	echo "PASS: ${verified} manifest(s) verified, layout ${expect}"
-	exit 0
 fi
 echo "PASS: ${verified} manifest(s) verified (${#refs[@]} index(es) + their children), layout ${expect}"

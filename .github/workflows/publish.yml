@@ -215,7 +215,10 @@ jobs:
           bazel run //charts/sortie:sortie.chart_push 2>&1 | tee chart-push.log
           # oras prints the digest of the manifest it pushed; that, not a tag
           # looked up afterwards, is what gets signed.
-          digest="$(grep -oE '^Digest: sha256:[0-9a-f]{64}$' chart-push.log | tail -1 | cut -d' ' -f2)"
+          # `|| true`: grep exits 1 when nothing matches, and under pipefail
+          # that would end the step here, before the message below that says
+          # what went wrong.
+          digest="$(grep -oE '^Digest: sha256:[0-9a-f]{64}$' chart-push.log | tail -1 | cut -d' ' -f2 || true)"
           if [ -z "${digest}" ]; then
             echo "::error::the chart push printed no digest" >&2
             exit 1

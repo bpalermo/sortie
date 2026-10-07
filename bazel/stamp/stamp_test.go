@@ -11,6 +11,7 @@ package stamp_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -122,5 +123,74 @@ func TestVersionIsStamped(t *testing.T) {
 	// moving or renaming it is not mistaken for deleting the key.
 	if script := active(read(t, status[1])); !strings.Contains(script, versionKey) {
 		t.Errorf("%s no longer emits %s, which %s stamps from", status[1], versionKey, versionSymbol)
+	}
+}
+
+// find is read's path lookup, for a file that has to be run rather than read.
+func find(t *testing.T, name string) string {
+	t.Helper()
+	roots := []string{".", filepath.Join("..", "..")}
+	if dir := os.Getenv("BUILD_WORKSPACE_DIRECTORY"); dir != "" {
+		roots = append(roots, dir)
+	}
+	for _, root := range roots {
+		path := filepath.Join(root, name)
+		if _, err := os.Stat(path); err == nil {
+			abs, err := filepath.Abs(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return abs
+		}
+	}
+	t.Fatalf("could not find %s", name)
+	return ""
+}
+
+// The chart's default engine reference ends in whatever this key says, and a
+// published chart is meant to pin a digest. The three paths are checked here
+// because nothing else would notice the release-critical one going wrong: a
+// chart that silently fell back to a tag still builds, lints and installs.
+func TestWorkspaceStatusEngineRefSuffix(t *testing.T) {
+	script := find(t, "bazel/workspace_status.sh")
+	digest := "sha256:" + strings.Repeat("a", 64)
+
+	suffix := func(env ...string) string {
+		t.Helper()
+		cmd := exec.Command("bash", script)
+		// Run somewhere that is not a git checkout, so the commit is the
+		// script's own "unknown" and the expectation does not depend on HEAD.
+		cmd.Dir = t.TempDir()
+		cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "GIT_CEILING_DIRECTORIES=" + cmd.Dir}, env...)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("running %s: %v", script, err)
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if rest, ok := strings.CutPrefix(line, "STABLE_ENGINE_REF_SUFFIX "); ok {
+				return rest
+			}
+		}
+		t.Fatalf("the script printed no STABLE_ENGINE_REF_SUFFIX:\n%s", out)
+		return ""
+	}
+
+	if got := suffix(); got != ":dev-unknown" {
+		t.Errorf("with no digest the suffix = %q, want the commit's tag, :dev-unknown", got)
+	}
+	if got := suffix("SORTIE_ENGINE_DIGEST=" + digest); got != "@"+digest {
+		t.Errorf("with a digest the suffix = %q, want @%s", got, digest)
+	}
+	for _, bad := range []string{
+		"sha256:" + strings.Repeat("a", 63), // too short
+		"sha256:" + strings.Repeat("A", 64), // not lowercase hex
+		"sha512:" + strings.Repeat("a", 64), // another algorithm
+		digest + " x",                       // trailing text
+		"quay.io/sortie/engine@" + digest,   // a whole reference
+		"x; rm -rf /",                       // not a digest at all
+	} {
+		if got := suffix("SORTIE_ENGINE_DIGEST=" + bad); got != ":dev-unknown" {
+			t.Errorf("a malformed digest %q was written into the suffix: %q", bad, got)
+		}
 	}
 }
