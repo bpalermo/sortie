@@ -724,3 +724,35 @@ scenarios:
 			got[2].GetNoDefaultFailurePredicates())
 	}
 }
+
+// A run the caller cancels is reported as cancelled and not judged: its
+// backends hand back partial counts with the cancellation, and thresholds held
+// against those would be a verdict on a run that never finished.
+func TestRunDoesNotJudgeACancelledExecution(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fake := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		// The caller gives up while the backend is still "running"; the
+		// partial output arrives with the cancellation.
+		cancel()
+		return okResponse(5, time.Millisecond, time.Second)
+	})
+	p := planFor(t, `
+scenarios:
+  - name: interrupted
+    executor: {type: constant-rate, rate: 100, duration: 10s}
+    thresholds:
+      - "latency_2xx.p95 < 50ms"
+`, fake.addr)
+
+	report, err := (&run.Runner{Plan: p}).Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run err = %v, want context.Canceled", err)
+	}
+	e := report.Executions[0]
+	if e.Err == nil || !errors.Is(e.Err, context.Canceled) {
+		t.Errorf("execution Err = %v, want the cancellation", e.Err)
+	}
+	if e.Pass || len(e.Outcomes) != 0 {
+		t.Errorf("a cancelled execution was judged: pass=%v outcomes=%+v", e.Pass, e.Outcomes)
+	}
+}

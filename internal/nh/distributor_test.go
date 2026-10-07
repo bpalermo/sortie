@@ -262,3 +262,32 @@ func TestDistributeRejectsAMissingIPv6Target(t *testing.T) {
 		t.Fatal("a missing IPv6 target must still be rejected")
 	}
 }
+
+// One target failing does not cost the others their results: DistributePartial
+// returns what answered and names what did not.
+func TestDistributePartialKeepsTheTargetsThatAnswered(t *testing.T) {
+	targets := []string{"10.0.0.11:8443", "10.0.0.12:8443", "10.0.0.13:8443"}
+	// The fake answers for the first two only.
+	fake := startFakeDistributor(t, func(requested []string) []string { return requested[:2] })
+
+	ctx := context.Background()
+	conn, err := nh.Dial(ctx, fake.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	names, outputs, failed, err := nh.DistributePartial(ctx, conn, &client.CommandLineOptions{}, targets)
+	if err != nil {
+		t.Fatalf("DistributePartial: %v", err)
+	}
+	if len(names) != 2 || len(outputs) != 2 {
+		t.Fatalf("got %d names and %d outputs, want the two targets that answered", len(names), len(outputs))
+	}
+	if len(failed) != 1 || failed[0].Target != "10.0.0.13:8443" {
+		t.Fatalf("failed = %+v, want the silent target", failed)
+	}
+	// Distribute, the all-or-nothing form, still refuses the same run.
+	if _, err := distribute(t, fake, targets); err == nil || !strings.Contains(err.Error(), "10.0.0.13:8443") {
+		t.Errorf("Distribute err = %v, want it to name the silent target", err)
+	}
+}

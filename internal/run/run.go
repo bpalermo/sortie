@@ -330,6 +330,16 @@ func (r *Runner) runExecution(
 	}
 	er.BackendErrors = failed
 
+	// A run the caller cancelled is not judged. Its backends return what they
+	// had counted along with the cancellation, and partial counts held up to
+	// thresholds would read as a verdict on a run that never finished: a
+	// rate threshold failing, or a count threshold passing, for no reason but
+	// the interruption.
+	if ctx.Err() != nil {
+		er.Err = fmt.Errorf("execution cancelled: %w", ctx.Err())
+		return er
+	}
+
 	// Judge what came back. A backend that returned nothing is left out of
 	// the set and named in BackendErrors; the others' counters and latencies
 	// are still the record of what the run did.
@@ -391,10 +401,17 @@ func (r *Runner) dispatch(
 		}
 		defer conn.Close()
 		// ForPool returns exactly one options for this path: the distributor
-		// forwards it unchanged to every target, and answers for all of them
-		// or for none.
-		targets, outputs, err := nh.Distribute(ctx, conn, perBackend[0], pool.Targets)
-		return targets, outputs, nil, err
+		// forwards it unchanged to every target. A target that fails does not
+		// cost the others their results here either.
+		targets, outputs, bad, err := nh.DistributePartial(ctx, conn, perBackend[0], pool.Targets)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		var failed []BackendError
+		for _, b := range bad {
+			failed = append(failed, BackendError{Addr: b.Target, Err: b.Err})
+		}
+		return targets, outputs, failed, nil
 	}
 
 	outputs := make([]*client.Output, len(addrs))
