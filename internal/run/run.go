@@ -33,8 +33,15 @@ type ExecutionReport struct {
 	PerBackend bool
 	Duration   time.Duration
 	RampTime   time.Duration
-	Started    time.Time
-	Elapsed    time.Duration
+	// Started is when the runner began dispatching the execution and Elapsed
+	// how long it was until every backend had answered or been given up on,
+	// both by this process's clock. They are set on every report the runner
+	// makes, a dispatch that failed included, and they bracket the load
+	// rather than time it: dialling the backends is inside them, and so is
+	// the wait for a scheduled start. A backend's own account of when it
+	// started and how long it ran is in its result.
+	Started time.Time
+	Elapsed time.Duration
 
 	// Backends are the addresses the execution was dispatched to, in order --
 	// set whether or not the dispatch succeeded, so a failed run still says

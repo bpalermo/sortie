@@ -807,6 +807,17 @@ execution, `results` -- each backend's `benchmark.*` counters, elapsed time
 and `statistics` -- `totals`, the counters summed over the pool, and
 `backend_errors` for any backend that did not finish cleanly.
 
+Each execution is placed in time, so a failed stage can be matched to what
+else was happening. `started_at` is when sortie began dispatching it and
+`ended_at` when its last backend had answered or been given up on, which is
+`started_at` plus `elapsed_ms`: RFC 3339, UTC, to the millisecond, by the
+clock of the machine sortie runs on. The text report gives the start on each
+execution's first line. The two bracket the load rather than time it:
+connecting to the backends happens inside them, and so does the wait of an
+execution the plan gave a scheduled start. When the load itself began is each
+backend's own `started_at` in `results`, the moment it released its first
+request by its own clock; it is absent for a backend that never sent one.
+
 `statistics` is each statistic that recorded anything, by id, with `count`,
 `mean`, `pstdev`, `min`, `max`, `p50`, `p90`, `p99` and `p99.9`: in
 nanoseconds when `unit` is `ns`, plain numbers when it is `raw`. The

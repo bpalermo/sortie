@@ -111,8 +111,14 @@ func execution(w io.Writer, e run.ExecutionReport) error {
 		fmt.Fprintf(w, "       %v\n", e.Err)
 		return nil
 	}
-	fmt.Fprintf(w, "%-6s %s  (%s, pool %q, %s)\n",
-		status(e.Pass), e.Label, shape, e.Pool, e.Elapsed.Round(time.Millisecond))
+	// When it started, last: the line reads as before up to there, and a run
+	// of hours is matched to what else happened by this.
+	started := ""
+	if at := timestamp(e.Started); at != "" {
+		started = ", started " + at
+	}
+	fmt.Fprintf(w, "%-6s %s  (%s, pool %q, %s%s)\n",
+		status(e.Pass), e.Label, shape, e.Pool, e.Elapsed.Round(time.Millisecond), started)
 
 	// A dns pool's backends were decided when the run started; this is the
 	// only record of which ones they were.
@@ -235,7 +241,17 @@ type jsonExecution struct {
 	DurationMS int64  `json:"duration_ms"`
 	RampTimeMS int64  `json:"ramp_time_ms,omitempty"`
 	ElapsedMS  int64  `json:"elapsed_ms"`
-	Pass       bool   `json:"pass"`
+	// StartedAt is when sortie began dispatching the execution to its
+	// backends and EndedAt when the last of them had answered or been given
+	// up on -- StartedAt plus the elapsed time, both by this process's clock,
+	// RFC 3339 in UTC. That brackets the load rather than timing it: a
+	// backend is dialled, and may be told to wait for a scheduled start,
+	// inside it. When each backend released its first request is the
+	// started_at of its entry in Results. Absent when the report carries no
+	// start time.
+	StartedAt string `json:"started_at,omitempty"`
+	EndedAt   string `json:"ended_at,omitempty"`
+	Pass      bool   `json:"pass"`
 	// NotRun marks an execution that was never attempted -- a stage after one
 	// refused at an engine's execution cap. Error says why; elapsed_ms is 0.
 	NotRun     bool            `json:"not_run,omitempty"`
@@ -259,8 +275,12 @@ type jsonExecution struct {
 
 // jsonBackendResult is what one backend counted and measured.
 type jsonBackendResult struct {
-	Backend   string            `json:"backend"`
-	ElapsedMS int64             `json:"elapsed_ms"`
+	Backend   string `json:"backend"`
+	ElapsedMS int64  `json:"elapsed_ms"`
+	// StartedAt is when the backend released its first request, by the
+	// engine's own clock. Absent when the engine reported none, as one that
+	// never sent a request does.
+	StartedAt string            `json:"started_at,omitempty"`
 	Counters  map[string]uint64 `json:"counters"`
 	// Statistics are the backend's statistics that recorded anything, by id:
 	// its latencies above all. There is no pool-wide entry: a percentile over
@@ -359,67 +379,98 @@ type jsonThreshold struct {
 	Actual string `json:"actual"`
 }
 
+// timeLayout is RFC 3339 in UTC with milliseconds, always three digits: the
+// precision elapsed_ms has, and a fixed width, so the timestamps of a report
+// sort as text.
+const timeLayout = "2006-01-02T15:04:05.000Z"
+
+// timestamp renders a time for a report; empty for the zero time, which is a
+// time nobody recorded and must not be printed as the year 1.
+func timestamp(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(timeLayout)
+}
+
 // JSON writes a machine-readable report.
 func JSON(w io.Writer, r *run.Report) error {
 	out := jsonReport{Pass: r.Pass}
 	for _, e := range r.Executions {
-		je := jsonExecution{
-			Label:      e.Label,
-			Scenario:   e.Scenario,
-			Pool:       e.Pool,
-			Rate:       e.Rate,
-			PerBackend: e.PerBackend,
-			DurationMS: e.Duration.Milliseconds(),
-			RampTimeMS: e.RampTime.Milliseconds(),
-			ElapsedMS:  e.Elapsed.Milliseconds(),
-			Pass:       e.Pass,
-			NotRun:     e.NotRun(),
-			Dns:        e.Dns,
-			Backends:   append([]string(nil), e.Backends...),
-		}
-		if e.Err != nil {
-			je.Error = e.Err.Error()
-		}
-		for _, be := range e.BackendErrors {
-			je.BackendErrors = append(je.BackendErrors, jsonBackendError{Backend: be.Addr, Error: be.Err.Error()})
-		}
-		if e.Set != nil {
-			je.Totals = benchmarkCounters(e.Set.Totals().GetCounters())
-			// The dispatch list is normally there; only a report assembled
-			// without it, as some tests do, takes its backends from the results.
-			fromSet := je.Backends == nil
-			for _, b := range e.Set.Backends {
-				if fromSet {
-					je.Backends = append(je.Backends, b.Addr)
-				}
-				je.Results = append(je.Results, jsonBackendResult{
-					Backend:    b.Addr,
-					ElapsedMS:  b.Global.GetExecutionDuration().AsDuration().Milliseconds(),
-					Counters:   benchmarkCounters(b.Global.GetCounters()),
-					Statistics: statistics(b.Global),
-				})
-				if fs := failures(b.Global.GetCounters()); len(fs) > 0 {
-					bf := jsonBackendFailures{Backend: b.Addr, Counters: map[string]uint64{}}
-					for _, c := range fs {
-						bf.Counters[c.GetName()] = c.GetValue()
-					}
-					je.Failures = append(je.Failures, bf)
-				}
-			}
-		}
-		for _, o := range e.Outcomes {
-			je.Thresholds = append(je.Thresholds, jsonThreshold{
-				Expr:   o.Threshold.Raw,
-				Scope:  o.Scope,
-				Pass:   o.Pass,
-				Actual: o.Detail(),
-			})
-		}
-		out.Executions = append(out.Executions, je)
+		out.Executions = append(out.Executions, newJSONExecution(e))
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
+}
+
+// newJSONExecution is one execution in the machine-readable shape.
+func newJSONExecution(e run.ExecutionReport) jsonExecution {
+	je := jsonExecution{
+		Label:      e.Label,
+		Scenario:   e.Scenario,
+		Pool:       e.Pool,
+		Rate:       e.Rate,
+		PerBackend: e.PerBackend,
+		DurationMS: e.Duration.Milliseconds(),
+		RampTimeMS: e.RampTime.Milliseconds(),
+		ElapsedMS:  e.Elapsed.Milliseconds(),
+		StartedAt:  timestamp(e.Started),
+		Pass:       e.Pass,
+		NotRun:     e.NotRun(),
+		Dns:        e.Dns,
+		Backends:   append([]string(nil), e.Backends...),
+	}
+	// An end is a start plus what was measured from it: with no start there
+	// is no end to give either. It is made of the two as they are printed,
+	// to the millisecond, so that ended_at is started_at plus elapsed_ms
+	// exactly and not a millisecond off by rounding.
+	if !e.Started.IsZero() {
+		je.EndedAt = timestamp(e.Started.Truncate(time.Millisecond).Add(e.Elapsed.Truncate(time.Millisecond)))
+	}
+	if e.Err != nil {
+		je.Error = e.Err.Error()
+	}
+	for _, be := range e.BackendErrors {
+		je.BackendErrors = append(je.BackendErrors, jsonBackendError{Backend: be.Addr, Error: be.Err.Error()})
+	}
+	if e.Set != nil {
+		je.Totals = benchmarkCounters(e.Set.Totals().GetCounters())
+		// The dispatch list is normally there; only a report assembled
+		// without it, as some tests do, takes its backends from the results.
+		fromSet := je.Backends == nil
+		for _, b := range e.Set.Backends {
+			if fromSet {
+				je.Backends = append(je.Backends, b.Addr)
+			}
+			br := jsonBackendResult{
+				Backend:    b.Addr,
+				ElapsedMS:  b.Global.GetExecutionDuration().AsDuration().Milliseconds(),
+				Counters:   benchmarkCounters(b.Global.GetCounters()),
+				Statistics: statistics(b.Global),
+			}
+			if start := b.Global.GetExecutionStart(); start != nil {
+				br.StartedAt = timestamp(start.AsTime())
+			}
+			je.Results = append(je.Results, br)
+			if fs := failures(b.Global.GetCounters()); len(fs) > 0 {
+				bf := jsonBackendFailures{Backend: b.Addr, Counters: map[string]uint64{}}
+				for _, c := range fs {
+					bf.Counters[c.GetName()] = c.GetValue()
+				}
+				je.Failures = append(je.Failures, bf)
+			}
+		}
+	}
+	for _, o := range e.Outcomes {
+		je.Thresholds = append(je.Thresholds, jsonThreshold{
+			Expr:   o.Threshold.Raw,
+			Scope:  o.Scope,
+			Pass:   o.Pass,
+			Actual: o.Detail(),
+		})
+	}
+	return je
 }
 
 // Progress is a run.Observer that narrates a run on the way through, since a

@@ -950,3 +950,43 @@ scenarios:
 		}
 	}
 }
+
+// Every execution report says when it was dispatched and for how long, a
+// dispatch that failed included: the report's timestamps are made of these,
+// and a failed stage is the one somebody will want to place in time.
+func TestRunTimesEveryExecutionWhetherOrNotItRan(t *testing.T) {
+	fake := startFake(t, func(int, *client.CommandLineOptions) *client.ExecutionResponse {
+		return okResponse(100, time.Millisecond, time.Second)
+	})
+
+	p := planFor(t, `
+scenarios:
+  - name: ran
+    executor: {type: constant-rate, rate: 100, duration: 1s}
+  - name: odd
+    concurrency: "3"
+    executor: {type: constant-rate, rate: 100, duration: 1s}
+`, fake.addr)
+
+	before := time.Now()
+	report, err := (&run.Runner{Plan: p}).Run(context.Background())
+	after := time.Now()
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(report.Executions) != 2 {
+		t.Fatalf("got %d executions, want 2", len(report.Executions))
+	}
+	if report.Executions[1].Err == nil {
+		t.Fatal("the second scenario was meant to fail its dispatch")
+	}
+	last := before
+	for _, e := range report.Executions {
+		end := e.Started.Add(e.Elapsed)
+		if e.Started.Before(last) || e.Elapsed < 0 || end.After(after) {
+			t.Errorf("%s: started %s for %s, outside the run (%s to %s) or before the execution ahead of it",
+				e.Label, e.Started, e.Elapsed, before, after)
+		}
+		last = end
+	}
+}

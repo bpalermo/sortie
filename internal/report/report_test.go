@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	client "github.com/bpalermo/sortie/engine/api/client"
 
@@ -533,6 +534,87 @@ func TestJSONCarriesPerBackendLatencyStatistics(t *testing.T) {
 	}
 	if _, has := stats["benchmark_http_client.latency_5xx"]; has {
 		t.Errorf("an empty statistic was reported: %v", stats)
+	}
+}
+
+// A failed stage is matched to what else happened at the time by these: when
+// the execution was dispatched and when it was over, and when each backend
+// says it released its first request.
+func TestJSONCarriesWhenAnExecutionStartedAndEnded(t *testing.T) {
+	r := reportWith(t, 10*time.Millisecond, "latency_2xx.p95 < 50ms")
+	// Not UTC, and not a whole millisecond: the report gives both in UTC, to
+	// the millisecond, and an end that is the printed start plus the printed
+	// elapsed time -- the fractions here would otherwise carry into it.
+	zone := time.FixedZone("east", 3*60*60)
+	r.Executions[0].Started = time.Date(2026, 10, 7, 15, 0, 0, 250_600_000, zone)
+	r.Executions[0].Elapsed = 61*time.Second + 500*time.Millisecond + 600*time.Microsecond
+	r.Executions[0].Set.Backends[0].Global.ExecutionStart = timestamppb.New(time.Date(2026, 10, 7, 12, 0, 1, 0, time.UTC))
+
+	var buf bytes.Buffer
+	if err := report.JSON(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Executions []struct {
+			StartedAt string `json:"started_at"`
+			EndedAt   string `json:"ended_at"`
+			ElapsedMS int64  `json:"elapsed_ms"`
+			Results   []struct {
+				StartedAt string `json:"started_at"`
+			} `json:"results"`
+		} `json:"executions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("JSON report does not parse: %v\n%s", err, buf.String())
+	}
+	e := got.Executions[0]
+	if e.StartedAt != "2026-10-07T12:00:00.250Z" || e.EndedAt != "2026-10-07T12:01:01.750Z" {
+		t.Errorf("started_at, ended_at = %q, %q", e.StartedAt, e.EndedAt)
+	}
+	if e.Results[0].StartedAt != "2026-10-07T12:00:01.000Z" {
+		t.Errorf("the backend's started_at = %q", e.Results[0].StartedAt)
+	}
+	// They are RFC 3339, and the two differ by the elapsed time.
+	start, err := time.Parse(time.RFC3339Nano, e.StartedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	end, err := time.Parse(time.RFC3339Nano, e.EndedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := end.Sub(start).Milliseconds(); got != e.ElapsedMS {
+		t.Errorf("ended_at - started_at = %d ms, elapsed_ms = %d", got, e.ElapsedMS)
+	}
+
+	var text bytes.Buffer
+	if err := report.Text(&text, r); err != nil {
+		t.Fatal(err)
+	}
+	if want := `pool "local", 1m1.501s, started 2026-10-07T12:00:00.250Z)`; !strings.Contains(text.String(), want) {
+		t.Errorf("the text report lacks %q:\n%s", want, text.String())
+	}
+}
+
+// A report with no start time -- one put together by hand, or a backend that
+// never released a request -- says nothing rather than the year 1.
+func TestReportsOmitATimeNobodyRecorded(t *testing.T) {
+	r := reportWith(t, 10*time.Millisecond, "latency_2xx.p95 < 50ms")
+
+	var jsonBuf, text bytes.Buffer
+	if err := report.JSON(&jsonBuf, r); err != nil {
+		t.Fatal(err)
+	}
+	if err := report.Text(&text, r); err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{"started_at", "ended_at", "0001-01-01"} {
+		if strings.Contains(jsonBuf.String(), unwanted) {
+			t.Errorf("the JSON report has %q with no start time to give:\n%s", unwanted, jsonBuf.String())
+		}
+	}
+	if strings.Contains(text.String(), "started") {
+		t.Errorf("the text report gives a start time it does not have:\n%s", text.String())
 	}
 }
 
