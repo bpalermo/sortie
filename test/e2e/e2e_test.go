@@ -1174,13 +1174,15 @@ type tcpEcho struct {
 	// Called, once, when this many bytes have been echoed.
 	trigger   int
 	onTrigger func()
-	// Written before everything it sends back: with one, not an echo.
+	// Written before everything it sends back: with one, not an echo. Set
+	// before the server serves and never after: connections read it unlocked.
 	prefix []byte
 }
 
-func startTcpEcho(t *testing.T) *tcpEcho {
+// startTcpEcho starts the server; a prefix makes it not an echo.
+func startTcpEcho(t *testing.T, prefix string) *tcpEcho {
 	t.Helper()
-	e := &tcpEcho{t: t, conns: map[net.Conn]struct{}{}}
+	e := &tcpEcho{t: t, conns: map[net.Conn]struct{}{}, prefix: []byte(prefix)}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -1388,7 +1390,7 @@ scenarios:
 `
 
 func TestTcpConnectionsAreReopenedWhenTheTargetComesBack(t *testing.T) {
-	echo := startTcpEcho(t)
+	echo := startTcpEcho(t, "")
 	// 200 messages echoed: a second into the run. The message is the plan's
 	// body as YAML reads it: ping, a backslash and an n.
 	done := make(chan struct{})
@@ -1459,7 +1461,7 @@ scenarios:
 `
 
 func TestTcpConnectionsAreRotatedWithoutLosingMessages(t *testing.T) {
-	echo := startTcpEcho(t)
+	echo := startTcpEcho(t, "")
 	out := runTcpPlan(t, tcpRotationPlanTemplate, echo.port())
 	if !strings.Contains(out, "PASS  1/1 executions passed") {
 		t.Errorf("sortie output lacks the PASS verdict")
@@ -1512,8 +1514,7 @@ scenarios:
 `
 
 func TestTcpTargetThatIsNotAnEchoIsNotTimed(t *testing.T) {
-	echo := startTcpEcho(t)
-	echo.prefix = []byte("hello:")
+	echo := startTcpEcho(t, "hello:")
 	out, serviceLog := runTcpPlanWithServiceLog(t, tcpNotAnEchoPlanTemplate, echo.port())
 	if !strings.Contains(out, "PASS  1/1 executions passed") {
 		t.Errorf("sortie output lacks the PASS verdict")

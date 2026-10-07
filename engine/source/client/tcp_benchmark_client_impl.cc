@@ -40,7 +40,12 @@ TcpBenchmarkClientImpl::TcpBenchmarkClientImpl(
   slots_.resize(connection_count_);
   for (uint32_t i = 0; i < connection_count_; i++) {
     slots_[i].backoff = InitialBackoff;
-    slots_[i].retry_timer = dispatcher_.createTimer([this, i]() { connectNext(i); });
+    slots_[i].retry_timer = dispatcher_.createTimer([this, i]() {
+      // When the retry runs, not when it was scheduled: the quiet spell that starts the backoff
+      // over is measured from here, and at the cap the two are a second apart.
+      slots_[i].last_retry = api_.timeSource().monotonicTime();
+      connectNext(i);
+    });
   }
 }
 
@@ -126,7 +131,6 @@ void TcpBenchmarkClientImpl::scheduleRetry(uint32_t slot_index) {
   if (slot.last_retry.has_value() && now - slot.last_retry.value() >= BackoffStartsOverAfter) {
     slot.backoff = InitialBackoff;
   }
-  slot.last_retry = now;
   slot.retry_timer->enableTimer(slot.backoff);
   slot.backoff = std::min(slot.backoff * 2, MaxBackoff);
 }
@@ -186,6 +190,9 @@ void TcpBenchmarkClientImpl::onEvent(Link& link, Envoy::Network::ConnectionEvent
 void TcpBenchmarkClientImpl::promote(Slot& slot) {
   std::unique_ptr<Link> retired = std::move(slot.active);
   slot.active = std::move(slot.standby);
+  // A retry scheduled when the old connection closed under its replacement has nothing left to
+  // do, and while it is pending no rotation is started.
+  slot.retry_timer->disableTimer();
   if (retired == nullptr) {
     // The connection it was to replace closed in the meantime.
     counters_.tcp_reconnects_.inc();

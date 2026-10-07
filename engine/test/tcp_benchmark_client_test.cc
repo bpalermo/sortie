@@ -579,6 +579,77 @@ TEST_F(TcpBenchmarkClientTest, AMismatchOnARotatedConnectionClosesOnlyThatOne) {
   EXPECT_EQ(0, getCounter("tcp_reconnects"));
 }
 
+// The quiet spell is counted from when the last retry ran, not from when it was scheduled: at
+// the 1 s cap those are a second apart, and a connection that lasts 1.1 s after a retry that
+// waited 1 s has not been quiet for two.
+TEST_F(TcpBenchmarkClientTest, TheQuietSpellIsCountedFromWhenTheLastRetryRan) {
+  createClient(1);
+  client_->prepare();
+  refuse_connect_ = true;
+  connections_[0]->raiseEvent(Envoy::Network::ConnectionEvent::RemoteClose);
+  // Refused at 10, 30, 70, 150, 310, 630 and 1270 ms; the next retry, the first to wait the
+  // full second, is scheduled then and runs at 2270.
+  runFor(1500ms);
+  ASSERT_EQ(8, connections_.size());
+  refuse_connect_ = false;
+  runFor(900ms);
+  ASSERT_EQ(9, connections_.size());
+  ASSERT_EQ(1, client_->openConnections());
+  // About 1.1 s after that retry ran, 2.1 s after it was scheduled.
+  runFor(1000ms);
+  connections_[8]->raiseEvent(Envoy::Network::ConnectionEvent::RemoteClose);
+  // Still backed off to the cap: not retried at 10 ms.
+  runFor(200ms);
+  EXPECT_EQ(9, connections_.size());
+  runFor(1000ms);
+  EXPECT_EQ(10, connections_.size());
+}
+
+// The active connection closes while its replacement is connecting, which schedules a retry;
+// the replacement then connects and takes the slot. The retry has nothing left to do, and must
+// not hold up the next rotation while it waits to find that out.
+TEST_F(TcpBenchmarkClientTest, AReplacementTakingOverCancelsTheRetryItMadeUnnecessary) {
+  createClient(1, 256, true, 50ms, 1s, /*max_messages_per_connection=*/2);
+  client_->prepare();
+  defer_connect_ = true;
+  send(2);
+  ASSERT_EQ(2, connections_.size());
+  connections_[0]->raiseEvent(Envoy::Network::ConnectionEvent::RemoteClose);
+  connections_[1]->raiseEvent(Envoy::Network::ConnectionEvent::Connected);
+  EXPECT_EQ(1, getCounter("tcp_reconnects"));
+  EXPECT_EQ(1, client_->openConnections());
+  // No time has passed for a timer to fire: the new connection's own rotation is due at once.
+  defer_connect_ = false;
+  send(2);
+  EXPECT_EQ("pingping", sent_[1].toString());
+  ASSERT_EQ(3, connections_.size());
+  EXPECT_EQ(1, getCounter("tcp_connections_rotated"));
+  send(1);
+  EXPECT_EQ("ping", sent_[2].toString());
+  // And the cancelled retry opens nothing later.
+  echo(1, 2);
+  runFor(30ms);
+  EXPECT_EQ(3, connections_.size());
+}
+
+// A rotated connection gives up on its echoes while finish() is waiting for them: with nothing
+// left outstanding the wait ends there, not when the drain window does.
+TEST_F(TcpBenchmarkClientTest, FinishStopsWaitingWhenARotatedConnectionGivesUpOnItsEchoes) {
+  createClient(1, 256, true, /*drain=*/5s, /*timeout=*/1s, /*max_messages_per_connection=*/2);
+  client_->prepare();
+  send(2);
+  ASSERT_EQ(2, connections_.size());
+  EXPECT_EQ(1, getCounter("tcp_connections_rotated"));
+  const Envoy::MonotonicTime started = time_system_.monotonicTime();
+  client_->finish();
+  const auto waited = time_system_.monotonicTime() - started;
+  EXPECT_GE(waited, 900ms);
+  EXPECT_LT(waited, 3s);
+  EXPECT_EQ(2, getCounter("tcp_inflight_lost"));
+  EXPECT_EQ(0, getCounter("tcp_drain_incomplete"));
+  client_->terminate();
+}
+
 // finish() stops the reopening: a slot waiting to retry stays closed.
 TEST_F(TcpBenchmarkClientTest, NothingIsReopenedAfterFinish) {
   createClient(1);

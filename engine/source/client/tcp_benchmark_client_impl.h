@@ -246,6 +246,7 @@ private:
     std::vector<std::unique_ptr<Link>> retiring;
     Envoy::Event::TimerPtr retry_timer;
     std::chrono::milliseconds backoff{0};
+    // When the retry timer last ran.
     absl::optional<Envoy::MonotonicTime> last_retry;
   };
 
