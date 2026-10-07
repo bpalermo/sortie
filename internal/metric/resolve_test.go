@@ -223,3 +223,45 @@ func TestResolveAbsentAggregateIsAnError(t *testing.T) {
 		t.Errorf("count should resolve to zero rather than error: %v", err)
 	}
 }
+
+// The engine writes 0.999 exactly, and 99.9/100 is one ULP above it: the
+// bucket asked for must still be the one chosen, not the next.
+func TestResolvePercentileMatchesAnExactDecimalBucket(t *testing.T) {
+	pc := func(p float64, d time.Duration) *client.Percentile {
+		return &client.Percentile{Percentile: p, DurationType: &client.Percentile_Duration{Duration: durationpb.New(d)}}
+	}
+	res := &client.Result{Name: "global", Statistics: []*client.Statistic{{
+		Id: "benchmark_http_client.latency_2xx", Count: 10,
+		Percentiles: []*client.Percentile{pc(0.999, 8*time.Millisecond), pc(1, 90*time.Millisecond)},
+	}}}
+	sel, err := ParseSelector("latency_2xx.p99.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := Resolve(res, sel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := time.Duration(int64(v.Num)), 8*time.Millisecond; got != want {
+		t.Errorf("p99.9 = %s, want %s (the 0.999 bucket)", got, want)
+	}
+	if v.ActualPercentile != 0.999 {
+		t.Errorf("actual percentile = %v, want 0.999", v.ActualPercentile)
+	}
+}
+
+// A percentile with neither a duration nor a raw value is no measurement, not
+// a zero that satisfies every upper bound.
+func TestResolvePercentileWithoutAValueIsAnError(t *testing.T) {
+	res := &client.Result{Name: "global", Statistics: []*client.Statistic{{
+		Id: "benchmark_http_client.latency_2xx", Count: 10,
+		Percentiles: []*client.Percentile{{Percentile: 0.5}},
+	}}}
+	sel, err := ParseSelector("latency_2xx.p50")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := Resolve(res, sel); err == nil {
+		t.Fatalf("resolved an unset percentile to %v", v)
+	}
+}

@@ -670,9 +670,17 @@ Three things are not failure classes, and why:
 
 The report prints a backend's non-zero failure counters beside its request
 count, and lists them under `failures` in JSON. The JSON also carries, per
-execution, `results` -- each backend's `benchmark.*` counters and elapsed time
--- `totals`, the same summed over the pool, and `backend_errors` for any
-backend that did not finish cleanly.
+execution, `results` -- each backend's `benchmark.*` counters, elapsed time
+and `statistics` -- `totals`, the counters summed over the pool, and
+`backend_errors` for any backend that did not finish cleanly.
+
+`statistics` is each statistic that recorded anything, by id, with `count`,
+`mean`, `pstdev`, `min`, `max`, `p50`, `p90`, `p99` and `p99.9`: in
+nanoseconds when `unit` is `ns`, plain numbers when it is `raw`. The
+percentiles are resolved as thresholds resolve them, so a `p99` in the report
+is the one a threshold on that statistic was judged against. They are per
+backend only, for the reason given above: a pool-wide percentile cannot be had
+from the backends' own.
 
 ### percentiles resolve to the next histogram bucket
 
@@ -715,8 +723,14 @@ TCP and UDP are all in.
   give back. A snapshot now allocates no histogram, and an engine's memory is
   the same with `--progress` as without. The engine's API can still be asked
   for full statistics per snapshot (`StartRequest.progress_statistics`), at
-  that price; sortie does not ask. The verdict comes from the final response
-  only. Backends behind a distributor report nothing until they finish.
+  that price; sortie does not ask. A snapshot is not free of CPU, though: each
+  one asks every worker of every execution for its summaries. A user running 8
+  concurrent executions per engine measured about 0.6 CPU-seconds per engine
+  per snapshot, which is 19 millicores averaged over a 30 s interval and 10
+  over 60 s. Under the `WAIT` idle strategy that is a visible share of an
+  engine's whole cost, so pick the interval with it in mind. The verdict comes
+  from the final response only. Backends behind a distributor report nothing
+  until they finish.
 - **An engine's memory is its histograms.** Every worker of every execution
   holds about 37 MiB of latency histograms for as long as it runs, and
   assembling the final report copies them. Measured on one engine running 8
