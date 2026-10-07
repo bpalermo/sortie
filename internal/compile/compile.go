@@ -434,8 +434,11 @@ func options(s *plan.Scenario, rate uint32, dur, ramp time.Duration, execID stri
 	// runs at tens or hundreds of requests per second beside the thing it is
 	// measuring: under a CPU limit it gets throttled and reports the
 	// throttling as the target's latency. Measured at 60 rps, WAIT costs about
-	// a fifteenth of SLEEP and a fortieth of SPIN, sends exactly the planned
-	// requests, and shows the same latencies. A plan that wants another
+	// a fifteenth of SLEEP and a fortieth of SPIN and shows the same latencies.
+	// The price is at the end of a run: a worker woken late stops without the
+	// requests that came due while it slept, so a run can fall short of
+	// rate x duration (one request, in what has been measured), never exceed
+	// it. A plan that wants another
 	// strategy -- SPIN, for a very high rate on a machine with cores to spare
 	// -- names it in its template, and what it names is left alone.
 	if o.GetSequencerIdleStrategy() == nil {

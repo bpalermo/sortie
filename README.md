@@ -168,12 +168,14 @@ latencies.
 
 Three things to know about it. The cost still grows with the number of
 workers: each wakes at least every 5 ms to see whether the run should end,
-about 11 millicores per idle worker. A worker that is woken a little late can
-miss the one request due in the last instant of a run, so a run may send one
-request fewer per worker than `rate x duration`, and never one more: seen as
-999 of 1000 in about one short run in four on a busy machine, and not at all
-in a user's two 15-minute runs. Write a threshold on a total count as a range,
-not an equality. And waiting has only been measured at low rates.
+about 11 millicores per idle worker. A worker that is woken late ends the run
+without the requests that came due while it slept, so a run may send fewer
+than `rate x duration`, and never more. What has been seen is one request
+short, 999 of 1000, in about one short run in four on a busy machine, and
+none short in a user's two 15-minute runs; that is an observation, not a
+bound, since nothing limits how late an overloaded machine wakes a worker.
+Write a threshold on a total count as a range with some slack, not an
+equality. And waiting has only been measured at low rates.
 For a very high rate on a machine with cores to spare, where a worker is
 rarely idle and a late wake-up would show, ask for the engine's default:
 
