@@ -790,7 +790,7 @@ static_resources:
               dynamic_stats: false
 `
 
-// 100 messages per second for 5 s over 4 connections and 2 workers: exactly
+// 100 messages per second for 5 s over 4 connections and 2 workers: about
 // 500 echoes, with no deferred or lost message.
 const wsPlanTemplate = `version: v1
 pools:
@@ -816,7 +816,11 @@ scenarios:
       rate: 100
       duration: 5s
     thresholds:
-      - "counter:benchmark.stream_messages_received == 500"
+      # Not "== N": under the WAIT idle strategy, which is the default, a
+      # worker woken a few milliseconds late can miss the request due in the
+      # last instant of the run. At most one per worker, never one too many.
+      - "counter:benchmark.stream_messages_received >= 498"
+      - "counter:benchmark.stream_messages_received <= 500"
       - "benchmark_stream.message_latency.p99 < 500ms"
 `
 
@@ -1076,7 +1080,7 @@ static_resources:
           "@type": type.googleapis.com/envoy.extensions.filters.network.echo.v3.Echo
 `
 
-// 100 messages per second per worker, 2 workers, 5 s: exactly 1000 messages
+// 100 messages per second per worker, 2 workers, 5 s: about 1000 messages
 // sent -- the per-worker division of the rate -- on 2 connections per worker,
 // and all but a message still in flight at the end echoed.
 const tcpPlanTemplate = `version: v1
@@ -1103,7 +1107,11 @@ scenarios:
       rate: 200
       duration: 5s
     thresholds:
-      - "counter:benchmark.tcp_messages_sent == 1000"
+      # Not "== N": under the WAIT idle strategy, which is the default, a
+      # worker woken a few milliseconds late can miss the request due in the
+      # last instant of the run. At most one per worker, never one too many.
+      - "counter:benchmark.tcp_messages_sent >= 998"
+      - "counter:benchmark.tcp_messages_sent <= 1000"
       - "counter:benchmark.tcp_messages_received >= 990"
       - "benchmark_tcp.message_latency.p99 < 500ms"
 `
@@ -1186,7 +1194,11 @@ scenarios:
       rate: 200
       duration: 5s
     thresholds:
-      - "counter:benchmark.udp_datagrams_sent == 1000"
+      # Not "== N": under the WAIT idle strategy, which is the default, a
+      # worker woken a few milliseconds late can miss the request due in the
+      # last instant of the run. At most one per worker, never one too many.
+      - "counter:benchmark.udp_datagrams_sent >= 998"
+      - "counter:benchmark.udp_datagrams_sent <= 1000"
       - "counter:benchmark.udp_datagrams_received >= 990"
       - "benchmark_udp.message_latency.p99 < 500ms"
 `

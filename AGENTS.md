@@ -151,6 +151,12 @@ README's Limitations section; keep the two in sync.
 - `RequestSource` never sees responses, so there is no session flow and no
   response correlation.
 
+`compile.options` also sets two things the engine would default differently,
+both only when the template is silent on them: `no_default_failure_predicates`,
+and `sequencer_idle_strategy: WAIT` (the engine spins; see the README's
+"between requests a worker waits"). A test that asserts the options a backend
+receives has to expect both.
+
 An execution is not ended by a failed request, and a run is not ended by a
 lost backend. `compile.options` sets `no_default_failure_predicates` unless the
 template sets predicates of its own; `Runner.dispatch` runs backends
