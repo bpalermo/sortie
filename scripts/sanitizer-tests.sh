@@ -24,8 +24,8 @@
 # so restarting it in place does not help, and running it again as a new action
 # -- which lands where the scheduler puts it -- does.
 #
-# WHAT IS RUN AGAIN. A failed test whose log has that message and NO sanitizer
-# report, and nothing else. A test that reported a race or a bad access failed
+# WHAT IS RUN AGAIN. A failed test whose log has that message, NO sanitizer
+# report, and no failure the message does not account for; nothing else. A test that reported a race or a bad access failed
 # for what this run exists to find, and is never given a second chance to pass:
 # that is why this is not --flaky_test_attempts, which would rerun a test that
 # reported a data race until it did not. One failure of any other kind ends
@@ -62,6 +62,28 @@ for arg in "$@"; do
 	esac
 done
 
+# could_not_start_only <test.log>: true when the start error accounts for every
+# failure in the log. A binary that died at its own start printed the message
+# and no gtest failure at all. One whose death tests' children died of it
+# printed one gtest failure per child, each carrying the message as what the
+# child wrote ("[  DEATH   ] FATAL: ..."): the two counts are then equal, and a
+# failed assertion of any other kind in the same binary makes them differ.
+could_not_start_only() {
+	local log="$1" failures deaths
+	[ -f "${log}" ] || return 1
+	grep -q "${could_not_start}" "${log}" || return 1
+	if grep -q -E "${report}" "${log}"; then
+		return 1
+	fi
+	failures="$(grep -c -E ': Failure$' "${log}")"
+	deaths="$(grep -c -E "^\\[ +DEATH +\\] FATAL: .*${could_not_start}" "${log}")"
+	if [ "${failures}" -eq 0 ]; then
+		grep -q -E "^FATAL: .*${could_not_start}" "${log}"
+		return
+	fi
+	[ "${failures}" -eq "${deaths}" ]
+}
+
 args=("$@")
 real_failure=0
 for ((round = 1; ; round++)); do
@@ -82,8 +104,7 @@ for ((round = 1; ; round++)); do
 		# //engine/test:name -> <testlogs>/engine/test/name/test.log
 		path="${target#//}"
 		log="${testlogs}/${path/://}/test.log"
-		if [ -f "${log}" ] && grep -q "${could_not_start}" "${log}" &&
-			! grep -q -E "${report}" "${log}"; then
+		if could_not_start_only "${log}"; then
 			again+=("${target}")
 		else
 			echo "sanitizer-tests: ${target} failed, and not for want of a start" >&2
