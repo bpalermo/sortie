@@ -546,7 +546,12 @@ TEST_P(ProcessTest, SnapshotCarriesSummariesUnlessAskedForFullStatistics) {
 // this the test for a cancellation staying quick with requests in flight as well.
 TEST_P(ProcessTest, ShutdownDrainsWorkersConcurrently) {
   constexpr int kConcurrency = 3;
-  constexpr int kDrainTimeoutSeconds = 2;
+  // Scaled for sanitizer builds. What follows a cancellation is not only the workers stopping:
+  // run() merges their histograms before it returns, which takes a moment in a plain build and
+  // a second or two under tsan. The bounds below are fractions of the timeout, so a timeout that
+  // grows with the build's slowness keeps them telling "waited for the requests in flight" from
+  // "did not" in either.
+  constexpr int kDrainTimeoutSeconds = 2 * TIMEOUT_FACTOR;
   WedgedTcpServer wedged_server(GetParam());
   // The failure predicate wipes the stock ones, so that execution terminates on the cancellation
   // only and requests are guaranteed to still be in flight when shutdown starts. Note the plain
