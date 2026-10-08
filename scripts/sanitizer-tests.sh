@@ -36,7 +36,10 @@ set -uo pipefail
 
 rounds=4
 could_not_start='Sanitizer: encountered an incompatible memory layout'
-report='(WARNING|ERROR): [A-Za-z]*Sanitizer'
+# Every form a report takes: tsan's WARNING, asan's ERROR, the SUMMARY line each
+# of them ends with, and UndefinedBehaviorSanitizer's "runtime error:" (the
+# asan config turns on its vptr and function checks).
+report='(WARNING|ERROR|SUMMARY): [A-Za-z]*Sanitizer|runtime error:'
 
 if [ "$#" -eq 0 ]; then
 	echo "usage: $0 <bazel test arguments...>" >&2
