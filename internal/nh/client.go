@@ -101,21 +101,41 @@ var cancelGrace = 30 * time.Second
 // this much longer to be reported, after the minutes already waited.
 var arrivedGrace = 10 * time.Second
 
-// ErrBackendDeadline is the cause a caller gives the context of an Execute or
-// a Distribute whose deadline is its bound on a backend's answer
-// (context.WithTimeoutCause). It is what arrivedGrace applies to. Any other
-// end of the context -- the caller's own cancellation, or a deadline the
-// caller was itself given -- is acted on at once, as a cancellation must be.
+// ErrBackendDeadline is the cause of a context made by WithBackendDeadline
+// that ended on its deadline.
 var ErrBackendDeadline = errors.New("the backend's answer is overdue")
+
+type callerKey struct{}
+
+// WithBackendDeadline returns a context for an Execute or a Distribute that
+// bounds how long a backend's answer is waited for. It ends with parent, at
+// once, like any derived context; and d after it was made, which is what
+// arrivedGrace applies to. The two are kept apart because they are not the
+// same event: parent ending is the caller wanting the run stopped, and is
+// still acted on at once while a missed deadline is being given its grace.
+func WithBackendDeadline(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeoutCause(parent, d, ErrBackendDeadline)
+	return context.WithValue(ctx, callerKey{}, parent), cancel
+}
 
 // overdue says whether ctx ended on the deadline for the backend's answer.
 func overdue(ctx context.Context) bool {
 	return ctx.Err() != nil && context.Cause(ctx) == ErrBackendDeadline
 }
 
-// withArrivedGrace returns a context for a stream that must outlive ctx by
-// arrivedGrace when ctx ends on the deadline for the backend's answer, and
-// ends with ctx otherwise. It carries ctx's values and not its deadline.
+// callerDone is closed when the caller of WithBackendDeadline wants the run
+// stopped; for any other context it is ctx's own Done.
+func callerDone(ctx context.Context) <-chan struct{} {
+	if parent, ok := ctx.Value(callerKey{}).(context.Context); ok {
+		return parent.Done()
+	}
+	return ctx.Done()
+}
+
+// withArrivedGrace returns a context for a stream that is already open and
+// must outlive ctx by arrivedGrace when ctx ends on the deadline for the
+// backend's answer -- unless the caller wants the run stopped meanwhile --
+// and ends with ctx otherwise. It carries ctx's values and not its deadline.
 func withArrivedGrace(ctx context.Context) (context.Context, context.CancelFunc) {
 	out, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	go func() {
@@ -128,6 +148,7 @@ func withArrivedGrace(ctx context.Context) (context.Context, context.CancelFunc)
 			select {
 			case <-out.Done():
 				return
+			case <-callerDone(ctx):
 			case <-time.After(arrivedGrace):
 			}
 		}
@@ -240,6 +261,11 @@ type Progress struct {
 // as a *BusyError.
 func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLineOptions, progress *Progress) (*client.ExecutionResponse, error) {
 	stub := client.NewNighthawkServiceClient(conn)
+	// The grace is for a run that was in flight when its deadline passed. A
+	// context that has already ended starts nothing.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("not started: %w", err)
+	}
 	streamCtx, closeStream := context.WithCancel(context.WithoutCancel(ctx))
 	defer closeStream()
 	stream, err := stub.ExecutionStream(streamCtx)
@@ -311,6 +337,7 @@ func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLin
 		select {
 		case got = <-first:
 			answered = true
+		case <-callerDone(ctx):
 		case <-time.After(arrivedGrace):
 		}
 	}

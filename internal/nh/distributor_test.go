@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -414,7 +415,7 @@ func TestDistributeTakesAnAnswerThatArrivesJustAfterTheDeadline(t *testing.T) {
 	}
 	defer conn.Close()
 
-	ctx, cancel := context.WithTimeoutCause(context.Background(), 100*time.Millisecond, nh.ErrBackendDeadline)
+	ctx, cancel := nh.WithBackendDeadline(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	names, _, err := nh.Distribute(ctx, conn, &client.CommandLineOptions{}, targets)
 	if err != nil || len(names) != 1 {
@@ -429,5 +430,39 @@ func TestDistributeTakesAnAnswerThatArrivesJustAfterTheDeadline(t *testing.T) {
 	}
 	if took := time.Since(started); took > 2*time.Second {
 		t.Errorf("the caller's own deadline was acted on after %s, want at once", took)
+	}
+}
+
+// As for a direct backend: the caller cancelling during the grace ends the
+// stream at once, and a context that has already ended sends no request.
+func TestDistributeGraceYieldsToTheCallerAndStartsNothingLate(t *testing.T) {
+	defer nh.SetCancelGraceForTest(20 * time.Second)()
+	targets := []string{"10.0.0.11:8443"}
+	var asked atomic.Int32
+	fake := startFakeDistributor(t, func(requested []string) []string {
+		asked.Add(1)
+		return requested
+	})
+	fake.delay = 30 * time.Second
+	conn, err := nh.Dial(context.Background(), fake.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	parent, stop := context.WithCancel(context.Background())
+	ctx, cancel := nh.WithBackendDeadline(parent, 100*time.Millisecond)
+	defer cancel()
+	time.AfterFunc(400*time.Millisecond, stop)
+	started := time.Now()
+	if _, _, err := nh.Distribute(ctx, conn, &client.CommandLineOptions{}, targets); err == nil {
+		t.Error("Distribute succeeded against a distributor that never answers")
+	}
+	if took := time.Since(started); took > 5*time.Second {
+		t.Errorf("the caller's cancellation during the grace was acted on after %s, want at once", took)
+	}
+
+	if _, _, err := nh.Distribute(ctx, conn, &client.CommandLineOptions{}, targets); err == nil {
+		t.Error("Distribute sent a request on a context that had already ended")
 	}
 }

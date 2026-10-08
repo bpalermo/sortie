@@ -722,9 +722,10 @@ func (r *Runner) dispatch(
 		budget = addDuration(budget, time.Until(start.AsTime()))
 	}
 	parent := ctx
-	// The cause tells the client that this deadline is the bound on the
-	// backends' answers and not the caller's own: see nh.ErrBackendDeadline.
-	ctx, cancel := context.WithTimeoutCause(parent, budget, nh.ErrBackendDeadline)
+	// Not a plain timeout: the client must be able to tell this bound on the
+	// backends' answers from the caller wanting the run stopped. See
+	// nh.WithBackendDeadline.
+	ctx, cancel := nh.WithBackendDeadline(parent, budget)
 	defer cancel()
 	// silent rewrites the error of a backend the deadline gave up on, so the
 	// report says what happened rather than "context deadline exceeded".
