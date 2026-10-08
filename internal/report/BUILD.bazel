@@ -9,6 +9,7 @@ go_library(
         "//engine/api/client:base_go_proto",
         "//internal/compile",
         "//internal/metric",
+        "//internal/nh",
         "//internal/run",
     ],
 )
@@ -24,6 +25,7 @@ go_test(
     deps = [
         "//engine/api/client:base_go_proto",
         "//internal/compile",
+        "//internal/nh",
         "//internal/result",
         "//internal/run",
         "//internal/threshold",

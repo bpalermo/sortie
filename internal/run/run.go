@@ -722,7 +722,10 @@ func (r *Runner) dispatch(
 		budget = addDuration(budget, time.Until(start.AsTime()))
 	}
 	parent := ctx
-	ctx, cancel := context.WithTimeout(parent, budget)
+	// Not a plain timeout: the client must be able to tell this bound on the
+	// backends' answers from the caller wanting the run stopped. See
+	// nh.WithBackendDeadline.
+	ctx, cancel := nh.WithBackendDeadline(parent, budget)
 	defer cancel()
 	// silent rewrites the error of a backend the deadline gave up on, so the
 	// report says what happened rather than "context deadline exceeded".
@@ -731,7 +734,10 @@ func (r *Runner) dispatch(
 		// code that watched the context, and a gRPC status with the
 		// DeadlineExceeded code, from an RPC the context ended -- which does
 		// not wrap the context's error, so errors.Is alone would miss it.
-		expired := errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded
+		// A stream kept open a little past the deadline (nh.ErrBackendDeadline)
+		// is ended by a cancellation, and reports that code instead.
+		expired := errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded ||
+			(ctx.Err() != nil && status.Code(err) == codes.Canceled)
 		if err == nil || parent.Err() != nil || !expired {
 			return err
 		}

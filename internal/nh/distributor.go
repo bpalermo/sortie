@@ -89,8 +89,17 @@ func DistributePartial(
 		addrs = append(addrs, addr)
 	}
 
+	// The stream outlives the deadline for the targets' answers by a little:
+	// see arrivedGrace. It ends with ctx for any other reason ctx ends, and
+	// that is for a request in flight: a context that has already ended
+	// starts nothing.
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, fmt.Errorf("not started: %w", err)
+	}
+	streamCtx, closeStream := withArrivedGrace(ctx)
+	defer closeStream()
 	stub := distributor.NewNighthawkDistributorClient(conn)
-	stream, err := stub.DistributedRequestStream(ctx)
+	stream, err := stub.DistributedRequestStream(streamCtx)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("opening distributor stream: %w", err)
 	}

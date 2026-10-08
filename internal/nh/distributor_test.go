@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,6 +46,12 @@ type fakeDistributor struct {
 	// errorFor gives the services the fake reports an error for instead of a
 	// response, the way a distributor relays a target's failed stream.
 	errorFor map[string]*rpcstatus.Status
+
+	// delay is how long the fake takes to answer.
+	delay time.Duration
+
+	// requests counts the requests received, each as it arrives.
+	requests atomic.Int32
 }
 
 func (f *fakeDistributor) DistributedRequestStream(
@@ -58,6 +65,7 @@ func (f *fakeDistributor) DistributedRequestStream(
 		if err != nil {
 			return err
 		}
+		f.requests.Add(1)
 
 		requested := make([]string, 0, len(req.GetServices()))
 		for _, svc := range req.GetServices() {
@@ -68,6 +76,7 @@ func (f *fakeDistributor) DistributedRequestStream(
 				net.JoinHostPort(sa.GetAddress(), strconv.FormatUint(uint64(sa.GetPortValue()), 10)))
 		}
 
+		time.Sleep(f.delay)
 		resp := &distributorpb.DistributedResponse{}
 		for _, name := range f.answerAs(requested) {
 			host, port := splitHostPort(name)
@@ -393,5 +402,75 @@ func TestDistributePartialRecognisesATargetAtItsExecutionCap(t *testing.T) {
 		case want >= 0 && status.Code(f.Err) != codes.ResourceExhausted:
 			t.Errorf("%s: code = %s, want ResourceExhausted", f.Target, status.Code(f.Err))
 		}
+	}
+}
+
+// As for a direct backend: the deadline for the targets' answers having
+// passed, an answer that arrives just after it is still the result. A
+// deadline that is the caller's own ends the stream at once.
+func TestDistributeTakesAnAnswerThatArrivesJustAfterTheDeadline(t *testing.T) {
+	defer nh.SetCancelGraceForTest(5 * time.Second)()
+	targets := []string{"10.0.0.11:8443"}
+	fake := startFakeDistributor(t, func(requested []string) []string { return requested })
+	fake.delay = 400 * time.Millisecond
+	conn, err := nh.Dial(context.Background(), fake.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := nh.WithBackendDeadline(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	names, _, err := nh.Distribute(ctx, conn, &client.CommandLineOptions{}, targets)
+	if err != nil || len(names) != 1 {
+		t.Fatalf("Distribute: %v with %d results, want the answer that arrived after the deadline", err, len(names))
+	}
+
+	own, cancelOwn := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelOwn()
+	started := time.Now()
+	if _, _, err := nh.Distribute(own, conn, &client.CommandLineOptions{}, targets); err == nil {
+		t.Error("Distribute under the caller's own deadline succeeded")
+	}
+	if took := time.Since(started); took > 2*time.Second {
+		t.Errorf("the caller's own deadline was acted on after %s, want at once", took)
+	}
+}
+
+// As for a direct backend: the caller cancelling during the grace ends the
+// stream at once, and a context that has already ended sends no request.
+func TestDistributeGraceYieldsToTheCallerAndStartsNothingLate(t *testing.T) {
+	defer nh.SetCancelGraceForTest(20 * time.Second)()
+	targets := []string{"10.0.0.11:8443"}
+	fake := startFakeDistributor(t, func(requested []string) []string { return requested })
+	fake.delay = 30 * time.Second
+	conn, err := nh.Dial(context.Background(), fake.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	parent, stop := context.WithCancel(context.Background())
+	ctx, cancel := nh.WithBackendDeadline(parent, 100*time.Millisecond)
+	defer cancel()
+	time.AfterFunc(400*time.Millisecond, stop)
+	started := time.Now()
+	if _, _, err := nh.Distribute(ctx, conn, &client.CommandLineOptions{}, targets); err == nil {
+		t.Error("Distribute succeeded against a distributor that never answers")
+	}
+	if took := time.Since(started); took > 5*time.Second {
+		t.Errorf("the caller's cancellation during the grace was acted on after %s, want at once", took)
+	}
+
+	if got := fake.requests.Load(); got != 1 {
+		t.Fatalf("the distributor received %d requests, want the one that was sent in time", got)
+	}
+	if _, _, err := nh.Distribute(ctx, conn, &client.CommandLineOptions{}, targets); err == nil {
+		t.Error("Distribute succeeded on a context that had already ended")
+	}
+	// A request that had been sent would have arrived by now.
+	time.Sleep(200 * time.Millisecond)
+	if got := fake.requests.Load(); got != 1 {
+		t.Errorf("the distributor received %d requests: one was sent on a context that had already ended", got)
 	}
 }

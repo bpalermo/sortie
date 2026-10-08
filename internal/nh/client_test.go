@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -288,4 +289,126 @@ func TestExecuteReportsTheExecutionCapWhenTheRefusalBeatsTheStart(t *testing.T) 
 			t.Fatalf("attempt %d: err = %v, want a BusyError with the cap", i, err)
 		}
 	}
+}
+
+// slowService answers after a delay, with a complete response.
+type slowService struct {
+	client.UnimplementedNighthawkServiceServer
+	after time.Duration
+}
+
+func (s *slowService) ExecutionStream(stream client.NighthawkService_ExecutionStreamServer) error {
+	if _, err := stream.Recv(); err != nil {
+		return err
+	}
+	// A cancellation ends the run, as it does the engine's.
+	cancelled := make(chan struct{})
+	go func() {
+		if _, err := stream.Recv(); err == nil {
+			close(cancelled)
+		}
+	}()
+	select {
+	case <-cancelled:
+		return status.Error(codes.Canceled, "cancelled")
+	case <-time.After(s.after):
+	}
+	return stream.Send(&client.ExecutionResponse{Output: &client.Output{Results: []*client.Result{{Name: "global"}}}})
+}
+
+// A deadline that has passed is not yet a backend that did not answer: a
+// driver stopped for a while wakes past its deadline with the complete result
+// waiting. The answer that is there, or arrives just after, is the result,
+// and the run is neither cancelled nor an error.
+func TestExecuteTakesAnAnswerThatArrivesJustAfterTheDeadline(t *testing.T) {
+	defer nh.SetCancelGraceForTest(5 * time.Second)()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	client.RegisterNighthawkServiceServer(server, &slowService{after: 400 * time.Millisecond})
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	conn, err := nh.Dial(context.Background(), listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := nh.WithBackendDeadline(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	resp, err := nh.Execute(ctx, conn, &client.CommandLineOptions{}, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v, want the answer that arrived after the deadline", err)
+	}
+	if len(resp.GetOutput().GetResults()) != 1 {
+		t.Errorf("response = %v, want the complete result", resp)
+	}
+
+	// A deadline that is the caller's own is a cancellation, acted on at
+	// once: the run is cancelled and reported as that, well inside the grace.
+	own, cancelOwn := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelOwn()
+	started := time.Now()
+	_, err = nh.Execute(own, conn, &client.CommandLineOptions{}, nil)
+	if err == nil {
+		t.Error("Execute under the caller's own deadline took the late answer, want the run cancelled")
+	}
+	if took := time.Since(started); took > 2*time.Second {
+		t.Errorf("the caller's own deadline was acted on after %s, want at once", took)
+	}
+}
+
+// The grace given to a missed backend deadline does not hold up the caller:
+// the caller cancelling during it stops the run at once. And a context that
+// has already ended starts no run at all.
+func TestExecuteGraceYieldsToTheCallerAndStartsNothingLate(t *testing.T) {
+	defer nh.SetCancelGraceForTest(20 * time.Second)()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &countingSlowService{slowService: slowService{after: 30 * time.Second}}
+	server := grpc.NewServer()
+	client.RegisterNighthawkServiceServer(server, service)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	conn, err := nh.Dial(context.Background(), listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	parent, stop := context.WithCancel(context.Background())
+	ctx, cancel := nh.WithBackendDeadline(parent, 100*time.Millisecond)
+	defer cancel()
+	time.AfterFunc(400*time.Millisecond, stop)
+	started := time.Now()
+	if _, err := nh.Execute(ctx, conn, &client.CommandLineOptions{}, nil); err == nil {
+		t.Error("Execute succeeded against a service that never answers")
+	}
+	if took := time.Since(started); took > 5*time.Second {
+		t.Errorf("the caller's cancellation during the grace was acted on after %s, want at once", took)
+	}
+
+	before := service.starts.Load()
+	if _, err := nh.Execute(ctx, conn, &client.CommandLineOptions{}, nil); err == nil {
+		t.Error("Execute started a run on a context that had already ended")
+	}
+	// A stream that had been opened would have arrived by now.
+	time.Sleep(200 * time.Millisecond)
+	if got := service.starts.Load(); got != before {
+		t.Errorf("a run was started on a context that had already ended (%d starts, was %d)", got, before)
+	}
+}
+
+type countingSlowService struct {
+	slowService
+	starts atomic.Int32
+}
+
+func (s *countingSlowService) ExecutionStream(stream client.NighthawkService_ExecutionStreamServer) error {
+	s.starts.Add(1)
+	return s.slowService.ExecutionStream(stream)
 }

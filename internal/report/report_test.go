@@ -15,6 +15,7 @@ import (
 	client "github.com/bpalermo/sortie/engine/api/client"
 
 	"github.com/bpalermo/sortie/internal/compile"
+	"github.com/bpalermo/sortie/internal/nh"
 	"github.com/bpalermo/sortie/internal/report"
 	"github.com/bpalermo/sortie/internal/result"
 	"github.com/bpalermo/sortie/internal/run"
@@ -909,5 +910,47 @@ func TestProgressVerdictIsOneLineWhateverTheNamesHold(t *testing.T) {
 	})
 	if got := buf.String(); strings.Count(got, "\n") != 1 || !strings.Contains(got, "PASS two; lines/stage-1 (scenario two; lines,") {
 		t.Errorf("verdict line = %q", got)
+	}
+}
+
+// A stage stopped at an engine's execution cap is marked as that in the JSON,
+// on the execution and on the backends that refused, so that a consumer need
+// not read error text to tell a refusal from a failure or from a lost backend.
+func TestJSONMarksARefusalAtTheExecutionCap(t *testing.T) {
+	busy := &nh.BusyError{Max: 16, Err: errFake{}}
+	atCap := &run.CapError{Backend: "10.0.0.1:8443", Max: 16, Needed: 1, Err: busy}
+	r := &run.Report{Executions: []run.ExecutionReport{
+		{Label: "ramp/stage-1", Pool: "local", Rate: 10, Duration: time.Second, Err: atCap,
+			BackendErrors: []run.BackendError{{Addr: "10.0.0.1:8443", Err: busy}}},
+		{Label: "ramp/stage-2", Pool: "local", Rate: 20, Duration: time.Second,
+			Err: &run.NotRunError{Refused: "ramp/stage-1", Cap: atCap}},
+		{Label: "other", Pool: "local", Rate: 10, Duration: time.Second, Err: errFake{},
+			BackendErrors: []run.BackendError{{Addr: "10.0.0.2:8443", Err: errFake{}}}},
+	}}
+	var buf bytes.Buffer
+	if err := report.JSON(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Executions []struct {
+			Refused       string `json:"refused"`
+			NotRun        bool   `json:"not_run"`
+			BackendErrors []struct {
+				Refused string `json:"refused"`
+			} `json:"backend_errors"`
+		} `json:"executions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	refused, skipped, failed := got.Executions[0], got.Executions[1], got.Executions[2]
+	if refused.Refused != "execution_cap" || refused.NotRun || refused.BackendErrors[0].Refused != "execution_cap" {
+		t.Errorf("the refused stage = %+v", refused)
+	}
+	if skipped.Refused != "" || !skipped.NotRun {
+		t.Errorf("the skipped stage = %+v, want not_run and no refused", skipped)
+	}
+	if failed.Refused != "" || failed.BackendErrors[0].Refused != "" {
+		t.Errorf("an ordinary failure is marked as a refusal: %+v", failed)
 	}
 }
