@@ -396,6 +396,8 @@ func TestExecuteGraceYieldsToTheCallerAndStartsNothingLate(t *testing.T) {
 	if _, err := nh.Execute(ctx, conn, &client.CommandLineOptions{}, nil); err == nil {
 		t.Error("Execute started a run on a context that had already ended")
 	}
+	// A stream that had been opened would have arrived by now.
+	time.Sleep(200 * time.Millisecond)
 	if got := service.starts.Load(); got != before {
 		t.Errorf("a run was started on a context that had already ended (%d starts, was %d)", got, before)
 	}

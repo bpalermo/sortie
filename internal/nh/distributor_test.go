@@ -49,6 +49,9 @@ type fakeDistributor struct {
 
 	// delay is how long the fake takes to answer.
 	delay time.Duration
+
+	// requests counts the requests received, each as it arrives.
+	requests atomic.Int32
 }
 
 func (f *fakeDistributor) DistributedRequestStream(
@@ -62,6 +65,7 @@ func (f *fakeDistributor) DistributedRequestStream(
 		if err != nil {
 			return err
 		}
+		f.requests.Add(1)
 
 		requested := make([]string, 0, len(req.GetServices()))
 		for _, svc := range req.GetServices() {
@@ -438,11 +442,7 @@ func TestDistributeTakesAnAnswerThatArrivesJustAfterTheDeadline(t *testing.T) {
 func TestDistributeGraceYieldsToTheCallerAndStartsNothingLate(t *testing.T) {
 	defer nh.SetCancelGraceForTest(20 * time.Second)()
 	targets := []string{"10.0.0.11:8443"}
-	var asked atomic.Int32
-	fake := startFakeDistributor(t, func(requested []string) []string {
-		asked.Add(1)
-		return requested
-	})
+	fake := startFakeDistributor(t, func(requested []string) []string { return requested })
 	fake.delay = 30 * time.Second
 	conn, err := nh.Dial(context.Background(), fake.addr)
 	if err != nil {
@@ -462,7 +462,15 @@ func TestDistributeGraceYieldsToTheCallerAndStartsNothingLate(t *testing.T) {
 		t.Errorf("the caller's cancellation during the grace was acted on after %s, want at once", took)
 	}
 
+	if got := fake.requests.Load(); got != 1 {
+		t.Fatalf("the distributor received %d requests, want the one that was sent in time", got)
+	}
 	if _, _, err := nh.Distribute(ctx, conn, &client.CommandLineOptions{}, targets); err == nil {
-		t.Error("Distribute sent a request on a context that had already ended")
+		t.Error("Distribute succeeded on a context that had already ended")
+	}
+	// A request that had been sent would have arrived by now.
+	time.Sleep(200 * time.Millisecond)
+	if got := fake.requests.Load(); got != 1 {
+		t.Errorf("the distributor received %d requests: one was sent on a context that had already ended", got)
 	}
 }
