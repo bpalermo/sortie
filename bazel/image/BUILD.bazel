@@ -10,3 +10,7 @@ filegroup(
     ),
     visibility = ["//:__pkg__"],
 )
+
+# Read as data by //bazel/stamp:stamp_test, which checks that go_image puts no
+# commit into the image.
+exports_files(["defs.bzl"])

@@ -40,6 +40,9 @@ var statusCommand = regexp.MustCompile(`--workspace_status_command=(\S+)`)
 // xDefValue captures what x_defs assigns to versionSymbol.
 var xDefValue = regexp.MustCompile(regexp.QuoteMeta(`"`+versionSymbol+`"`) + `\s*:\s*"([^"]*)"`)
 
+// stampAttr matches a `stamp = ...` attribute on a rule.
+var stampAttr = regexp.MustCompile(`(?m)^\s*stamp\s*=`)
+
 // active strips comments and blank lines, so a setting that has been commented
 // out does not read as present. Searching the raw text would let
 // `# build --stamp` satisfy a check for "--stamp" -- the same mistake as
@@ -123,6 +126,33 @@ func TestVersionIsStamped(t *testing.T) {
 	// moving or renaming it is not mistaken for deleting the key.
 	if script := active(read(t, status[1])); !strings.Contains(script, versionKey) {
 		t.Errorf("%s no longer emits %s, which %s stamps from", status[1], versionKey, versionSymbol)
+	}
+}
+
+// TestImagesCarryNoCommit keeps the commit out of the images themselves.
+//
+// The binary says which build it is (above); the image must not. A label is
+// part of the image config, the config's digest is in the manifest, and the
+// manifest's is in the index: a commit anywhere in there gives every commit a
+// new digest for the same layers, and whoever pins by digest re-pins an
+// unchanged image on every commit. That is how the engine image came to have a
+// different digest at two commits that did not touch it. Which commit
+// published an image is answered by its dev-<commit> tag and by the
+// certificate of its signature.
+func TestImagesCarryNoCommit(t *testing.T) {
+	for _, name := range []string{"bazel/image/defs.bzl", "engine/BUILD"} {
+		text := active(read(t, name))
+		if strings.Contains(text, "org.opencontainers.image.revision") {
+			t.Errorf("%s sets the org.opencontainers.image.revision label; it changes the "+
+				"image's digest at every commit", name)
+		}
+		// rules_img substitutes stamp keys in an image rule's attributes only
+		// when asked to; nothing in an image should need it. image_push takes
+		// its commit tag from tag_list, which has no such attribute.
+		if stampAttr.MatchString(text) {
+			t.Errorf("%s stamps an image rule; a stamped value in a manifest or an index "+
+				"moves its digest at every commit", name)
+		}
 	}
 }
 

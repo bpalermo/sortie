@@ -11,7 +11,12 @@ load("//bazel:registry.bzl", "IMAGE_REGISTRY", "image_repository")
 
 licenses(["notice"])  # Apache 2
 
-exports_files(["LICENSE"])
+# BUILD is read as data by //bazel/stamp:stamp_test, which checks that the
+# engine image carries no commit.
+exports_files([
+    "BUILD",
+    "LICENSE",
+])
 
 envoy_package()
 
@@ -120,12 +125,12 @@ image_manifest(
         "org.opencontainers.image.description": "sortie's load engine: nighthawk_service, nighthawk_test_server and nighthawk_client built on Envoy",
         "org.opencontainers.image.licenses": "Apache-2.0",
         "org.opencontainers.image.source": "https://github.com/bpalermo/sortie",
-        "org.opencontainers.image.revision": "{{.STABLE_GIT_COMMIT}}",
     },
+    # As in //bazel/image:defs.bzl, no label names the commit: the engine is a
+    # large image that most commits do not touch, and its digest should move
+    # only when it does. The release workflow's dev-<commit> tag and the
+    # signature's certificate say which commit published it.
     layers = [":image_layer"],
-    # As in //bazel/image:defs.bzl: stamped values are constant metadata to
-    # Bazel, so "force" keeps builds at one commit reproducible.
-    stamp = "force",
     user = "65532:65532",
     visibility = ["//visibility:public"],
 )

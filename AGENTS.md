@@ -274,9 +274,13 @@ These are deliberate and easy to undo by accident:
   `QUAY_TOKEN` (secrets of the `release` environment) can write and cannot
   create: a new repository has to exist before the first push, or it 401s.
 
-- **`stamp = "force"` on the image rules**, not the default `"auto"`. `"auto"`
-  defers to `--stamp`, which only a release build passes, so every other build
-  would bake the literal string `{{.STABLE_GIT_COMMIT}}` in as the revision.
+- **No commit inside an image.** No `org.opencontainers.image.revision` label
+  and no `stamp` attribute on an image rule: a label is part of the image
+  config, so one naming the commit gives every commit a new digest for the same
+  layers, and a consumer pinning by digest re-pins an image that did not change.
+  The commit is on the `dev-<commit>` tag and in the signature's certificate.
+  `//bazel/stamp:stamp_test` refuses both. The publish workflow verifies a
+  digest before signing it and signs only what is not signed yet.
 - **`build --stamp` in .bazelrc.** rules_helm has no per-target equivalent:
   `helm_package` always defers to the flag, so without it a chart carries
   `0.1.0-GIT-COMMIT` as its version.

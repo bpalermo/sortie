@@ -3,8 +3,9 @@
 `go_image` wraps the four rules_img rules that always appear together -- layer,
 manifest, index, push -- plus the build setting that names the mutable tag. They
 are separated here rather than in a package because each carries a decision that
-is easy to undo by accident and expensive to notice: `stamp = "force"` on the
-stamped rules, `STABLE_` rather than volatile status keys in the commit tag, and
+is easy to undo by accident and expensive to notice: no commit in the image
+itself, so that an image whose content did not change keeps its digest;
+`STABLE_` rather than volatile status keys in the commit tag; and
 `include_runfiles = False` for a static binary. Calling this macro gets all of
 them; hand-assembling the four rules gets whichever the author remembered.
 """
@@ -51,8 +52,9 @@ def go_image(
       binary: the Go binary label to place in the image.
       registry: registry host: IMAGE_REGISTRY of //bazel:registry.bzl.
       repository: repository path within the registry.
-      labels: OCI labels. "org.opencontainers.image.revision" is added from the
-        stamped commit unless already given.
+      labels: OCI labels. Constant values only: a label is part of the image
+        config, so one that names the commit gives every commit a new digest
+        for the same content (//bazel/stamp:stamp_test refuses it).
       entrypoint_path: absolute path of the binary inside the image. Defaults to
         "/" + the binary's target name.
       base: base image. distroless static, since a static Go binary needs no
@@ -65,12 +67,6 @@ def go_image(
     """
     if entrypoint_path == None:
         entrypoint_path = "/" + binary.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
-
-    # STABLE_, not the volatile GIT_COMMIT. A volatile status value is constant
-    # metadata to Bazel, so an action embedding one is not invalidated when it
-    # changes, and a cached push would republish the previous commit's tag.
-    image_labels = dict(labels)
-    image_labels.setdefault("org.opencontainers.image.revision", "{{.STABLE_GIT_COMMIT}}")
 
     string_flag(
         name = name + "_tag",
@@ -92,14 +88,12 @@ def go_image(
         name = name + "_manifest",
         base = base,
         entrypoint = [entrypoint_path],
-        labels = image_labels,
+        # No "org.opencontainers.image.revision", and nothing else stamped: the
+        # digest then names the content, and a consumer who pins by digest
+        # re-pins only when the image changed. The commit is on the push's
+        # second tag and in the certificate of the image's signature.
+        labels = labels,
         layers = [name + "_layer"],
-        # "force" rather than the default "auto": auto defers to --stamp, which
-        # only a release build passes, so every other build would bake the
-        # literal "{{.STABLE_GIT_COMMIT}}" in as the revision. Stamped values
-        # are constant metadata to Bazel, so builds at one commit stay
-        # reproducible.
-        stamp = "force",
     )
 
     # One manifest, many platforms: the index performs the transition itself, so
@@ -108,13 +102,16 @@ def go_image(
         name = name + "_index",
         manifests = [name + "_manifest"],
         platforms = platforms,
-        stamp = "force",
         visibility = visibility,
     )
 
     # Two tags deliberately. The first is mutable and is what a human pulls; the
-    # second is immutable and is the only one that can answer "which commit is
-    # this?" after the fact.
+    # second is immutable and answers "what did this commit publish?". Several
+    # commits' tags name one digest when the image did not change between them.
+    #
+    # STABLE_, not the volatile GIT_COMMIT. A volatile status value is constant
+    # metadata to Bazel, so an action embedding one is not invalidated when it
+    # changes, and a cached push would republish the previous commit's tag.
     image_push(
         name = name + "_push",
         build_settings = {"tag": name + "_tag"},

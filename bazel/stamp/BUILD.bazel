@@ -11,5 +11,7 @@ go_test(
         "//:BUILD.bazel",
         "//:main.go",
         "//bazel:workspace_status.sh",
+        "//bazel/image:defs.bzl",
+        "//engine:BUILD",
     ],
 )
