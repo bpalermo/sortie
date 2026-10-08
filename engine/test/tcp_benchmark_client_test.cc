@@ -10,6 +10,7 @@
 
 #include "test/mocks/network/connection.h"
 #include "test/mocks/upstream/mocks.h"
+#include "test/test_common/simulated_time_system.h"
 #include "test/test_common/utility.h"
 
 #include "engine/source/client/tcp_benchmark_client_impl.h"
@@ -26,9 +27,12 @@ namespace {
 
 using namespace std::chrono_literals;
 
-class TcpBenchmarkClientTest : public Test {
+// The fixture, over a time system: real time for the tests that block in the client (prepare()
+// and finish() run the dispatcher until something happens), simulated time for the ones that
+// are about when a timer fires.
+template <class TimeSystemType> class TcpBenchmarkClientTestBase : public Test {
 public:
-  TcpBenchmarkClientTest()
+  TcpBenchmarkClientTestBase()
       : api_(Envoy::Api::createApiForTest(time_system_)),
         dispatcher_(api_->allocateDispatcher("test_thread")),
         cluster_manager_(std::make_unique<Envoy::Upstream::MockClusterManager>()) {
@@ -83,7 +87,7 @@ public:
 
   // Runs the dispatcher for a while: timers that come due fire, and connections the client let
   // go of are deleted -- their pointers in connections_ dangle afterwards.
-  void runFor(std::chrono::milliseconds duration) {
+  virtual void runFor(std::chrono::milliseconds duration) {
     Envoy::Event::TimerPtr timer = dispatcher_->createTimer([this]() { dispatcher_->exit(); });
     timer->enableTimer(duration);
     dispatcher_->run(Envoy::Event::Dispatcher::RunType::RunUntilExit);
@@ -121,7 +125,7 @@ public:
     filters_[index]->onData(buffer, false);
   }
 
-  Envoy::Event::TestRealTimeSystem time_system_;
+  TimeSystemType time_system_;
   Envoy::Stats::IsolatedStoreImpl store_;
   Envoy::Api::ApiPtr api_;
   Envoy::Event::DispatcherPtr dispatcher_;
@@ -138,6 +142,24 @@ public:
   bool refuse_connect_{false};
   int completions_{0};
   int successes_{0};
+};
+
+class TcpBenchmarkClientTest
+    : public TcpBenchmarkClientTestBase<Envoy::Event::TestRealTimeSystem> {};
+
+// For the tests that tell a 10 ms backoff from a 20 ms one. In real time those are windows a
+// slow machine walks out of -- a sanitizer build runs a "15 ms" stretch for 25 -- and the test
+// then sees a timer that fired on time as one that fired early. Here time moves only when the
+// test moves it, a millisecond at a step, so a timer set by a timer is due when it would be.
+class TcpBenchmarkClientSimulatedTimeTest
+    : public TcpBenchmarkClientTestBase<Envoy::Event::SimulatedTimeSystem> {
+public:
+  void runFor(std::chrono::milliseconds duration) override {
+    for (std::chrono::milliseconds elapsed = 0ms; elapsed < duration; elapsed += 1ms) {
+      time_system_.advanceTimeAndRun(1ms, *dispatcher_,
+                                     Envoy::Event::Dispatcher::RunType::NonBlock);
+    }
+  }
 };
 
 TEST_F(TcpBenchmarkClientTest, PrepareOpensTheConnectionsAndWaitsForThem) {
@@ -384,7 +406,7 @@ TEST_F(TcpBenchmarkClientTest, ConnectAttemptsAgainstADeadPortBackOff) {
 
 // A peer that accepts and closes at once -- a proxy with no upstream -- does not start the
 // backoff over with every connect; two seconds without a retry does.
-TEST_F(TcpBenchmarkClientTest, TheBackoffStartsOverOnlyAfterAQuietSpell) {
+TEST_F(TcpBenchmarkClientSimulatedTimeTest, TheBackoffStartsOverOnlyAfterAQuietSpell) {
   createClient(1);
   client_->prepare();
   connections_[0]->raiseEvent(Envoy::Network::ConnectionEvent::RemoteClose);
@@ -502,7 +524,7 @@ TEST_F(TcpBenchmarkClientTest, WithoutEchoesARotatedConnectionIsClosedAtOnce) {
 // eighth piece here -- and matching on would count those as echoes and time them against sends they
 // have nothing to do with. The first piece that is not the message ends it instead: nothing is
 // echoed, nothing is timed, what was outstanding is lost, and the connection is replaced.
-TEST_F(TcpBenchmarkClientTest, AReplyThatIsNotTheMessageEndsTheMatchingOnItsConnection) {
+TEST_F(TcpBenchmarkClientSimulatedTimeTest, AReplyThatIsNotTheMessageEndsTheMatchingOnItsConnection) {
   message_ = "0123456789";
   createClient(1);
   client_->prepare();
@@ -582,7 +604,7 @@ TEST_F(TcpBenchmarkClientTest, AMismatchOnARotatedConnectionClosesOnlyThatOne) {
 // The quiet spell is counted from when the last retry ran, not from when it was scheduled: at
 // the 1 s cap those are a second apart, and a connection that lasts 1.1 s after a retry that
 // waited 1 s has not been quiet for two.
-TEST_F(TcpBenchmarkClientTest, TheQuietSpellIsCountedFromWhenTheLastRetryRan) {
+TEST_F(TcpBenchmarkClientSimulatedTimeTest, TheQuietSpellIsCountedFromWhenTheLastRetryRan) {
   createClient(1);
   client_->prepare();
   refuse_connect_ = true;

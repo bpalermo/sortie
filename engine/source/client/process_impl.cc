@@ -58,6 +58,7 @@
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
+#include "absl/synchronization/mutex.h"
 
 // TODO(oschaaf): See if we can leverage a static module registration like Envoy does to avoid the
 // ifdefs in this file.
@@ -604,6 +605,22 @@ private:
   bool prefetch_connections_{};
 };
 
+namespace {
+
+// Envoy's options are parsed with TCLAP, and constructing a TCLAP::CmdLine writes TCLAP's
+// process-wide argument delimiter. Executions that run at once (--max-concurrent-executions)
+// each construct one, on their own threads, so the construction is serialized here: every
+// writer stores the same character, but two unsynchronized writes are a data race all the same.
+Envoy::OptionsImpl makeEnvoyOptions(std::vector<std::string> args,
+                                    const Envoy::OptionsImpl::HotRestartVersionCb& version_cb,
+                                    spdlog::level::level_enum log_level) {
+  static absl::Mutex mutex;
+  absl::MutexLock lock(&mutex);
+  return Envoy::OptionsImpl(std::move(args), version_cb, log_level);
+}
+
+} // namespace
+
 ProcessImpl::ProcessImpl(const Options& options, Envoy::Event::TimeSystem& time_system,
                          Envoy::Network::DnsResolverFactory& dns_resolver_factory,
                          TypedExtensionConfig typed_dns_resolver_config,
@@ -635,7 +652,8 @@ ProcessImpl::ProcessImpl(const Options& options, Envoy::Event::TimeSystem& time_
 
       admin_(Envoy::Network::Address::InstanceConstSharedPtr()),
       validation_context_(false, false, false, false), router_context_(store_root_.symbolTable()),
-      envoy_options_(/* args = */ {"process_impl"}, HotRestartDisabled, spdlog::level::info) {
+      envoy_options_(
+          makeEnvoyOptions(/* args = */ {"process_impl"}, HotRestartDisabled, spdlog::level::info)) {
   // Any dispatchers created after the following call will use hr timers.
   setupForHRTimers();
   std::string lower = absl::AsciiStrToLower(
@@ -1064,8 +1082,8 @@ bool ProcessImpl::runInternal(OutputCollector& collector, const UriPtr& tracing_
     std::string lower = absl::AsciiStrToLower(
         nighthawk::client::Verbosity::VerbosityOptions_Name(options_.verbosity()));
 
-    Envoy::OptionsImpl envoy_options({"encap_envoy"}, hot_restart_version_cb,
-                                     spdlog::level::from_str(lower));
+    Envoy::OptionsImpl envoy_options =
+        makeEnvoyOptions({"encap_envoy"}, hot_restart_version_cb, spdlog::level::from_str(lower));
 
     ENVOY_LOG(info, encap_bootstrap.DebugString());
     envoy_options.setConfigProto(encap_bootstrap);

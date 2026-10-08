@@ -51,12 +51,16 @@ jobs:
       # --config=libc++ alongside the sanitizer config, as upstream Nighthawk's
       # CI did: the sanitizer runtimes are built against libc++ and mixing in
       # libstdc++ produces duplicate symbols.
+      # Through scripts/sanitizer-tests.sh, which runs again the tests that
+      # died before they ran -- a remote executor on which the sanitizer
+      # runtime cannot lay the process out -- and no others: a test that
+      # reported anything is not given a second chance.
       # --nocache_test_results: a cached pass would otherwise satisfy the next
       # night without running anything, and tsan's value is in running the
       # tests again under new interleavings.
       - name: bazel test //engine/test/... (${{ matrix.sanitizer }})
         run: |
-          bazel test //engine/test/... \
+          scripts/sanitizer-tests.sh //engine/test/... \
             --config=${{ matrix.sanitizer }} \
             --config=libc++ \
             --config=rbe-buildbuddy-amd64 \
