@@ -232,7 +232,10 @@ A stage that fails does not stop the ones after it, with one exception: when
 a stage is refused because an engine is at its execution cap (see Weighted
 targets), the scenario's remaining stages are not attempted. They are listed
 in the report as `SKIP` (`"not_run": true` in the JSON) with the stage that
-was refused, and the plan's other scenarios still run.
+was refused, and the plan's other scenarios still run. The refused stage
+itself has `"refused": "execution_cap"` in the JSON, on each of its executions
+and on the entries of `backend_errors` for the engines that refused: those
+backends were not lost, and none of this needs the error text to be read.
 
 ## Weighted targets
 
@@ -720,7 +723,10 @@ duration, plus every wait the plan asks of the engine after it -- the
 plus two minutes, and counted from its scheduled start when the plan gives it
 one. One that has not
 answered by then is cancelled and reported as silent, and the run ends with
-the others' results instead of hanging with none. The same margin is applied
+the others' results instead of hanging with none. The deadline is wall time,
+so a sortie that was itself stopped for a while -- its node frozen -- can wake
+past it with the results waiting: an answer that is there, or arrives within
+ten seconds of the deadline being noticed, is taken as the result. The same margin is applied
 to what a backend says of itself: a result that claims to have run far longer
 than planned -- a node frozen halfway and thawed later -- fails that backend
 too. Its numbers stay in the report, marked as not those of the plan.
@@ -1047,6 +1053,14 @@ with `backend: name` and the engines take their names from their nodes
 (`engine.backendNameFrom: node`). The series are then
 `sortie.soak.<node>.cluster...`, the same ones on every run; named by address
 they would be keyed by pod IP and start over with every install.
+
+The same series on every run means each run's numbers follow the last run's
+on it. Every run counts from zero: the engine sends what a counter gained
+since the last flush, and a receiver that keeps a running total sees that
+total start again, at the run boundary or when the series had gone stale in
+between. Read counters across runs the way a restarted process is read, with
+`rate()` or `increase()`, which take a drop as a reset, and not by
+subtracting two samples.
 
 The engine is the pod that opens the connections, so it is the one a mesh has
 to inject; `engine.podAnnotations` and `engine.podLabels` are for that, and the

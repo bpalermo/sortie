@@ -3,6 +3,7 @@ package report
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	client "github.com/bpalermo/sortie/engine/api/client"
 	"github.com/bpalermo/sortie/internal/compile"
 	"github.com/bpalermo/sortie/internal/metric"
+	"github.com/bpalermo/sortie/internal/nh"
 	"github.com/bpalermo/sortie/internal/run"
 )
 
@@ -254,7 +256,12 @@ type jsonExecution struct {
 	Pass      bool   `json:"pass"`
 	// NotRun marks an execution that was never attempted -- a stage after one
 	// refused at an engine's execution cap. Error says why; elapsed_ms is 0.
-	NotRun     bool            `json:"not_run,omitempty"`
+	NotRun bool `json:"not_run,omitempty"`
+	// Refused is "execution_cap" for an execution of a stage that was stopped
+	// because an engine refused one of its starts at its execution cap: it
+	// did not fail on its own account, and Error is not the only way to tell.
+	// The stages after it, which were not attempted, have NotRun instead.
+	Refused    string          `json:"refused,omitempty"`
 	Error      string          `json:"error,omitempty"`
 	Dns        string          `json:"dns,omitempty"` // the name Backends were resolved from, for a dns pool
 	Backends   []string        `json:"backends,omitempty"`
@@ -353,7 +360,14 @@ func statistics(result *client.Result) map[string]jsonStatistic {
 type jsonBackendError struct {
 	Backend string `json:"backend"`
 	Error   string `json:"error"`
+	// Refused is "execution_cap" for a backend that did not fail but refused
+	// the start, its engine being at its execution cap: not a backend lost.
+	Refused string `json:"refused,omitempty"`
 }
+
+// refusedAtCap is the value of "refused" for a start an engine turned down at
+// its execution cap.
+const refusedAtCap = "execution_cap"
 
 // benchmarkCounters are a result's benchmark.* counters by name.
 func benchmarkCounters(counters []*client.Counter) map[string]uint64 {
@@ -432,8 +446,17 @@ func newJSONExecution(e run.ExecutionReport) jsonExecution {
 	if e.Err != nil {
 		je.Error = e.Err.Error()
 	}
+	var atCap *run.CapError
+	if !e.NotRun() && errors.As(e.Err, &atCap) {
+		je.Refused = refusedAtCap
+	}
 	for _, be := range e.BackendErrors {
-		je.BackendErrors = append(je.BackendErrors, jsonBackendError{Backend: be.Addr, Error: be.Err.Error()})
+		jb := jsonBackendError{Backend: be.Addr, Error: be.Err.Error()}
+		var busy *nh.BusyError
+		if errors.As(be.Err, &busy) {
+			jb.Refused = refusedAtCap
+		}
+		je.BackendErrors = append(je.BackendErrors, jb)
 	}
 	if e.Set != nil {
 		je.Totals = benchmarkCounters(e.Set.Totals().GetCounters())

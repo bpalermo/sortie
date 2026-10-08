@@ -90,13 +90,24 @@ func waitReady(ctx context.Context, conn *grpc.ClientConn, timeout time.Duration
 // answer the cancellation with the run's partial response.
 var cancelGrace = 30 * time.Second
 
-// SetCancelGraceForTest shortens the wait for a cancelled execution's answer
-// and returns a function that restores it. A test of what happens when a
-// backend never answers would otherwise take the full half minute.
+// arrivedGrace is how long an Execute whose deadline has passed still waits
+// for an answer that may already be there, before it gives the run up and
+// cancels it. A deadline is wall time, and the process that holds it can be
+// stopped for a while -- its node frozen, its container paused -- and wake to
+// find the deadline gone and the backend's complete result waiting to be
+// read, or about to be retransmitted. Giving up at once would call a backend
+// silent that had answered in time. It costs a backend that really is silent
+// this much longer to be reported, after the minutes already waited.
+var arrivedGrace = 10 * time.Second
+
+// SetCancelGraceForTest shortens the wait for a cancelled execution's answer,
+// and the wait for an answer that had already arrived when a deadline passed,
+// so that a test of a silent backend does not take the real ones. It returns
+// a function that restores them.
 func SetCancelGraceForTest(d time.Duration) (restore func()) {
-	old := cancelGrace
-	cancelGrace = d
-	return func() { cancelGrace = old }
+	oldCancel, oldArrived := cancelGrace, arrivedGrace
+	cancelGrace, arrivedGrace = d, d
+	return func() { cancelGrace, arrivedGrace = oldCancel, oldArrived }
 }
 
 // MaxConcurrentExecutionsTrailer is the trailing metadata a service sets on a
@@ -250,9 +261,23 @@ func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLin
 
 	var cancelled bool
 	var got received
+	answered := false
 	select {
 	case got = <-first:
+		answered = true
 	case <-ctx.Done():
+	}
+	// Both can be ready at once, and select then picks either. A deadline
+	// that has passed is not yet a backend that did not answer: see
+	// arrivedGrace. A caller's own cancellation is acted on at once.
+	if !answered && ctx.Err() == context.DeadlineExceeded {
+		select {
+		case got = <-first:
+			answered = true
+		case <-time.After(arrivedGrace):
+		}
+	}
+	if !answered {
 		cancelled = true
 		cancel := &client.ExecutionRequest{
 			CommandSpecificOptions: &client.ExecutionRequest_CancellationRequest{

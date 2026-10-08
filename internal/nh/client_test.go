@@ -289,3 +289,48 @@ func TestExecuteReportsTheExecutionCapWhenTheRefusalBeatsTheStart(t *testing.T) 
 		}
 	}
 }
+
+// slowService answers after a delay, with a complete response.
+type slowService struct {
+	client.UnimplementedNighthawkServiceServer
+	after time.Duration
+}
+
+func (s *slowService) ExecutionStream(stream client.NighthawkService_ExecutionStreamServer) error {
+	if _, err := stream.Recv(); err != nil {
+		return err
+	}
+	time.Sleep(s.after)
+	return stream.Send(&client.ExecutionResponse{Output: &client.Output{Results: []*client.Result{{Name: "global"}}}})
+}
+
+// A deadline that has passed is not yet a backend that did not answer: a
+// driver stopped for a while wakes past its deadline with the complete result
+// waiting. The answer that is there, or arrives just after, is the result,
+// and the run is neither cancelled nor an error.
+func TestExecuteTakesAnAnswerThatArrivesJustAfterTheDeadline(t *testing.T) {
+	defer nh.SetCancelGraceForTest(5 * time.Second)()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	client.RegisterNighthawkServiceServer(server, &slowService{after: 400 * time.Millisecond})
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	conn, err := nh.Dial(context.Background(), listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	resp, err := nh.Execute(ctx, conn, &client.CommandLineOptions{}, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v, want the answer that arrived after the deadline", err)
+	}
+	if len(resp.GetOutput().GetResults()) != 1 {
+		t.Errorf("response = %v, want the complete result", resp)
+	}
+}
