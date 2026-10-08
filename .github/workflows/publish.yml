@@ -185,7 +185,42 @@ jobs:
       - name: Sign the image
         env:
           COSIGN_YES: "true"
-        run: bazel run //bazel/cosign -- sign --recursive "${{ steps.digest.outputs.image }}"
+          IMAGE_REF: ${{ steps.digest.outputs.image }}
+          REGISTRY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.QUAY_TOKEN }}
+          REGISTRY_CREDENTIAL_HOST: ${{ env.IMAGE_REGISTRY_HOST }}
+        run: |
+          set -euo pipefail
+          # An image keeps its digest for as long as its content does, so this
+          # commit may have pushed exactly what an earlier one signed. Signing
+          # it again would add one more signature to the same manifests at
+          # every commit, for nothing: ask the verifier first, and sign unless
+          # it accepts the index and every child. Its output goes to a file,
+          # because for a new digest it reports failures that are the expected
+          # answer here. The step after this one verifies again, and that one
+          # counts.
+          #
+          # The verifier exits 1 for "not signed, or not all of it" and 2 for
+          # "could not check". Only the first is a reason to sign: a registry
+          # that did not answer says nothing about the signatures, and signing
+          # on it would add the duplicate this step exists to avoid. All of it
+          # is signed again when any of it is missing; that happens only after
+          # an interrupted run, and a second signature on a manifest is valid.
+          rc=0
+          bazel run //bazel/cosign:verify_image -- "${IMAGE_REF}" >presign.log 2>&1 || rc=$?
+          case "${rc}" in
+            0)
+              echo "${IMAGE_REF} is already signed by this workflow: an earlier commit published the same image"
+              exit 0
+              ;;
+            1) ;;
+            *)
+              cat presign.log
+              echo "::error::could not check whether ${IMAGE_REF} is already signed (exit ${rc})" >&2
+              exit 1
+              ;;
+          esac
+          bazel run //bazel/cosign -- sign --recursive "${IMAGE_REF}"
 
       # Every digest that was signed, not just the index: `cosign verify` has
       # no --recursive to match `cosign sign --recursive`, so the verifier
@@ -402,7 +437,42 @@ jobs:
       - name: Sign the engine image
         env:
           COSIGN_YES: "true"
-        run: bazel run //bazel/cosign -- sign --recursive "${{ steps.digest.outputs.image }}"
+          IMAGE_REF: ${{ steps.digest.outputs.image }}
+          REGISTRY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.QUAY_TOKEN }}
+          REGISTRY_CREDENTIAL_HOST: ${{ env.IMAGE_REGISTRY_HOST }}
+        run: |
+          set -euo pipefail
+          # An image keeps its digest for as long as its content does, so this
+          # commit may have pushed exactly what an earlier one signed. Signing
+          # it again would add one more signature to the same manifests at
+          # every commit, for nothing: ask the verifier first, and sign unless
+          # it accepts the index and every child. Its output goes to a file,
+          # because for a new digest it reports failures that are the expected
+          # answer here. The step after this one verifies again, and that one
+          # counts.
+          #
+          # The verifier exits 1 for "not signed, or not all of it" and 2 for
+          # "could not check". Only the first is a reason to sign: a registry
+          # that did not answer says nothing about the signatures, and signing
+          # on it would add the duplicate this step exists to avoid. All of it
+          # is signed again when any of it is missing; that happens only after
+          # an interrupted run, and a second signature on a manifest is valid.
+          rc=0
+          bazel run //bazel/cosign:verify_image -- "${IMAGE_REF}" >presign.log 2>&1 || rc=$?
+          case "${rc}" in
+            0)
+              echo "${IMAGE_REF} is already signed by this workflow: an earlier commit published the same image"
+              exit 0
+              ;;
+            1) ;;
+            *)
+              cat presign.log
+              echo "::error::could not check whether ${IMAGE_REF} is already signed (exit ${rc})" >&2
+              exit 1
+              ;;
+          esac
+          bazel run //bazel/cosign -- sign --recursive "${IMAGE_REF}"
 
       # The index, every child, and where each signature landed: see the
       # publish job.

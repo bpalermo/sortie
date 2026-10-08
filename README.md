@@ -1172,6 +1172,17 @@ the images built alongside it, and those are the ones whose signatures were
 verified. A chart built from a checkout names the engine by the commit's tag
 instead.
 
+An image's digest names its content and nothing else: no label in the image
+records the commit, so a commit that does not change an image publishes the
+digest the one before it did, and a consumer who pins by digest has nothing to
+re-pin. The engine image is the usual case, since most commits leave the engine
+alone. The driver's digest moves with every commit, because the binary reports
+its own version. Which commit published a digest is answered outside the image:
+every commit's `dev-<commit>` tag names what that commit published, and the
+certificate of the signature names the commit that first published it
+(`cosign verify` prints it as `githubWorkflowSha`). A digest that is already
+signed is not signed again.
+
 The chart itself is signed the same way, as a single manifest:
 
 ```console
