@@ -5,6 +5,7 @@ package nh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -99,6 +100,41 @@ var cancelGrace = 30 * time.Second
 // silent that had answered in time. It costs a backend that really is silent
 // this much longer to be reported, after the minutes already waited.
 var arrivedGrace = 10 * time.Second
+
+// ErrBackendDeadline is the cause a caller gives the context of an Execute or
+// a Distribute whose deadline is its bound on a backend's answer
+// (context.WithTimeoutCause). It is what arrivedGrace applies to. Any other
+// end of the context -- the caller's own cancellation, or a deadline the
+// caller was itself given -- is acted on at once, as a cancellation must be.
+var ErrBackendDeadline = errors.New("the backend's answer is overdue")
+
+// overdue says whether ctx ended on the deadline for the backend's answer.
+func overdue(ctx context.Context) bool {
+	return ctx.Err() != nil && context.Cause(ctx) == ErrBackendDeadline
+}
+
+// withArrivedGrace returns a context for a stream that must outlive ctx by
+// arrivedGrace when ctx ends on the deadline for the backend's answer, and
+// ends with ctx otherwise. It carries ctx's values and not its deadline.
+func withArrivedGrace(ctx context.Context) (context.Context, context.CancelFunc) {
+	out, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+	go func() {
+		select {
+		case <-out.Done():
+			return
+		case <-ctx.Done():
+		}
+		if overdue(ctx) {
+			select {
+			case <-out.Done():
+				return
+			case <-time.After(arrivedGrace):
+			}
+		}
+		cancel(context.Cause(ctx))
+	}()
+	return out, func() { cancel(context.Canceled) }
+}
 
 // SetCancelGraceForTest shortens the wait for a cancelled execution's answer,
 // and the wait for an answer that had already arrived when a deadline passed,
@@ -267,10 +303,11 @@ func Execute(ctx context.Context, conn *grpc.ClientConn, opts *client.CommandLin
 		answered = true
 	case <-ctx.Done():
 	}
-	// Both can be ready at once, and select then picks either. A deadline
-	// that has passed is not yet a backend that did not answer: see
-	// arrivedGrace. A caller's own cancellation is acted on at once.
-	if !answered && ctx.Err() == context.DeadlineExceeded {
+	// Both can be ready at once, and select then picks either. The deadline
+	// for the backend's answer having passed is not yet a backend that did
+	// not answer: see arrivedGrace. A caller's own cancellation or deadline
+	// is acted on at once.
+	if !answered && overdue(ctx) {
 		select {
 		case got = <-first:
 			answered = true

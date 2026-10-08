@@ -1055,12 +1055,13 @@ with `backend: name` and the engines take their names from their nodes
 they would be keyed by pod IP and start over with every install.
 
 The same series on every run means each run's numbers follow the last run's
-on it. Every run counts from zero: the engine sends what a counter gained
-since the last flush, and a receiver that keeps a running total sees that
-total start again, at the run boundary or when the series had gone stale in
-between. Read counters across runs the way a restarted process is read, with
-`rate()` or `increase()`, which take a drop as a reset, and not by
-subtracting two samples.
+on it. The engine counts every run from zero, but what it sends is what a
+counter gained since the last flush, so a receiver that keeps a running total
+adds the next run to it: a series it has kept does not drop at a run
+boundary. It starts again from zero only when the receiver had expired the
+series between runs, or was itself restarted. Either can happen, so read
+counters across runs with `rate()` or `increase()`, which take a drop as a
+reset, and do not take a total to be one run's count.
 
 The engine is the pod that opens the connections, so it is the one a mesh has
 to inject; `engine.podAnnotations` and `engine.podLabels` are for that, and the

@@ -45,6 +45,9 @@ type fakeDistributor struct {
 	// errorFor gives the services the fake reports an error for instead of a
 	// response, the way a distributor relays a target's failed stream.
 	errorFor map[string]*rpcstatus.Status
+
+	// delay is how long the fake takes to answer.
+	delay time.Duration
 }
 
 func (f *fakeDistributor) DistributedRequestStream(
@@ -68,6 +71,7 @@ func (f *fakeDistributor) DistributedRequestStream(
 				net.JoinHostPort(sa.GetAddress(), strconv.FormatUint(uint64(sa.GetPortValue()), 10)))
 		}
 
+		time.Sleep(f.delay)
 		resp := &distributorpb.DistributedResponse{}
 		for _, name := range f.answerAs(requested) {
 			host, port := splitHostPort(name)
@@ -393,5 +397,37 @@ func TestDistributePartialRecognisesATargetAtItsExecutionCap(t *testing.T) {
 		case want >= 0 && status.Code(f.Err) != codes.ResourceExhausted:
 			t.Errorf("%s: code = %s, want ResourceExhausted", f.Target, status.Code(f.Err))
 		}
+	}
+}
+
+// As for a direct backend: the deadline for the targets' answers having
+// passed, an answer that arrives just after it is still the result. A
+// deadline that is the caller's own ends the stream at once.
+func TestDistributeTakesAnAnswerThatArrivesJustAfterTheDeadline(t *testing.T) {
+	defer nh.SetCancelGraceForTest(5 * time.Second)()
+	targets := []string{"10.0.0.11:8443"}
+	fake := startFakeDistributor(t, func(requested []string) []string { return requested })
+	fake.delay = 400 * time.Millisecond
+	conn, err := nh.Dial(context.Background(), fake.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 100*time.Millisecond, nh.ErrBackendDeadline)
+	defer cancel()
+	names, _, err := nh.Distribute(ctx, conn, &client.CommandLineOptions{}, targets)
+	if err != nil || len(names) != 1 {
+		t.Fatalf("Distribute: %v with %d results, want the answer that arrived after the deadline", err, len(names))
+	}
+
+	own, cancelOwn := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelOwn()
+	started := time.Now()
+	if _, _, err := nh.Distribute(own, conn, &client.CommandLineOptions{}, targets); err == nil {
+		t.Error("Distribute under the caller's own deadline succeeded")
+	}
+	if took := time.Since(started); took > 2*time.Second {
+		t.Errorf("the caller's own deadline was acted on after %s, want at once", took)
 	}
 }

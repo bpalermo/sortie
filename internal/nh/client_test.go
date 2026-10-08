@@ -324,7 +324,7 @@ func TestExecuteTakesAnAnswerThatArrivesJustAfterTheDeadline(t *testing.T) {
 	}
 	defer conn.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 100*time.Millisecond, nh.ErrBackendDeadline)
 	defer cancel()
 	resp, err := nh.Execute(ctx, conn, &client.CommandLineOptions{}, nil)
 	if err != nil {
@@ -332,5 +332,18 @@ func TestExecuteTakesAnAnswerThatArrivesJustAfterTheDeadline(t *testing.T) {
 	}
 	if len(resp.GetOutput().GetResults()) != 1 {
 		t.Errorf("response = %v, want the complete result", resp)
+	}
+
+	// A deadline that is the caller's own is a cancellation, acted on at
+	// once: the run is cancelled and reported as that, well inside the grace.
+	own, cancelOwn := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelOwn()
+	started := time.Now()
+	_, err = nh.Execute(own, conn, &client.CommandLineOptions{}, nil)
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Execute under the caller's own deadline: err = %v, want it cancelled", err)
+	}
+	if took := time.Since(started); took > 2*time.Second {
+		t.Errorf("the caller's own deadline was acted on after %s, want at once", took)
 	}
 }
