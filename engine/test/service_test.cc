@@ -526,7 +526,7 @@ TEST_P(ServiceTest, ProgressIsStreamedWhenRequested) {
       // would take a copy of every worker's histograms per snapshot. Not in every snapshot,
       // though: a worker that has not answered within a second is left out, and the snapshot
       // goes with the counters alone (ProcessImpl::snapshot()). A sanitizer build on a busy
-      // machine has snapshots like that, so what is required is that some carry statistics.
+      // machine has snapshots like that, and nothing says it cannot have only those.
       interim_with_statistics += response.output().results(0).statistics_size() > 0 ? 1 : 0;
       for (const auto& statistic : response.output().results(0).statistics()) {
         EXPECT_EQ(statistic.percentiles_size(), 0) << statistic.id();
@@ -544,7 +544,12 @@ TEST_P(ServiceTest, ProgressIsStreamedWhenRequested) {
     }
   }
   EXPECT_GE(interim, 2) << "expected about six interim responses in a 3 s run";
-  EXPECT_GE(interim_with_statistics, 1) << "no interim response carried any statistics";
+  // In a plain build a worker that never answers within a second, three seconds running, is a
+  // defect, and this is the test that sees statistics arrive over the stream. A sanitizer build
+  // or a coverage one (what Envoy gives a TIMEOUT_FACTOR above 1) is allowed to be that slow.
+  if (TIMEOUT_FACTOR == 1) {
+    EXPECT_GE(interim_with_statistics, 1) << "no interim response carried any statistics";
+  }
   EXPECT_TRUE(final_seen);
   EXPECT_TRUE(r->Finish().ok());
 }
