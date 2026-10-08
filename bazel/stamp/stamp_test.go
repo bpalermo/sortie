@@ -139,8 +139,11 @@ func TestVersionIsStamped(t *testing.T) {
 // different digest at two commits that did not touch it. Which commit
 // published an image is answered by its dev-<commit> tag and by the
 // certificate of its signature.
+//
+// The macro, its one caller (go_image forwards the caller's labels as given)
+// and the engine's hand-assembled rules are all read.
 func TestImagesCarryNoCommit(t *testing.T) {
-	for _, name := range []string{"bazel/image/defs.bzl", "engine/BUILD"} {
+	for _, name := range []string{"bazel/image/defs.bzl", "BUILD.bazel", "engine/BUILD"} {
 		text := active(read(t, name))
 		if strings.Contains(text, "org.opencontainers.image.revision") {
 			t.Errorf("%s sets the org.opencontainers.image.revision label; it changes the "+

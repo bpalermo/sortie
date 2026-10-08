@@ -280,7 +280,7 @@ These are deliberate and easy to undo by accident:
   layers, and a consumer pinning by digest re-pins an image that did not change.
   The commit is on the `dev-<commit>` tag and in the signature's certificate.
   `//bazel/stamp:stamp_test` refuses both. The publish workflow verifies a
-  digest before signing it and signs only what is not signed yet.
+  digest before signing it and skips one that is fully signed already.
 - **`build --stamp` in .bazelrc.** rules_helm has no per-target equivalent:
   `helm_package` always defers to the flag, so without it a chart carries
   `0.1.0-GIT-COMMIT` as its version.
