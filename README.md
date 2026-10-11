@@ -842,6 +842,19 @@ execution, `results` -- each backend's `benchmark.*` counters, elapsed time
 and `statistics` -- `totals`, the counters summed over the pool, and
 `backend_errors` for any backend that did not finish cleanly.
 
+`sent` is how many requests were put on a connection to the target, answered
+or not: on each entry of `results` for that backend, and on the execution as
+their sum -- for a weighted scenario, one number per target. It is Envoy's
+`upstream_rq_total`, kept beside `totals` and not in them. A request counts
+from the moment it is given a connection, so one turned away by a full queue
+(`pool_overflow`) or still waiting for a connection when the run ended is not
+in it, and one whose connection broke while it was being written is. It is
+therefore the number to set against the target's own count of what it
+received, and an upper bound on it. The text report adds `, N sent` to a
+backend's line only when N is not the request count beside it. HTTP and unary
+gRPC only: the stream, TCP and UDP modes report what they sent in their own
+counters. It is absent when zero.
+
 Each execution is placed in time, so a failed stage can be matched to what
 else was happening. `started_at` is when sortie began dispatching it and
 `ended_at` when its last backend had answered or been given up on, which is

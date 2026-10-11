@@ -437,7 +437,8 @@ func TestTargetsOfOneScenarioAreSentTheirOwnRequests(t *testing.T) {
 	if err := os.WriteFile(planPath, []byte(plan), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath).CombinedOutput()
+	reportPath := filepath.Join(tmp, "report.json")
+	out, err := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", "--json", "-o", reportPath, planPath).CombinedOutput()
 	t.Logf("sortie run:\n%s", out)
 	if err != nil {
 		t.Fatalf("sortie run failed: %v", err)
@@ -448,6 +449,30 @@ func TestTargetsOfOneScenarioAreSentTheirOwnRequests(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+	// The report's "sent" per target is what the target counted: nothing
+	// was lost on the way here, so the two are the same number.
+	raw, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Executions []struct {
+			Label string `json:"label"`
+			Sent  uint64 `json:"sent"`
+		} `json:"executions"`
+	}
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("%v\n%s", err, raw)
+	}
+	if len(report.Executions) != 2 {
+		t.Fatalf("the report has %d executions, want 2:\n%s", len(report.Executions), raw)
+	}
+	for _, e := range report.Executions {
+		path := "/" + strings.TrimPrefix(e.Label, "mix/")
+		if rec := seen[path]; rec == nil || e.Sent != uint64(rec.total) {
+			t.Errorf("%s: the report says %d sent, the target counted %+v", e.Label, e.Sent, rec)
+		}
+	}
 	// 40 rps split 3:1 for 3 s: 90 reads and 30 writes, within a few requests
 	// at the deadline.
 	for path, want := range map[string]int{"/read": 90, "/write": 30} {

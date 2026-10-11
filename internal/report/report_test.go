@@ -954,3 +954,82 @@ func TestJSONMarksARefusalAtTheExecutionCap(t *testing.T) {
 		t.Errorf("an ordinary failure is marked as a refusal: %+v", failed)
 	}
 }
+
+// "sent" is the engine's count of requests put on a connection. The JSON
+// carries it per backend and summed for the execution, beside the totals and
+// not in them; the text names it only where it is not the answered count.
+func TestReportsSayHowManyRequestsWereSent(t *testing.T) {
+	backend := func(addr string, ok, sent uint64) result.Backend {
+		global := &client.Result{
+			Name:              "global",
+			ExecutionDuration: durationpb.New(10 * time.Second),
+			Counters:          []*client.Counter{{Name: "benchmark.http_2xx", Value: ok}},
+		}
+		if sent > 0 {
+			global.Counters = append(global.Counters, &client.Counter{Name: "upstream_rq_total", Value: sent})
+		}
+		return result.Backend{Addr: addr, Output: &client.Output{Results: []*client.Result{global}}, Global: global}
+	}
+	set := &result.Set{Backends: []result.Backend{
+		backend("10.0.0.1:8443", 600, 600),
+		backend("10.0.0.2:8443", 597, 600),
+		backend("10.0.0.3:8443", 600, 0), // an engine that reports no such counter
+	}}
+	r := &run.Report{Executions: []run.ExecutionReport{{
+		Label: "soak/submit", Pool: "nodes", Rate: 60, Duration: 10 * time.Second, Set: set,
+		Backends: []string{"10.0.0.1:8443", "10.0.0.2:8443", "10.0.0.3:8443"},
+	}}}
+
+	var text bytes.Buffer
+	if err := report.Text(&text, r); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"10.0.0.1:8443: 600 requests in 10s\n",
+		"10.0.0.2:8443: 597 requests in 10s, 600 sent\n",
+		"10.0.0.3:8443: 600 requests in 10s\n",
+	} {
+		if !strings.Contains(text.String(), want) {
+			t.Errorf("the text report lacks %q:\n%s", want, text.String())
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := report.JSON(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Executions []struct {
+			Sent    *uint64           `json:"sent"`
+			Totals  map[string]uint64 `json:"totals"`
+			Results []struct {
+				Sent     *uint64           `json:"sent"`
+				Counters map[string]uint64 `json:"counters"`
+			} `json:"results"`
+		} `json:"executions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("%v\n%s", err, buf.String())
+	}
+	e := got.Executions[0]
+	if e.Sent == nil || *e.Sent != 1200 {
+		t.Errorf("execution sent = %v, want 1200", e.Sent)
+	}
+	if len(e.Totals) != 1 || e.Totals["benchmark.http_2xx"] != 1797 {
+		t.Errorf("totals = %v, want the benchmark counters alone", e.Totals)
+	}
+	if len(e.Results) != 3 {
+		t.Fatalf("results = %+v", e.Results)
+	}
+	for i, want := range []uint64{600, 600} {
+		if e.Results[i].Sent == nil || *e.Results[i].Sent != want {
+			t.Errorf("results[%d].sent = %v, want %d", i, e.Results[i].Sent, want)
+		}
+		if len(e.Results[i].Counters) != 1 {
+			t.Errorf("results[%d].counters = %v, want the benchmark counters alone", i, e.Results[i].Counters)
+		}
+	}
+	if e.Results[2].Sent != nil {
+		t.Errorf("results[2].sent = %d, want it absent", *e.Results[2].Sent)
+	}
+}

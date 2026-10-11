@@ -175,10 +175,16 @@ func execution(w io.Writer, e run.ExecutionReport) error {
 			}
 			continue
 		}
-		fmt.Fprintf(w, "       %s: %d requests in %s%s\n",
-			b.Addr, counters["benchmark.http_2xx"]+counters["benchmark.http_3xx"]+
-				counters["benchmark.http_4xx"]+counters["benchmark.http_5xx"], elapsed,
-			failureSuffix(b.Global.GetCounters()))
+		answered := counters["benchmark.http_2xx"] + counters["benchmark.http_3xx"] +
+			counters["benchmark.http_4xx"] + counters["benchmark.http_5xx"]
+		// Said only when it is not the count beside it, so the line of a run
+		// in which every request sent was answered is unchanged.
+		sentNote := ""
+		if n, ok := counters[sentCounter]; ok && n != answered {
+			sentNote = fmt.Sprintf(", %d sent", n)
+		}
+		fmt.Fprintf(w, "       %s: %d requests in %s%s%s\n",
+			b.Addr, answered, elapsed, sentNote, failureSuffix(b.Global.GetCounters()))
 	}
 
 	if len(e.Outcomes) == 0 {
@@ -275,6 +281,10 @@ type jsonExecution struct {
 	// counters: Envoy's cluster counters are in the engine's output, not here.
 	Totals  map[string]uint64   `json:"totals,omitempty"`
 	Results []jsonBackendResult `json:"results,omitempty"`
+	// Sent is the requests the execution sent, summed over the backends that
+	// returned results: see jsonBackendResult.Sent. It is no part of Totals,
+	// which stay the engine's benchmark.* counters alone.
+	Sent uint64 `json:"sent,omitempty"`
 	// BackendErrors are the backends that did not finish cleanly. One listed
 	// here and absent from Results returned nothing.
 	BackendErrors []jsonBackendError `json:"backend_errors,omitempty"`
@@ -290,6 +300,16 @@ type jsonBackendResult struct {
 	// engine supplied no timestamp.
 	StartedAt string            `json:"started_at,omitempty"`
 	Counters  map[string]uint64 `json:"counters"`
+	// Sent is how many requests the backend put on a connection to the
+	// target, answered or not: Envoy's upstream_rq_total for the execution's
+	// cluster. A request counts from the moment it is given a connection, so
+	// one still queued for a connection when the run ended, or turned away
+	// by a full queue (pool_overflow), is not in it, and one whose connection
+	// broke as it was written is. That makes it an upper bound on what the
+	// target received, and the number to set against the target's own count.
+	// HTTP and unary gRPC only: the stream, TCP and UDP modes count what they
+	// sent in their own benchmark.* counters. Absent when it is zero.
+	Sent uint64 `json:"sent,omitempty"`
 	// Statistics are the backend's statistics that recorded anything, by id:
 	// its latencies above all. There is no pool-wide entry: a percentile over
 	// a pool cannot be had from the backends' percentiles, which is also why
@@ -368,6 +388,20 @@ type jsonBackendError struct {
 // refusedAtCap is the value of "refused" for a start an engine turned down at
 // its execution cap.
 const refusedAtCap = "execution_cap"
+
+// sentCounter is the engine counter behind "sent": Envoy's count of requests
+// given a connection of the execution's cluster.
+const sentCounter = "upstream_rq_total"
+
+// sentRequests is a result's sentCounter, zero when it has none.
+func sentRequests(counters []*client.Counter) uint64 {
+	for _, c := range counters {
+		if c.GetName() == sentCounter {
+			return c.GetValue()
+		}
+	}
+	return 0
+}
 
 // benchmarkCounters are a result's benchmark.* counters by name.
 func benchmarkCounters(counters []*client.Counter) map[string]uint64 {
@@ -471,8 +505,10 @@ func newJSONExecution(e run.ExecutionReport) jsonExecution {
 				Backend:    b.Addr,
 				ElapsedMS:  b.Global.GetExecutionDuration().AsDuration().Milliseconds(),
 				Counters:   benchmarkCounters(b.Global.GetCounters()),
+				Sent:       sentRequests(b.Global.GetCounters()),
 				Statistics: statistics(b.Global),
 			}
+			je.Sent += br.Sent
 			if start := b.Global.GetExecutionStart(); start != nil {
 				br.StartedAt = timestamp(start.AsTime())
 			}
