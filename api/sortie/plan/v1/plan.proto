@@ -482,8 +482,8 @@ message Scenario {
   // and they run concurrently on every backend in the pool, so the backend
   // must allow that many executions at once (nighthawk_service
   // --max-concurrent-executions; the chart sets it). Every other field of the
-  // scenario applies to each target alike; a target that needs its own method,
-  // headers or body is its own scenario.
+  // scenario applies to each target alike, except the request a target
+  // describes for itself: see Target.method, headers, body and body_file.
   //
   // Each target's rate is rate x weight / (sum of weights), rounded to the
   // nearest integer and at least 1, and then subject to the usual division
@@ -506,6 +506,33 @@ message Target {
 
   // Relative share of the scenario's rate. Default 1.
   uint32 weight = 3;
+
+  // The request this target is sent, where it differs from the scenario's:
+  // a GET target and a POST target side by side in one scenario. Each field
+  // that is set replaces the scenario's (after defaults); one left unset
+  // takes the scenario's, so a target cannot clear what the scenario sets.
+  // They mean what they mean on a Scenario and are held to the same rules:
+  // none of them goes with a udp:// url, and method and headers do not go
+  // with a tcp:// one.
+
+  // Replaces Scenario.method for this target.
+  string method = 4;
+
+  // Replace Scenario.headers for this target: the whole list, not an
+  // addition to it. Each written "Name: value".
+  repeated string headers = 5 [(buf.validate.field).repeated.items.cel = {
+    id: "target.header.format"
+    message: "each header must be written \"Name: value\""
+    expression: "this.matches('^[^:]+:.*$')"
+  }];
+
+  // Replaces the scenario's body, whether that was given as body or as
+  // body_file. Mutually exclusive with body_file.
+  string body = 6;
+
+  // Like body, but the bytes of a file, resolved relative to the plan file.
+  // Replaces the scenario's body or body_file.
+  string body_file = 7;
 }
 
 // Grpc selects one of the engine's gRPC modes.

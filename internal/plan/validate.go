@@ -418,6 +418,9 @@ func validateTargets(s *Scenario) error {
 			return fmt.Errorf("targets[%d]: name %q is used twice", i, t.GetName())
 		}
 		seen[t.GetName()] = struct{}{}
+		if t.GetBody() != "" && t.GetBodyFile() != "" {
+			return fmt.Errorf("targets[%d] (%s): body and body_file are mutually exclusive", i, t.GetName())
+		}
 	}
 	return nil
 }
@@ -425,12 +428,26 @@ func validateTargets(s *Scenario) error {
 // ForTarget returns the scenario as it applies to one of its weighted
 // targets: a copy with target set to that entry's url and the list cleared,
 // and the executor's rates scaled to the entry's share of the total weight
-// (rounded to the nearest integer, at least 1). Everything that validates or
-// compiles a single-target scenario works on the result unchanged.
+// (rounded to the nearest integer, at least 1). The request the entry
+// describes for itself -- method, headers, body -- replaces the scenario's,
+// field by field. Everything that validates or compiles a single-target
+// scenario works on the result unchanged.
 func ForTarget(s *Scenario, t *Target) *Scenario {
 	out := proto.Clone(s).(*Scenario)
 	out.Target = t.GetUrl()
 	out.Targets = nil
+	if t.GetMethod() != "" {
+		out.Method = t.GetMethod()
+	}
+	if len(t.GetHeaders()) > 0 {
+		out.Headers = append([]string(nil), t.GetHeaders()...)
+	}
+	// body and body_file are two forms of one thing: a target that gives
+	// either has said what its body is, and keeps neither of the scenario's.
+	if t.GetBody() != "" || t.GetBodyFile() != "" {
+		out.Body = t.GetBody()
+		out.BodyFile = t.GetBodyFile()
+	}
 	var total uint64
 	for _, x := range s.GetTargets() {
 		total += uint64(weightOf(x))

@@ -1030,3 +1030,48 @@ func TestExpandWeightedTargetsGroupsByStage(t *testing.T) {
 		t.Error("the execution does not point back at the original scenario and its target")
 	}
 }
+
+// One target of a weighted scenario sends its own request; its neighbours'
+// options are what they were before a target could say so.
+func TestExpandGivesATargetItsOwnRequest(t *testing.T) {
+	targets := []*plan.Target{
+		{Name: "read", Url: "http://a.test/", Weight: 3},
+		{Name: "write", Url: "http://a.test/submit", Weight: 1, Method: "POST",
+			Headers: []string{"content-type: application/json"}, Body: `{"k":1}`},
+	}
+	s := &plan.Scenario{
+		Name:     "mix",
+		Executor: &plan.Executor{Type: plan.ConstantRate, Rate: 40, Duration: durationpb.New(time.Second)},
+		Targets:  targets,
+	}
+	execs, err := Expand(s)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if len(execs) != 2 {
+		t.Fatalf("got %d executions, want 2", len(execs))
+	}
+	read, write := execs[0].Options, execs[1].Options
+	if read.GetRequestOptions() != nil {
+		t.Errorf("read: request options = %v, want none: the target said nothing of its request", read.GetRequestOptions())
+	}
+	ro := write.GetRequestOptions()
+	if ro.GetRequestMethod().String() != "POST" || string(ro.GetRequestBody()) != `{"k":1}` {
+		t.Errorf("write: method %v, body %q", ro.GetRequestMethod(), ro.GetRequestBody())
+	}
+	if len(ro.GetRequestHeaders()) != 1 || ro.GetRequestHeaders()[0].GetHeader().GetKey() != "content-type" {
+		t.Errorf("write: headers = %v", ro.GetRequestHeaders())
+	}
+
+	// The same read target beside a sibling that describes no request: the
+	// options are equal, field for field.
+	plain := proto.Clone(s).(*plan.Scenario)
+	plain.Targets[1] = &plan.Target{Name: "write", Url: "http://a.test/submit", Weight: 1}
+	before, err := Expand(plain)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if !proto.Equal(before[0].Options, read) {
+		t.Errorf("read target's options changed with its sibling's request:\n before %v\n after  %v", before[0].Options, read)
+	}
+}

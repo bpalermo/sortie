@@ -330,8 +330,127 @@ func TestForTargetSharesRateByWeightRoundedToNearestAtLeastOne(t *testing.T) {
 	}
 }
 
+// A target's own method, headers and body replace the scenario's, each on its
+// own; a target that names none of them is the scenario's request unchanged.
+func TestForTargetTakesTheRequestTheTargetDescribes(t *testing.T) {
+	s := &Scenario{
+		Name:     "mix",
+		Method:   "PUT",
+		Headers:  []string{"x-from: scenario"},
+		BodyFile: "/plan/scenario.bin",
+		Executor: &Executor{Type: "constant-rate", Rate: 10},
+		Targets: []*Target{
+			{Name: "plain", Url: "http://a/"},
+			{Name: "post", Url: "http://a/submit", Method: "POST", Headers: []string{"content-type: application/json"}, Body: "{}"},
+			{Name: "file", Url: "http://a/upload", BodyFile: "/plan/target.bin"},
+		},
+	}
+	plain := ForTarget(s, s.Targets[0])
+	if plain.GetMethod() != "PUT" || len(plain.GetHeaders()) != 1 || plain.GetHeaders()[0] != "x-from: scenario" ||
+		plain.GetBody() != "" || plain.GetBodyFile() != "/plan/scenario.bin" {
+		t.Errorf("plain: method %q, headers %v, body %q, body_file %q; want the scenario's",
+			plain.GetMethod(), plain.GetHeaders(), plain.GetBody(), plain.GetBodyFile())
+	}
+	post := ForTarget(s, s.Targets[1])
+	if post.GetMethod() != "POST" || len(post.GetHeaders()) != 1 || post.GetHeaders()[0] != "content-type: application/json" {
+		t.Errorf("post: method %q, headers %v", post.GetMethod(), post.GetHeaders())
+	}
+	// The target's body is the body: the scenario's body_file does not ride
+	// along, which would leave the variant with both.
+	if post.GetBody() != "{}" || post.GetBodyFile() != "" {
+		t.Errorf("post: body %q, body_file %q; want the target's body alone", post.GetBody(), post.GetBodyFile())
+	}
+	file := ForTarget(s, s.Targets[2])
+	if file.GetMethod() != "PUT" || file.GetBody() != "" || file.GetBodyFile() != "/plan/target.bin" {
+		t.Errorf("file: method %q, body %q, body_file %q", file.GetMethod(), file.GetBody(), file.GetBodyFile())
+	}
+	if s.GetMethod() != "PUT" || s.GetBodyFile() != "/plan/scenario.bin" || s.GetHeaders()[0] != "x-from: scenario" {
+		t.Error("ForTarget mutated the original scenario")
+	}
+}
+
+// A target's body_file is resolved like the scenario's, in defaults too.
+func TestTargetBodyFileIsRelativeToThePlan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plan.yaml")
+	src := `
+version: v1
+pools: [{name: local, services: ["127.0.0.1:8443"]}]
+defaults:
+  targets:
+    - {name: d, url: "http://127.0.0.1:8080/d", method: POST, body_file: msgs/default.bin}
+scenarios:
+  - name: own
+    pool: local
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+    targets:
+      - {name: a, url: "http://127.0.0.1:8080/a"}
+      - {name: b, url: "http://127.0.0.1:8080/b", method: POST, body_file: msgs/b.bin}
+  - name: inherited
+    pool: local
+    executor: {type: constant-rate, rate: 10, duration: 1s}
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, inherited := p.GetScenarios()[0], p.GetScenarios()[1]
+	if got := own.GetTargets()[0].GetBodyFile(); got != "" {
+		t.Errorf("a: body_file = %q, want none", got)
+	}
+	if got, want := own.GetTargets()[1].GetBodyFile(), filepath.Join(dir, "msgs", "b.bin"); got != want {
+		t.Errorf("b: body_file = %q, want %q", got, want)
+	}
+	if len(inherited.GetTargets()) != 1 {
+		t.Fatalf("inherited: %d targets, want the default one", len(inherited.GetTargets()))
+	}
+	if got, want := inherited.GetTargets()[0].GetBodyFile(), filepath.Join(dir, "msgs", "default.bin"); got != want {
+		t.Errorf("inherited: body_file = %q, want %q", got, want)
+	}
+}
+
+// What a scenario may not say of a udp or tcp target, a target may not say of
+// itself; and a scenario can now mix an HTTP request with a raw one, because
+// the method sits on the target it belongs to.
+func TestTargetRequestFieldsAreHeldToTheRulesOfTheirScheme(t *testing.T) {
+	const head = `
+version: v1
+pools:
+  - name: local
+    services: ["127.0.0.1:1"]
+scenarios:
+  - name: mix
+    pool: local
+    executor: {type: constant-rate, rate: 10, duration: 1s}`
+	mixed := head + `
+    targets:
+      - {name: web, url: "http://127.0.0.1:1/", method: POST, headers: ["content-type: text/plain"], body: hi}
+      - {name: raw, url: "tcp://127.0.0.1:2", body: ping}
+      - {name: dgram, url: "udp://127.0.0.1:3", body: ping}
+`
+	if _, err := Parse([]byte(mixed)); err != nil {
+		t.Errorf("an HTTP, a TCP and a UDP target with their own requests: %v", err)
+	}
+	for name, targets := range map[string]string{
+		"method on udp":  `[{name: a, url: "udp://127.0.0.1:1", method: POST, body: x}]`,
+		"headers on udp": `[{name: a, url: "udp://127.0.0.1:1", headers: ["a: b"], body: x}]`,
+		"method on tcp":  `[{name: a, url: "tcp://127.0.0.1:1", method: POST, body: x}]`,
+	} {
+		if _, err := Parse([]byte(head + "\n    targets: " + targets + "\n")); err == nil {
+			t.Errorf("%s: parsed, want an error", name)
+		}
+	}
+}
+
 func TestParseRejectsBadTargetLists(t *testing.T) {
 	for name, scenario := range map[string]string{
+		"body and body_file on a target": `
+    targets: [{name: a, url: http://127.0.0.1:1/a, body: x, body_file: x.bin}]`,
+		"malformed target header": `
+    targets: [{name: a, url: http://127.0.0.1:1/a, headers: ["no colon"]}]`,
 		"target and targets": `
     target: http://127.0.0.1:1/
     targets: [{name: a, url: http://127.0.0.1:1/a}]`,
