@@ -259,9 +259,34 @@ own connection pool, rate limiter, counters and latency histograms. They start
 together on every backend in the pool and are reported and judged one by one,
 so a threshold on the scenario has to hold for every target, and a failing
 target is named. `targets` replaces `target`; every other field of the scenario
-applies to each target alike, so a target that needs its own method, headers or
-body is its own scenario. `defaults` may carry either form; a scenario that
-names a target or a list of its own takes neither from it.
+applies to each target alike, except the request a target describes for itself
+(below). `defaults` may carry either form; a scenario that names a target or a
+list of its own takes neither from it.
+
+A target may carry its own `method`, `headers`, `body` or `body_file`, so reads
+and writes run side by side on the same schedule:
+
+```yaml
+    targets:
+      - {name: orders, url: "http://orders.shop.svc:8080/", weight: 6}
+      - name: submit
+        url: "http://orders.shop.svc:8080/submit"
+        weight: 1
+        method: POST
+        headers: ["content-type: application/json"]
+        body: '{"sku": 1}'
+```
+
+Each of the four that a target sets replaces the scenario's (after `defaults`),
+and one it leaves out is the scenario's: `headers` replaces the whole list
+rather than adding to it, and `body` and `body_file` replace whichever of the
+two the scenario had. A target cannot clear what the scenario sets, so what
+only some targets need belongs on those targets. The other targets are sent
+exactly what they were sent before: a target that describes no request compiles
+to the same engine options whatever its neighbours say. The fields are held to
+the rules of the target's scheme, so a `udp://` target takes a body alone and a
+`tcp://` one no method or headers; with the method on the HTTP target rather
+than on the scenario, one scenario can drive an HTTP, a TCP and a UDP target.
 
 Two things differ from a per-request weighted draw, both deliberate:
 

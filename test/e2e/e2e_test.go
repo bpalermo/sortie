@@ -18,6 +18,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -346,6 +347,124 @@ func TestWeightedTargetsRunConcurrentlyAgainstTheEngine(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "PASS  3/3 executions passed") {
 		t.Errorf("sortie output lacks the PASS verdict")
+	}
+}
+
+// Two targets of one scenario, each sent its own request: reads as the plan's
+// default GET, writes as a POST with a header and a body of their own.
+const mixedMethodsPlanTemplate = `version: v1
+pools:
+  - name: local
+    services:
+      - "%s"
+defaults:
+  pool: local
+  protocol: http1
+  concurrency: "1"
+  connections: 2
+scenarios:
+  - name: mix
+    executor:
+      type: constant-rate
+      rate: 40
+      duration: 3s
+    targets:
+      - {name: read, url: "http://%s/read", weight: 3}
+      - name: write
+        url: "http://%s/write"
+        weight: 1
+        method: POST
+        headers: ["content-type: application/json"]
+        body: '{"k":1}'
+    thresholds:
+      - "counter:benchmark.http_2xx > 0"
+      - "counter:benchmark.http_4xx == 0"
+`
+
+// seenRequests is what a target saw on one path: how many requests, and how
+// many of them were not the request the plan describes for that path.
+type seenRequests struct {
+	total, wrong int
+	example      string
+}
+
+func TestTargetsOfOneScenarioAreSentTheirOwnRequests(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tmp := t.TempDir()
+
+	var mu sync.Mutex
+	seen := map[string]*seenRequests{}
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		ok := false
+		switch r.URL.Path {
+		case "/read":
+			ok = r.Method == http.MethodGet && len(body) == 0 && r.Header.Get("Content-Type") == ""
+		case "/write":
+			ok = r.Method == http.MethodPost && string(body) == `{"k":1}` &&
+				r.Header.Get("Content-Type") == "application/json"
+		}
+		mu.Lock()
+		rec := seen[r.URL.Path]
+		if rec == nil {
+			rec = &seenRequests{}
+			seen[r.URL.Path] = rec
+		}
+		rec.total++
+		if !ok {
+			rec.wrong++
+			rec.example = fmt.Sprintf("%s %s content-type %q body %q", r.Method, r.URL.Path, r.Header.Get("Content-Type"), body)
+		}
+		mu.Unlock()
+		if !ok {
+			// Fails the plan's threshold too, not this test's count alone.
+			http.Error(w, "not the request the plan describes", http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(target.Close)
+	targetAddr := target.Listener.Addr().String()
+
+	servicePath := filepath.Join(tmp, "service_address")
+	start(t, ctx, rlocation(t, "_main/engine/nighthawk_service"),
+		"--listen", "127.0.0.1:0", "--listener-address-file", servicePath,
+		"--max-concurrent-executions", "2")
+	serviceAddr := waitForAddress(t, servicePath)
+	assertHealthy(t, ctx, serviceAddr)
+
+	planPath := filepath.Join(tmp, "plan.yaml")
+	plan := fmt.Sprintf(mixedMethodsPlanTemplate, serviceAddr, targetAddr, targetAddr)
+	if err := os.WriteFile(planPath, []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.CommandContext(ctx, rlocation(t, "_main/sortie_/sortie"), "run", planPath).CombinedOutput()
+	t.Logf("sortie run:\n%s", out)
+	if err != nil {
+		t.Fatalf("sortie run failed: %v", err)
+	}
+	if !strings.Contains(string(out), "PASS  2/2 executions passed") {
+		t.Errorf("sortie output lacks the PASS verdict")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// 40 rps split 3:1 for 3 s: 90 reads and 30 writes, within a few requests
+	// at the deadline.
+	for path, want := range map[string]int{"/read": 90, "/write": 30} {
+		rec := seen[path]
+		if rec == nil {
+			t.Errorf("%s: the target saw no request", path)
+			continue
+		}
+		if rec.wrong > 0 {
+			t.Errorf("%s: %d of %d requests were not the one the plan describes, e.g. %s", path, rec.wrong, rec.total, rec.example)
+		}
+		if rec.total < want-8 || rec.total > want+8 {
+			t.Errorf("%s: the target saw %d requests, want about %d", path, rec.total, want)
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("the target saw %d paths, want /read and /write alone", len(seen))
 	}
 }
 

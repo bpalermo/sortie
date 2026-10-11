@@ -136,6 +136,11 @@ func resolveBodyFiles(p *Plan, path string) {
 		if s.GetBodyFile() != "" && !filepath.IsAbs(s.GetBodyFile()) {
 			s.BodyFile = filepath.Join(dir, s.GetBodyFile())
 		}
+		for _, t := range s.GetTargets() {
+			if t.GetBodyFile() != "" && !filepath.IsAbs(t.GetBodyFile()) {
+				t.BodyFile = filepath.Join(dir, t.GetBodyFile())
+			}
+		}
 		if t := s.GetTls(); t != nil {
 			for _, f := range []*string{&t.CaFile, &t.CertFile, &t.KeyFile} {
 				if *f != "" && !filepath.IsAbs(*f) {
